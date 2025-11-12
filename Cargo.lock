@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "nj_cli"
-version = "0.1.0"
+version = "0.0.2"
 dependencies = [
  "clap",
  "nj_lib",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "nj_js"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "nj_lib",
  "serde-wasm-bindgen",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "nj_lib"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bitvec",
  "serde",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "nj_py"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "nj_lib",
  "pyo3",
