@@ -1,0 +1,13 @@
+[package]
+name = "nj_lib"
+version = "0.0.1"
+edition = "2021"
+
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+bitvec = "1.0.1"
+serde = { version = "1.0.228", features = ["derive"] }
+ts-rs = "11.1.0"

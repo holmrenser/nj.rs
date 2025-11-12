@@ -1,0 +1,21 @@
+[project]
+name = "nj_py"
+version = "0.0.1"
+requires-python = ">=3.8"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+
+[tool.maturin]
+# Optional: include the wasm build artifacts in the wheel
+strip = false                        # keep symbols for debugging if needed
+bindings = "pyo3"                    # we are using PyO3
+features = ["pyo3/extension-module"] # Rust features
+out = "dist"                         # output directory for wheels

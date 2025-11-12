@@ -1,0 +1,3 @@
+[workspace]
+members = ["nj_lib", "cli", "wasm", "python"]
+resolver = "2"

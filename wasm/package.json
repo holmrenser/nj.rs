@@ -1,0 +1,30 @@
+{
+  "name": "@holmrenser/nj",
+  "version": "0.0.1",
+  "description": "Neighbor-Joining WASM bindings (Rust → WASM → JS/TS).",
+  "license": "MIT",
+  "type": "module",
+  "main": "./pkg-node/nj_wasm.js",
+  "module": "./pkg-web/nj_wasm.js",
+  "types": "nj.d.ts",
+  "scripts": {
+    "build:web": "wasm-pack build --target bundler --out-dir pkg-web --release --no-typescript",
+    "build:node": "wasm-pack build --target nodejs --out-dir pkg-node --release --no-typescript",
+    "build": "npm run build:web && npm run build:node",
+    "clean": "rm -rf pkg-web pkg-node",
+    "test:web": "NODE_OPTIONS=--experimental-wasm-modules mocha --recursive --extensions mjs --exit \"tests/*.web.test.js\"",
+    "test:node": "node --test tests/nj_js.test.mjs",
+    "test": "npm run test:web && npm run test:node"
+  },
+  "files": [
+    "pkg-web",
+    "pkg-node",
+    "nj.d.ts",
+    "types"
+  ],
+  "devDependencies": {
+    "@esm-bundle/chai": "^4.3.4-fix.0",
+    "mocha": "^11.7.5",
+    "wasm-pack": "^0.13.0"
+  }
+}
