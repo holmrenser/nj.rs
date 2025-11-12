@@ -1,30 +1,27 @@
-VERSION=$(toml get Cargo.toml workspace.package.version)
+VERSION:=$(toml get Cargo.toml workspace.package.version)
 
-.PHONY: all python wasm cli lib clean
+.PHONY: all python wasm nj clean
 
-all: lib wasm cli python
+all: nj wasm python
 
-lib:
-	$(MAKE) -C nj_lib
+nj:
+	$(MAKE) -C nj
 
 wasm:
 	$(MAKE) -C wasm
-
-cli:
-	$(MAKE) -C cli
 
 python:
 	$(MAKE) -C python
 
 bump:
-	cargo workspaces version patch --yes
-	@VERSION=$$(toml get Cargo.toml workspace.package.version -r)
-	@echo "New version: $$VERSION"
-	@make sync-version
+	cargo workspaces version patch --yes --no-git-commit
+	$(MAKE) sync-version VERSION=$$(toml get Cargo.toml workspace.package.version)
 
 sync-version:
-	@toml set python/pyproject.toml project.version $(VERSION)
-	@jq --arg v "$VERSION" '.version = $v' package.json | sponge package.json
+	echo "syncing version to $(VERSION)"
+	toml set python/pyproject.toml project.version "$(VERSION)" | sponge python/pyproject.toml
+	jq --arg v $(VERSION) '.version = $$v' wasm/package.json | sponge wasm/package.json
+	git tag -a "v$(VERSION)" -m "Version $(VERSION)"
 
 clean:
 	$(MAKE) -C nj_lib clean

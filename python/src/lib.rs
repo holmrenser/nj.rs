@@ -1,6 +1,6 @@
 #[pyo3::pymodule]
 mod nj_py {
-    use nj_lib::nj as lib_nj;
+    use ::nj::nj as lib_nj;
     use pyo3::exceptions::PyValueError;
     use pyo3::prelude::*;
     use serde_pyobject::from_pyobject;

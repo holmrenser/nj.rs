@@ -1,64 +1,74 @@
-use clap::Parser;
-use nj_lib::{nj, FastaSequence, NJConfig, MSA};
+use nj::{FastaSequence, MSA, NJConfig, nj};
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about)]
-struct Args {
-    /// MSA FASTA file to process
-    #[arg(value_name = "FASTA")]
-    input: PathBuf,
+#[cfg(feature = "cli")]
+mod cli {
+    use super::*;
+    use clap::Parser;
 
-    /// Write Newick output to this file instead of stdout
-    #[arg(short, long, value_name = "FILE")]
-    output: Option<PathBuf>,
-}
+    #[derive(Parser, Debug)]
+    #[command(author, version, about)]
+    pub struct Args {
+        /// MSA FASTA file to process
+        #[arg(value_name = "FASTA")]
+        pub input: PathBuf,
 
-fn main() {
-    if let Err(err) = run() {
-        eprintln!("Error: {err}");
-        std::process::exit(1);
+        /// Write Newick output to this file instead of stdout
+        #[arg(short, long, value_name = "FILE")]
+        pub output: Option<PathBuf>,
     }
-}
 
-fn run() -> Result<(), String> {
-    let args = Args::parse();
+    pub fn run() -> Result<(), String> {
+        let args = Args::parse();
 
-    let fasta = fs::read_to_string(&args.input)
-        .map_err(|e| format!("failed to read {}: {e}", args.input.display()))?;
+        let fasta = fs::read_to_string(&args.input)
+            .map_err(|e| format!("failed to read {}: {e}", args.input.display()))?;
 
-    let msa = parse_fasta(&fasta)?;
-    if msa.is_empty() {
-        return Err("input FASTA contains no sequences".into());
-    }
-    let expected_len = msa[0].sequence.len();
-    if expected_len == 0 {
-        return Err("input FASTA sequences are empty".into());
-    }
-    for (i, fs) in msa.iter().enumerate() {
-        if fs.sequence.len() != expected_len {
-            return Err(format!(
-                "sequence {} ({}) has length {}, expected {}",
-                i,
-                fs.header,
-                fs.sequence.len(),
-                expected_len
-            ));
+        let msa = super::parse_fasta(&fasta)?;
+        if msa.is_empty() {
+            return Err("input FASTA contains no sequences".into());
         }
-    }
-    let newick_tree = nj(NJConfig {
-        msa,
-        hide_internal: true,
-    })?;
+        let expected_len = msa[0].sequence.len();
+        if expected_len == 0 {
+            return Err("input FASTA sequences are empty".into());
+        }
+        for (i, fs) in msa.iter().enumerate() {
+            if fs.sequence.len() != expected_len {
+                return Err(format!(
+                    "sequence {} ({}) has length {}, expected {}",
+                    i,
+                    fs.header,
+                    fs.sequence.len(),
+                    expected_len
+                ));
+            }
+        }
+        let newick_tree = nj(NJConfig {
+            msa,
+            hide_internal: true,
+        })?;
 
-    if let Some(path) = args.output {
-        fs::write(&path, format!("{newick_tree}\n"))
-            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    } else {
-        println!("{newick_tree}");
+        if let Some(path) = args.output {
+            fs::write(&path, format!("{newick_tree}\n"))
+                .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+        } else {
+            println!("{newick_tree}");
+        }
+        Ok(())
     }
-    Ok(())
+}
+
+fn main() -> Result<(), String> {
+    #[cfg(feature = "cli")]
+    {
+        cli::run()
+    }
+    #[cfg(not(feature = "cli"))]
+    {
+        println!("CLI not enabled. Rebuild with --features cli");
+        Ok(())
+    }
 }
 
 fn parse_fasta(input: &str) -> Result<MSA, String> {

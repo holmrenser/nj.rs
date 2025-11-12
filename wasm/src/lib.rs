@@ -1,4 +1,4 @@
-use nj_lib::{nj as lib_nj, NJConfig};
+use nj::{NJConfig, nj as lib_nj};
 use serde_wasm_bindgen::from_value;
 use wasm_bindgen::prelude::*;
 

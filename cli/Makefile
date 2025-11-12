@@ -1,6 +1,0 @@
-CARGO_TARGET_DIR=target
-all:
-	CARGO_TARGET_DIR=${CARGO_TARGET_DIR} cargo build
-
-clean:
-	CARGO_TARGET_DIR=${CARGO_TARGET_DIR} cargo clean

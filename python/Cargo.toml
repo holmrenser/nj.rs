@@ -13,6 +13,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.27.1", features = ["extension-module"] }
-nj_lib = { path = "../nj_lib" }
+nj = { path = "../nj" }
 serde_json = "1.0.145"
 serde-pyobject = "0.8.0"
