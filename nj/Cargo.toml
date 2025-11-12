@@ -1,5 +1,6 @@
 [package]
 name = "nj"
+description = "Neighbor Joining, fast phylogenetic tree construction. Library and CLI."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
