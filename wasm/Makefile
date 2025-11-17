@@ -1,5 +1,5 @@
 all:
-	npm run build
+	CARGO_TARGET_DIR=target npm run build
 
 clean:
-	npm run clean
+	CARGO_TARGET_DIR=target npm run clean
