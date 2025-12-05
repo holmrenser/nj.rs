@@ -4,7 +4,7 @@ use ts_rs::TS;
 #[derive(Clone, Debug, TS, Serialize, Deserialize)]
 #[ts(export, export_to = "../../wasm/types/lib_types.ts")]
 pub struct FastaSequence {
-    pub header: String,
+    pub identifier: String,
     pub sequence: String,
 }
 

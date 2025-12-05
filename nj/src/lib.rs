@@ -17,7 +17,7 @@
 //!   - Construct with `TriMat::with_names(names)`; `dim()` returns the number
 //!     of taxa.
 //!
-//! - NJNode
+//! - TreeNode
 //!   - Binary tree node representing either a leaf (no children) or an
 //!     internal node with exactly two children.
 //!   - Stores child branch lengths on the parent as `left_len` and `right_len`.
@@ -92,20 +92,21 @@
 //! clamping.
 mod config;
 mod tree;
-pub use crate::config::{FastaSequence, NJConfig, MSA};
-use crate::tree::NJNode;
+pub use crate::config::{FastaSequence, MSA, NJConfig};
+use crate::tree::TreeNode;
 use bitvec::prelude::*;
-use std::collections::HashMap;
 
 /// Triangular distance matrix with node names
 #[derive(Clone, Debug)]
-pub struct TriMat {
+pub struct DistMat {
     pub data: Vec<f64>,
     pub node_names: Vec<String>,
 }
 
-impl TriMat {
-    pub fn with_names(names: Vec<String>) -> Self {
+/// (Lower) Triangular distance matrix implementation
+/// Stores only the i > j entries in a flat Vec for memory efficiency.
+impl DistMat {
+    pub fn empty_with_names(names: Vec<String>) -> Self {
         let n = names.len();
         Self {
             data: vec![0.0; n * (n - 1) / 2],
@@ -137,109 +138,180 @@ impl TriMat {
         }
     }
 }
+/// Selects the pair (i, j) with the minimum Q(i, j) value from the active set.
+/// Returns (i, j, d_ij) where d_ij is the distance between i and j.
+fn select_min_q_pair(
+    dist: &DistMat,
+    active: &BitVec<u8, Lsb0>,
+    row_sums: &[f64],
+) -> Option<(usize, usize, f64)> {
+    let n_active = active.count_ones() as f64;
+
+    (0..dist.dim())
+        .filter(|&i| active[i])
+        .flat_map(|i| {
+            (0..i).filter(move |&j| active[j]).map(move |j| {
+                let d_ij = dist.get(i, j);
+                let q_ij = (n_active - 2.0) * d_ij - row_sums[i] - row_sums[j];
+                (i, j, q_ij, d_ij)
+            })
+        })
+        .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
+        .map(|(i, j, _, d)| (i, j, d))
+}
+/// Computes branch lengths for the new node joining i and j.
+/// Clamps lengths to be non-negative.
+fn compute_branch_lengths(
+    d_ij: f64,
+    row_sums: &[f64],
+    i: usize,
+    j: usize,
+    active_count: usize,
+) -> (f64, f64) {
+    let n = active_count as f64;
+
+    let li = (0.5 * d_ij + (row_sums[i] - row_sums[j]) / (2.0 * (n - 2.0))).max(0.0);
+    let lj = (d_ij - li).max(0.0);
+
+    (li, lj)
+}
+
+/// Joins nodes i and j into a new internal node at index i.
+/// Sets the branch lengths for the children.
+/// Removes node j by setting it to None.
+/// The new internal node has the given name.
+fn join_nodes(nodes: &mut [Option<TreeNode>], i: usize, j: usize, li: f64, lj: f64, name: String) {
+    let mut left = nodes[i].take().unwrap();
+    left.len = li;
+
+    let mut right = nodes[j].take().unwrap();
+    right.len = lj;
+
+    nodes[i] = Some(TreeNode::internal(
+        name,
+        Some([Box::new(left), Box::new(right)]),
+        0.0,
+    ));
+}
+
+/// Updates the distance matrix and row sums after joining nodes i and j.
+/// The new node is at index i; index j is removed.
+/// The distances are updated according to the NJ formula.
+/// Row sums are adjusted accordingly.
+fn update_distances(
+    dist: &mut DistMat,
+    row_sums: &mut [f64],
+    active: &BitVec<u8, Lsb0>,
+    i: usize,
+    j: usize,
+) {
+    let d_ij = dist.get(i, j);
+
+    for k in active.iter_ones() {
+        if k == i {
+            continue;
+        }
+        let d_ik = dist.get(i, k);
+        let d_jk = dist.get(j, k);
+        let d_new = 0.5 * (d_ik + d_jk - d_ij);
+
+        row_sums[i] += d_new - d_ik - d_jk;
+        row_sums[k] += d_new - d_ik - d_jk;
+
+        dist.set(i, k, d_new);
+    }
+
+    row_sums[j] = 0.0;
+}
+
+/// Final join of the last two active nodes into a root node.
+/// Sets branch lengths accordingly.
+/// The new root node has the given name.
+fn final_join(
+    nodes: &mut [Option<TreeNode>],
+    dist: &DistMat,
+    active: &BitVec<u8, Lsb0>,
+    name: String,
+) -> TreeNode {
+    let mut iter = active.iter_ones();
+    let i = iter.next().unwrap();
+    let j = iter.next().unwrap();
+
+    let d_ij = dist.get(i, j);
+
+    let mut left = nodes[i].take().unwrap();
+    let mut right = nodes[j].take().unwrap();
+
+    left.len = d_ij / 2.0;
+    right.len = d_ij / 2.0;
+
+    TreeNode::internal(name, Some([Box::new(left), Box::new(right)]), 0.0)
+}
 
 /// Neighbor Joining, iterator-based and borrow-safe
-fn neighbor_joining(mut dist: TriMat) -> Result<NJNode, String> {
+/// Performs the Neighbor-Joining algorithm on the provided triangular distance matrix
+/// and returns the inferred tree as a TreeNode.
+/// /// # Arguments
+/// * `dist` - A triangular distance matrix representing pairwise distances between taxa.
+/// # Returns
+/// A Result containing the root TreeNode of the inferred NJ tree, or an error
+/// string if the input is invalid or the algorithm fails.
+/// # Errors
+/// Returns an error if the input distance matrix is empty or if internal
+/// consistency checks fail (e.g., no pair to join, unexpected number of
+/// remaining active nodes).
+fn neighbor_joining(mut dist: DistMat) -> Result<TreeNode, String> {
+    // Number of genes/proteins in the distance matrix
     let n = dist.dim();
     if n == 0 {
-        return Err("Empty distance matrix".to_string());
+        return Err("Empty distance matrix".into());
     }
     if n == 1 {
-        return Ok(NJNode::leaf(dist.node_names[0].clone()));
+        return Ok(TreeNode::leaf(dist.node_names[0].clone(), None));
     }
 
+    // Bit mask indicating which elements are currently active.
     let mut active: BitVec<u8, Lsb0> = BitVec::repeat(true, n);
-    let mut nodes: HashMap<usize, NJNode> = (0..n)
-        .map(|i| (i, NJNode::leaf(dist.node_names[i].clone())))
+
+    let mut nodes: Vec<Option<TreeNode>> = dist
+        .node_names
+        .iter()
+        .map(|name| Some(TreeNode::leaf(name.clone(), None)))
         .collect();
+
     let mut row_sums: Vec<f64> = (0..n)
         .map(|i| (0..n).map(|j| dist.get(i, j)).sum())
         .collect();
+
     let mut next_internal = n;
 
     for _ in 0..(n - 2) {
-        let active_count = active.count_ones() as f64;
-        let active_ref = &active;
-        let row_sums_ref = &row_sums;
-        let dist_ref = &dist;
+        let (i, j, d_ij) = select_min_q_pair(&dist, &active, &row_sums).ok_or("No pair found")?;
 
-        // Find minimal Q entry
-        let pair_opt = (0..n)
-            .filter(|&i| active_ref[i])
-            .flat_map(|i| {
-                (0..i).filter(move |&j| active_ref[j]).map(move |j| {
-                    (
-                        i,
-                        j,
-                        (active_count - 2.0) * dist_ref.get(i, j)
-                            - row_sums_ref[i]
-                            - row_sums_ref[j],
-                        dist_ref.get(i, j),
-                    )
-                })
-            })
-            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
-            .map(|(i, j, _, d)| (i, j, d));
+        let (l_i, l_j) =
+            compute_branch_lengths(d_ij, &row_sums, i, j, active.count_ones() as usize);
 
-        let (i_min, j_min, dij) = match pair_opt {
-            Some(t) => t,
-            None => return Err("Failed to find a pair to join: no active pair found".to_string()),
-        };
-
-        // Clamp branch lengths to zero to avoid negative values due to non-ultrametric input or rounding errors
-        let li = (0.5 * dij + (row_sums[i_min] - row_sums[j_min]) / (2.0 * (active_count - 2.0)))
-            .max(0.0);
-        let lj = (dij - li).max(0.0);
-        let internal_name = format!("Node{}", next_internal);
+        let name = format!("Node{}", next_internal);
         next_internal += 1;
 
-        // Remove nodes safely
-        let left_node = nodes
-            .remove(&i_min)
-            .ok_or_else(|| format!("Internal error: node {} missing during join", i_min))?;
-        let right_node = nodes
-            .remove(&j_min)
-            .ok_or_else(|| format!("Internal error: node {} missing during join", j_min))?;
-        let new_node = NJNode::internal(internal_name, left_node, right_node, li, lj);
-        nodes.insert(i_min, new_node);
-        active.set(j_min, false);
+        join_nodes(&mut nodes, i, j, l_i, l_j, name.clone());
+        active.set(j, false);
 
-        // Update distances
-        (0..n).filter(|&k| active[k] && k != i_min).for_each(|k| {
-            let dik = dist.get(i_min, k);
-            let djk = dist.get(j_min, k);
-            let d_new = 0.5 * (dik + djk - dij);
-            row_sums[i_min] = row_sums[i_min] - dik - djk + d_new;
-            row_sums[k] = row_sums[k] - dik - djk + d_new;
-            dist.set(i_min, k, d_new);
-        });
-        // Reset row sum for deactivated node to avoid affecting future calculations
-        row_sums[j_min] = 0.0;
+        update_distances(&mut dist, &mut row_sums, &active, i, j);
     }
 
-    let remaining: Vec<usize> = (0..n).filter(|&i| active[i]).collect();
-    if remaining.len() != 2 {
+    if active.count_ones() != 2 {
         return Err(format!(
             "Expected 2 remaining active nodes, found {}. Input may be malformed.",
-            remaining.len()
+            active.count_ones()
         ));
     }
-    let i = remaining[0];
-    let j = remaining[1];
-    let dij = dist.get(i, j);
-    let root_name = format!("Node{}", next_internal);
-    let left = nodes
-        .remove(&i)
-        .ok_or_else(|| format!("Internal error: remaining node {} not found", i))?;
-    let right = nodes
-        .remove(&j)
-        .ok_or_else(|| format!("Internal error: remaining node {} not found", j))?;
-    Ok(NJNode::internal(
-        root_name,
-        left,
-        right,
-        dij / 2.0,
-        dij / 2.0,
+
+    Ok(final_join(
+        &mut nodes,
+        &dist,
+        &active,
+        format!("Node{}", next_internal),
     ))
 }
 
@@ -254,10 +326,10 @@ fn neighbor_joining(mut dist: TriMat) -> Result<NJNode, String> {
 /// Pairwise distances are calculated as the proportion of differing, non-gap (`'-'`) positions between sequences.
 /// Positions where either sequence has a gap are ignored in the calculation.
 /// If no valid positions exist between a pair, the distance is set to 0.0.
-fn dist_from_msa(msa: &[FastaSequence]) -> TriMat {
+fn dist_from_msa(msa: &[FastaSequence]) -> DistMat {
     let n = msa.len();
-    let names: Vec<String> = msa.into_iter().map(|fs| fs.header.clone()).collect();
-    let mut dist = TriMat::with_names(names);
+    let names: Vec<String> = msa.into_iter().map(|fs| fs.identifier.clone()).collect();
+    let mut dist = DistMat::empty_with_names(names);
 
     (0..n).for_each(|i| {
         (0..i).for_each(|j| {
@@ -280,23 +352,6 @@ fn dist_from_msa(msa: &[FastaSequence]) -> TriMat {
     dist
 }
 
-pub trait FastaReader {
-    fn from_unnamed_sequences(sequences: Vec<String>) -> Self;
-}
-
-impl FastaReader for MSA {
-    fn from_unnamed_sequences(sequences: Vec<String>) -> Self {
-        sequences
-            .into_iter()
-            .enumerate()
-            .map(|(i, s)| FastaSequence {
-                header: format!("Seq{}", i),
-                sequence: s,
-            })
-            .collect()
-    }
-}
-
 pub fn nj(conf: NJConfig) -> Result<String, String> {
     let dist = dist_from_msa(&conf.msa);
     let tree = neighbor_joining(dist).map_err(|e| format!("neighbor-joining failed: {e}"))?;
@@ -308,23 +363,39 @@ pub fn nj(conf: NJConfig) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    pub trait FastaReader {
+        fn from_unnamed_sequences(sequences: Vec<String>) -> Self;
+    }
+
+    impl FastaReader for MSA {
+        fn from_unnamed_sequences(sequences: Vec<String>) -> Self {
+            sequences
+                .into_iter()
+                .enumerate()
+                .map(|(i, s)| FastaSequence {
+                    identifier: format!("Seq{}", i),
+                    sequence: s,
+                })
+                .collect()
+        }
+    }
+
     /// Recursively collects the names of all leaf nodes in the given NJNode tree.
-    fn collect_leaf_names(node: &NJNode) -> Vec<String> {
-        match (&node.left, &node.right) {
-            (Some(left), Some(right)) => {
+    fn collect_leaf_names(node: &TreeNode) -> Vec<String> {
+        match &node.children {
+            Some([left, right]) => {
                 let mut l = collect_leaf_names(left);
                 let mut r = collect_leaf_names(right);
                 l.append(&mut r);
                 l
             }
-            (None, None) => vec![node.name.clone()],
-            _ => unreachable!("panic: NJNode should be either leaf or internal"),
+            None => vec![node.name.clone()],
         }
     }
 
     #[test]
-    fn test_trimatrix_set_get_and_dim() {
-        let mut m = TriMat::with_names(vec!["A".into(), "B".into(), "C".into()]);
+    fn test_distmat_set_get_and_dim() {
+        let mut m = DistMat::empty_with_names(vec!["A".into(), "B".into(), "C".into()]);
         assert_eq!(m.dim(), 3);
         // initially zero
         assert_eq!(m.get(0, 1), 0.0);
@@ -340,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tri_from_msa_basic() {
+    fn test_dist_from_msa_basic() {
         // seq0 vs seq1 differ at middle position only
         let seqs: Vec<String> = vec!["ACG".into(), "ATG".into(), "A-G".into()];
         let msa = MSA::from_unnamed_sequences(seqs);
@@ -356,15 +427,15 @@ mod tests {
     }
 
     #[test]
-    fn test_tri_from_msa_no_overlap() {
+    fn test_dist_from_msa_no_overlap() {
         // no overlapping non-gap positions between the two sequences -> distance 0.0
         let msa: MSA = vec![
             FastaSequence {
-                header: "X".into(),
+                identifier: "X".into(),
                 sequence: "A--".into(),
             },
             FastaSequence {
-                header: "Y".into(),
+                identifier: "Y".into(),
                 sequence: "--A".into(),
             },
         ];
@@ -376,8 +447,24 @@ mod tests {
     }
 
     #[test]
+    fn test_distmat_symmetry_invariant() {
+        let mut m = DistMat::empty_with_names(vec!["A".into(), "B".into(), "C".into()]);
+        m.set(2, 0, 0.25);
+        assert_eq!(m.get(0, 2), 0.25);
+        assert_eq!(m.get(2, 0), 0.25);
+    }
+
+    #[test]
+    fn test_neighbor_joining_one_taxon() {
+        let m = DistMat::empty_with_names(vec!["A".into()]);
+        let tree = neighbor_joining(m).expect("NJ should succeed for one taxon");
+        assert!(tree.children.is_none());
+        assert_eq!(tree.name, "A");
+    }
+
+    #[test]
     fn test_neighbor_joining_two_taxa() {
-        let mut m = TriMat::with_names(vec!["A".into(), "B".into()]);
+        let mut m = DistMat::empty_with_names(vec!["A".into(), "B".into()]);
         m.set(0, 1, 0.6);
         let tree = neighbor_joining(m).expect("NJ should succeed for two taxa");
         // root should be internal with two leaves A and B
@@ -385,15 +472,17 @@ mod tests {
         let mut leaves_sorted = leaves.clone();
         leaves_sorted.sort();
         assert_eq!(leaves_sorted, vec!["A".to_string(), "B".to_string()]);
-        // branch lengths stored on the root node (left_len/right_len)
-        assert!((tree.left_len - 0.3).abs() < 1e-12);
-        assert!((tree.right_len - 0.3).abs() < 1e-12);
+        // branch lengths stored on child nodes
+        assert!(tree.children.is_some());
+        let children = tree.children.as_ref().unwrap();
+        assert!((children[0].len - 0.3).abs() < 1e-12);
+        assert!((children[1].len - 0.3).abs() < 1e-12);
     }
 
     #[test]
     fn test_neighbor_joining_three_taxa_preserves_leaves() {
         // equidistant star with small distances
-        let mut m = TriMat::with_names(vec!["A".into(), "B".into(), "C".into()]);
+        let mut m = DistMat::empty_with_names(vec!["A".into(), "B".into(), "C".into()]);
         m.set(0, 1, 0.2);
         m.set(0, 2, 0.2);
         m.set(1, 2, 0.2);
@@ -405,12 +494,15 @@ mod tests {
             vec!["A".to_string(), "B".to_string(), "C".to_string()]
         );
         // ensure non-negative branch lengths in the produced tree (clamping is applied in implementation)
-        fn check_nonneg(node: &NJNode) {
-            assert!(node.left_len >= -1e-12, "left_len negative");
-            assert!(node.right_len >= -1e-12, "right_len negative");
-            if let (Some(l), Some(r)) = (&node.left, &node.right) {
-                check_nonneg(l);
-                check_nonneg(r);
+        fn check_nonneg(node: &TreeNode) {
+            match &node.children {
+                None => return,
+                Some(children) => {
+                    assert!(children[0].len >= -1e-12, "left_len negative");
+                    assert!(children[1].len >= -1e-12, "right_len negative");
+                    check_nonneg(children[0].as_ref());
+                    check_nonneg(children[1].as_ref());
+                }
             }
         }
         check_nonneg(&tree);
@@ -419,9 +511,9 @@ mod tests {
     #[test]
     fn test_to_newick_produces_valid_format() {
         // Build simple tree manually: root with two leaves
-        let left = NJNode::leaf("L".into());
-        let right = NJNode::leaf("R".into());
-        let root = NJNode::internal("root".into(), left, right, 0.1234, 0.5678);
+        let left = TreeNode::leaf("L".into(), Some(0.1234));
+        let right = TreeNode::leaf("R".into(), Some(0.5678));
+        let root = TreeNode::internal("root".into(), Some([Box::new(left), Box::new(right)]), 0.0);
         // to_newick hides internal names when requested
         let s_hidden = root.to_newick(true);
         // Expect parentheses and two branch lengths formatted to 3 decimals (per implementation)
@@ -430,5 +522,38 @@ mod tests {
         // with internal name shown, name appears at end
         let s_named = root.to_newick(false);
         assert!(s_named.ends_with("root"));
+    }
+
+    #[test]
+    fn test_nj_wrapper_adds_semicolon() {
+        let msa = MSA::from_unnamed_sequences(vec!["A".into(), "A".into()]);
+        let conf = NJConfig {
+            msa,
+            hide_internal: true,
+        };
+        let out = nj(conf).unwrap();
+        assert!(out.ends_with(';'));
+    }
+
+    #[test]
+    fn test_nj_deterministic_order() {
+        let msa = MSA::from_unnamed_sequences(vec!["ACG".into(), "ATG".into(), "AGG".into()]);
+        let conf = NJConfig {
+            msa,
+            hide_internal: true,
+        };
+
+        let t1 = nj(conf.clone()).unwrap();
+        let t2 = nj(conf).unwrap();
+        assert_eq!(t1, t2);
+    }
+
+    #[test]
+    fn test_two_taxa_branch_length_sum() {
+        let mut m = DistMat::empty_with_names(vec!["A".into(), "B".into()]);
+        m.set(0, 1, 1.0);
+        let tree = neighbor_joining(m).unwrap();
+        let children = tree.children.unwrap();
+        assert!((children[0].len + children[1].len - 1.0).abs() < 1e-12);
     }
 }

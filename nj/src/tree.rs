@@ -1,37 +1,33 @@
-/// NJ tree node
+/// A node in a (bifurcating) phylogenetic tree.
+/// Can be either a leaf node (no children) or an internal node (two children).
+/// Each branch has an associated length.
+/// Leaf nodes represent sequences, while internal nodes represent common ancestors.
+/// Building a Tree means recursively combining nodes until a single root node remains.
 #[derive(Clone, Debug)]
-pub struct NJNode {
+pub struct TreeNode {
     pub name: String,
-    pub left: Option<Box<NJNode>>,
-    pub right: Option<Box<NJNode>>,
-    pub left_len: f64,
-    pub right_len: f64,
+    pub children: Option<[Box<TreeNode>; 2]>,
+    pub len: f64,
 }
 
-impl NJNode {
-    pub fn leaf(name: String) -> Self {
+impl TreeNode {
+    /// Creates a leaf node with the given name.
+    pub fn leaf(name: String, len: Option<f64>) -> Self {
         Self {
             name,
-            left: None,
-            right: None,
-            left_len: 0.0,
-            right_len: 0.0,
+            children: None,
+            len: match len {
+                Some(l) => l,
+                None => 0.0,
+            },
         }
     }
-
-    pub fn internal(
-        name: String,
-        left: NJNode,
-        right: NJNode,
-        left_len: f64,
-        right_len: f64,
-    ) -> Self {
+    /// Creates an internal node with the given name, left and right children, and branch lengths.
+    pub fn internal(name: String, children: Option<[Box<TreeNode>; 2]>, len: f64) -> Self {
         Self {
             name,
-            left: Some(Box::new(left)),
-            right: Some(Box::new(right)),
-            left_len,
-            right_len,
+            children: Some(children.unwrap()),
+            len,
         }
     }
 
@@ -43,8 +39,8 @@ impl NJNode {
     /// # Panics
     /// This function will panic if called on a node with only one child (invalid NJNode).
     pub fn to_newick(&self, hide_internal: bool) -> String {
-        match (&self.left, &self.right) {
-            (Some(left), Some(right)) => {
+        match &self.children {
+            Some([left, right]) => {
                 let left_str = left.to_newick(hide_internal);
                 let right_str = right.to_newick(hide_internal);
                 let name_str = if hide_internal {
@@ -54,13 +50,10 @@ impl NJNode {
                 };
                 format!(
                     "({}:{:.3},{}:{:.3}){}",
-                    left_str, self.left_len, right_str, self.right_len, name_str
+                    left_str, left.len, right_str, right.len, name_str
                 )
             }
-            (None, None) => self.name.clone(),
-            _ => panic!(
-                "NJNode must have either zero or two children; found a node with only one child, which is invalid."
-            ),
+            None => self.name.clone(),
         }
     }
 }

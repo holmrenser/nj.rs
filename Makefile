@@ -24,7 +24,6 @@ sync-version:
 	git tag -a "v$(VERSION)" -m "Version $(VERSION)"
 
 clean:
-	$(MAKE) -C nj_lib clean
+	$(MAKE) -C nj clean
 	$(MAKE) -C wasm clean
-	$(MAKE) -C cli clean
 	$(MAKE) -C python clean

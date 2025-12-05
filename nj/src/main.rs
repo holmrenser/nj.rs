@@ -38,7 +38,7 @@ mod cli {
                 return Err(format!(
                     "sequence {} ({}) has length {}, expected {}",
                     i,
-                    fs.header,
+                    fs.identifier,
                     fs.sequence.len(),
                     expected_len
                 ));
@@ -84,7 +84,7 @@ fn parse_fasta(input: &str) -> Result<MSA, String> {
         if let Some(rest) = trimmed.strip_prefix('>') {
             if let Some(name) = current_name.replace(rest.trim().to_string()) {
                 msa.push(FastaSequence {
-                    header: name,
+                    identifier: name,
                     sequence: current_seq,
                 });
                 current_seq = String::new();
@@ -99,7 +99,7 @@ fn parse_fasta(input: &str) -> Result<MSA, String> {
 
     if let Some(name) = current_name {
         msa.push(FastaSequence {
-            header: name,
+            identifier: name,
             sequence: current_seq,
         });
     }
@@ -123,11 +123,11 @@ mod tests {
         let msa = parse_fasta(input).expect("parse failed");
         let mut expected = MSA::new();
         expected.push(FastaSequence {
-            header: "seq1".into(),
+            identifier: "seq1".into(),
             sequence: "ACGT".into(),
         });
         assert_eq!(msa.len(), expected.len());
-        assert_eq!(msa[0].header, expected[0].header);
+        assert_eq!(msa[0].identifier, expected[0].identifier);
         assert_eq!(msa[0].sequence, expected[0].sequence);
     }
 
@@ -137,16 +137,16 @@ mod tests {
         let msa = parse_fasta(input).expect("parse failed");
         let mut expected = MSA::new();
         expected.push(FastaSequence {
-            header: "s1".into(),
+            identifier: "s1".into(),
             sequence: "AACC".into(),
         });
         expected.push(FastaSequence {
-            header: "s2".into(),
+            identifier: "s2".into(),
             sequence: "GG".into(),
         });
         assert_eq!(msa.len(), expected.len());
         for (a, b) in msa.iter().zip(expected.iter()) {
-            assert_eq!(a.header, b.header);
+            assert_eq!(a.identifier, b.identifier);
             assert_eq!(a.sequence, b.sequence);
         }
     }
@@ -157,11 +157,11 @@ mod tests {
         let msa = parse_fasta(input).expect("parse failed");
         let mut expected = MSA::new();
         expected.push(FastaSequence {
-            header: "name".into(),
+            identifier: "name".into(),
             sequence: "ACTG".into(),
         });
         assert_eq!(msa.len(), expected.len());
-        assert_eq!(msa[0].header, expected[0].header);
+        assert_eq!(msa[0].identifier, expected[0].identifier);
         assert_eq!(msa[0].sequence, expected[0].sequence);
     }
 
@@ -176,7 +176,7 @@ mod tests {
         let input = ">only_header\n";
         let msa = parse_fasta(input).expect("parse failed");
         assert_eq!(msa.len(), 1);
-        assert_eq!(msa[0].header, "only_header");
+        assert_eq!(msa[0].identifier, "only_header");
         assert_eq!(msa[0].sequence, "");
     }
 
