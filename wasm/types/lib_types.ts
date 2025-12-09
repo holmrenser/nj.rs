@@ -2,4 +2,4 @@
 
 export type FastaSequence = { identifier: string, sequence: string, };
 
-export type NJConfig = { msa: Array<FastaSequence>, hide_internal: boolean, };
+export type NJConfig = { msa: Array<FastaSequence>, show_internal: boolean, n_bootstrap_samples: number, };

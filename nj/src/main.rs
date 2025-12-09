@@ -17,6 +17,14 @@ mod cli {
         /// Write Newick output to this file instead of stdout
         #[arg(short, long, value_name = "FILE")]
         pub output: Option<PathBuf>,
+
+        /// Number of bootstrap samples to generate
+        #[arg(short = 'b', long, default_value_t = 100)]
+        pub n_bootstrap_samples: usize,
+
+        /// Show internal node names in Newick output
+        #[arg(short = 'i', long, default_value_t = false)]
+        pub show_internal: bool,
     }
 
     pub fn run() -> Result<(), String> {
@@ -29,11 +37,11 @@ mod cli {
         if msa.is_empty() {
             return Err("input FASTA contains no sequences".into());
         }
-        let expected_len = msa[0].sequence.len();
+        let expected_len = msa[0].len();
         if expected_len == 0 {
             return Err("input FASTA sequences are empty".into());
         }
-        for (i, fs) in msa.iter().enumerate() {
+        for (i, fs) in msa.sequences.iter().enumerate() {
             if fs.sequence.len() != expected_len {
                 return Err(format!(
                     "sequence {} ({}) has length {}, expected {}",
@@ -45,8 +53,9 @@ mod cli {
             }
         }
         let newick_tree = nj(NJConfig {
-            msa,
-            hide_internal: true,
+            msa: msa.sequences,
+            show_internal: args.show_internal,
+            n_bootstrap_samples: args.n_bootstrap_samples,
         })?;
 
         if let Some(path) = args.output {
@@ -145,7 +154,7 @@ mod tests {
             sequence: "GG".into(),
         });
         assert_eq!(msa.len(), expected.len());
-        for (a, b) in msa.iter().zip(expected.iter()) {
+        for (a, b) in msa.into_iter().zip(expected.into_iter()) {
             assert_eq!(a.identifier, b.identifier);
             assert_eq!(a.sequence, b.sequence);
         }
@@ -185,8 +194,9 @@ mod tests {
         let input = ">A\nACG\n>B\nATG\n>C\nA-G\n";
         let msa = parse_fasta(input).expect("parse failed");
         let newick = nj(NJConfig {
-            msa,
-            hide_internal: false,
+            msa: msa.sequences,
+            show_internal: true,
+            n_bootstrap_samples: 1,
         })
         .expect("NJ failed");
         // The expected Newick string may vary depending on implementation details.

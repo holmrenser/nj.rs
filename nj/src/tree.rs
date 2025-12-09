@@ -31,14 +31,10 @@ impl TreeNode {
         }
     }
 
-    /// Exports the tree in Newick format.
-    ///
-    /// Branch lengths are formatted to three decimal places.
-    /// If `hide_internal` is true, internal node names are omitted from the output.
-    ///
-    /// # Panics
-    /// This function will panic if called on a node with only one child (invalid NJNode).
-    pub fn to_newick(&self, hide_internal: bool) -> String {
+    /// Recursively converts the tree to Newick format.
+    /// If hide_internal is true, internal node names are omitted.
+    /// Returns the Newick string representation of the tree.
+    fn to_newick_recursion(&self, hide_internal: bool) -> String {
         match &self.children {
             Some([left, right]) => {
                 let left_str = left.to_newick(hide_internal);
@@ -55,5 +51,12 @@ impl TreeNode {
             }
             None => self.name.clone(),
         }
+    }
+
+    /// Converts the tree to Newick format (with trailing semicolon).
+    pub fn to_newick(&self, hide_internal: bool) -> String {
+        let mut newick = self.to_newick_recursion(hide_internal);
+        newick.push(';');
+        newick
     }
 }
