@@ -206,7 +206,7 @@ checksum = "6e3d189da485332e96ba8a5ef646a311871abd7915bf06ac848a9117f19cf6e4"
 
 [[package]]
 name = "nj"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "bitvec",
  "clap",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "nj_js"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "nj",
  "serde-wasm-bindgen",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "nj_py"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "nj",
  "pyo3",
