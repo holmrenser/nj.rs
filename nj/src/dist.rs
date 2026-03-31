@@ -1,11 +1,14 @@
+use crate::MSA;
+use crate::alphabet::AlphabetEncoding;
+use crate::models::{ModelCalculation, pairwise_distance};
+use crate::nj::NJState;
 use crate::tree::TreeNode;
-use bitvec::prelude::{BitVec, Lsb0};
 
 /// Triangular distance matrix with node names
 #[derive(Clone, Debug)]
 pub struct DistMat {
-    data: Vec<f64>,
-    names: Vec<String>,
+    pub data: Vec<f64>,
+    pub names: Vec<String>,
 }
 
 /// (Lower) Triangular distance matrix implementation
@@ -49,6 +52,25 @@ impl DistMat {
         }
     }
 
+    pub fn from_msa<M, A>(msa: &MSA<A>) -> DistMat
+    where
+        M: ModelCalculation<A>,
+        A: AlphabetEncoding,
+    {
+        let n = msa.n_sequences;
+        let mut dist = DistMat::empty_with_names(msa.identifiers.clone());
+
+        for i in 0..n {
+            let s1 = &msa.sequences[i];
+            for j in 0..i {
+                let s2 = &msa.sequences[j];
+                let d = pairwise_distance::<M, A>(s1, s2);
+                dist.set(i, j, d);
+            }
+        }
+        dist
+    }
+
     /// Performs the Neighbor-Joining algorithm on the distance matrix.
     /// Returns the resulting tree as a (recursive) TreeNode struct.
     pub fn neighbor_joining(mut self: DistMat) -> Result<TreeNode, String> {
@@ -56,170 +78,13 @@ impl DistMat {
     }
 }
 
-/// Computes branch lengths for the new node joining i and j.
-/// Clamps lengths to be non-negative.
-fn compute_branch_lengths(
-    d_ij: f64,
-    row_sums: &[f64],
-    i: usize,
-    j: usize,
-    active_count: usize,
-) -> (f64, f64) {
-    let n = active_count as f64;
-
-    let li = (0.5 * d_ij + (row_sums[i] - row_sums[j]) / (2.0 * (n - 2.0))).max(0.0);
-    let lj = (d_ij - li).max(0.0);
-
-    (li, lj)
-}
-/// Internal state for the NJ algorithm.
-/// Holds the distance matrix, active nodes, row sums, and current tree nodes.
-struct NJState<'a> {
-    dist: &'a mut DistMat,
-    active: BitVec<u8, Lsb0>,
-    row_sums: Vec<f64>,
-    nodes: Vec<Option<TreeNode>>,
-    next_internal: usize,
-}
-
-/// Implementation of the NJ algorithm state and methods.
-impl<'a> NJState<'a> {
-    pub fn new(dist: &'a mut DistMat) -> Self {
-        let n = dist.dim();
-
-        let nodes = dist
-            .names
-            .iter()
-            .map(|name| Some(TreeNode::leaf(name.clone(), None)))
-            .collect();
-
-        let row_sums = (0..n)
-            .map(|i| (0..n).map(|j| dist.get(i, j)).sum())
-            .collect();
-
-        NJState {
-            dist,
-            active: BitVec::repeat(true, n),
-            row_sums,
-            nodes,
-            next_internal: n,
-        }
-    }
-
-    /// Run NJ and return a TreeNode or Err.
-    pub fn run(mut self) -> Result<TreeNode, String> {
-        let n = self.dist.dim();
-        if n == 0 {
-            return Err("Empty distance matrix".into());
-        }
-        if n == 1 {
-            return Ok(self.nodes[0].take().unwrap());
-        }
-
-        for _ in 0..(n - 2) {
-            let (i, j, d_ij) = self.select_min_q_pair().ok_or("No pair found")?;
-
-            let (li, lj) =
-                compute_branch_lengths(d_ij, &self.row_sums, i, j, self.active.count_ones());
-
-            self.join_nodes(i, j, li, lj);
-            self.active.set(j, false);
-
-            self.update_distances(i, j);
-        }
-
-        if self.active.count_ones() != 2 {
-            return Err(format!(
-                "Expected 2 active nodes but found {}",
-                self.active.count_ones()
-            ));
-        }
-
-        Ok(self.final_join())
-    }
-
-    /// Select pair i,j minimizing the Q-metric.
-    fn select_min_q_pair(&self) -> Option<(usize, usize, f64)> {
-        let n_active = self.active.count_ones() as f64;
-
-        (0..self.dist.dim())
-            .filter(|&i| self.active[i])
-            .flat_map(|i| {
-                (0..i).filter(move |&j| self.active[j]).map(move |j| {
-                    let d_ij = self.dist.get(i, j);
-                    let q = (n_active - 2.0) * d_ij - self.row_sums[i] - self.row_sums[j];
-                    (i, j, q, d_ij)
-                })
-            })
-            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
-            .map(|(i, j, _, d)| (i, j, d))
-    }
-
-    // Update distances after joining i (the new node) and removing j.
-    fn update_distances(&mut self, i: usize, j: usize) {
-        let d_ij = self.dist.get(i, j);
-
-        // iterate ones returns indices of active bits — efficient
-        for k in self.active.iter_ones() {
-            if k == i {
-                continue;
-            }
-            let d_ik = self.dist.get(i, k);
-            let d_jk = self.dist.get(j, k);
-            let d_new = 0.5 * (d_ik + d_jk - d_ij);
-
-            // maintain row sums incrementally
-            self.row_sums[i] += d_new - d_ik - d_jk;
-            self.row_sums[k] += d_new - d_ik - d_jk;
-
-            self.dist.set(i, k, d_new);
-        }
-
-        self.row_sums[j] = 0.0;
-    }
-
-    /// Join nodes i and j into a new internal node at index i.
-    fn join_nodes(&mut self, i: usize, j: usize, li: f64, lj: f64) {
-        let mut left = self.nodes[i].take().expect("node i exists");
-        left.len = li;
-
-        let mut right = self.nodes[j].take().expect("node j exists");
-        right.len = lj;
-
-        let name = format!("Node{}", self.next_internal);
-        self.next_internal += 1;
-
-        self.nodes[i] = Some(TreeNode::internal(
-            name,
-            Some([Box::new(left), Box::new(right)]),
-            0.0,
-        ));
-    }
-
-    /// Final join of the last two remaining active nodes.
-    fn final_join(mut self) -> TreeNode {
-        let mut it = self.active.iter_ones();
-        let i = it.next().unwrap();
-        let j = it.next().unwrap();
-
-        let d_ij = self.dist.get(i, j);
-
-        let mut left = self.nodes[i].take().unwrap();
-        let mut right = self.nodes[j].take().unwrap();
-
-        left.len = d_ij / 2.0;
-        right.len = d_ij / 2.0;
-
-        let name = format!("Node{}", self.next_internal);
-        TreeNode::internal(name, Some([Box::new(left), Box::new(right)]), 0.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::FastaSequence;
+    use crate::alphabet::DNA;
+    use crate::models::PDiff;
     use crate::msa::MSA;
+    use crate::tree::NameOrSupport;
 
     /// Recursively collects the names of all leaf nodes in the given NJNode tree.
     /// Used for testing correctness of tree structure.
@@ -231,7 +96,10 @@ mod tests {
                 l.append(&mut r);
                 l
             }
-            None => vec![node.name.clone()],
+            None => match node.label {
+                Some(NameOrSupport::Name(ref name)) => vec![name.clone()],
+                _ => vec![node.identifier.to_string()],
+            },
         }
     }
 
@@ -256,8 +124,8 @@ mod tests {
     fn test_dist_from_msa_basic() {
         // seq0 vs seq1 differ at middle position only
         let seqs: Vec<String> = vec!["ACG".into(), "ATG".into(), "A-G".into()];
-        let msa = MSA::from_unnamed_sequences(seqs);
-        let mat = msa.into_dist();
+        let msa = MSA::<DNA>::from_unnamed_sequences(seqs);
+        let mat = msa.into_dist::<PDiff>();
         // names default Seq0, Seq1, Seq2
         assert_eq!(mat.names, vec!["Seq0", "Seq1", "Seq2"]);
         // seq0 vs seq1: positions considered all three -> diffs 1/3
@@ -271,20 +139,9 @@ mod tests {
     #[test]
     fn test_dist_from_msa_no_overlap() {
         // no overlapping non-gap positions between the two sequences -> distance 0.0
-        let seqs = vec![
-            FastaSequence {
-                identifier: "X".into(),
-                sequence: "A--".into(),
-            },
-            FastaSequence {
-                identifier: "Y".into(),
-                sequence: "--A".into(),
-            },
-        ];
-        let msa = MSA::from_iter(seqs.into_iter());
-        //let seqs: Ve c<String> = vec!["ACG".into(), "ATG".into(), "A-G".into()];
-        //let msa = MSA::from_unnamed_sequences(seqs);
-        let mat = msa.into_dist();
+        let seqs = vec![("X".into(), "A--".into()), ("Y".into(), "--A".into())];
+        let msa = MSA::<DNA>::from_iter(seqs.into_iter());
+        let mat = msa.into_dist::<PDiff>();
         assert_eq!(mat.names, vec!["X", "Y"]);
         assert!((mat.get(0, 1) - 0.0).abs() < 1e-12);
     }
@@ -304,7 +161,7 @@ mod tests {
             .neighbor_joining()
             .expect("NJ should succeed for one taxon");
         assert!(tree.children.is_none());
-        assert_eq!(tree.name, "A");
+        assert!(matches!(tree.label, Some(NameOrSupport::Name(ref s)) if s == "A"));
     }
 
     #[test]
@@ -322,8 +179,8 @@ mod tests {
         // branch lengths stored on child nodes
         assert!(tree.children.is_some());
         let children = tree.children.as_ref().unwrap();
-        assert!((children[0].len - 0.3).abs() < 1e-12);
-        assert!((children[1].len - 0.3).abs() < 1e-12);
+        assert!((children[0].len.unwrap() - 0.3).abs() < 1e-12);
+        assert!((children[1].len.unwrap() - 0.3).abs() < 1e-12);
     }
 
     #[test]
@@ -347,8 +204,8 @@ mod tests {
             match &node.children {
                 None => return,
                 Some(children) => {
-                    assert!(children[0].len >= -1e-12, "left_len negative");
-                    assert!(children[1].len >= -1e-12, "right_len negative");
+                    assert!(children[0].len.unwrap() >= -1e-12, "left_len negative");
+                    assert!(children[1].len.unwrap() >= -1e-12, "right_len negative");
                     check_nonneg(children[0].as_ref());
                     check_nonneg(children[1].as_ref());
                 }
@@ -360,17 +217,20 @@ mod tests {
     #[test]
     fn test_to_newick_produces_valid_format() {
         // Build simple tree manually: root with two leaves
-        let left = TreeNode::leaf("L".into(), Some(0.1234));
-        let right = TreeNode::leaf("R".into(), Some(0.5678));
-        let root = TreeNode::internal("root".into(), Some([Box::new(left), Box::new(right)]), 0.0);
-        // to_newick hides internal names when requested
-        let s_hidden = root.to_newick(true);
+        let left = TreeNode::leaf(0, "L".into(), Some(0.1234));
+        let right = TreeNode::leaf(1, "R".into(), Some(0.5678));
+        let root = TreeNode::internal(
+            2,
+            Some([Box::new(left), Box::new(right)]),
+            Some(0.0),
+            Some(85),
+        );
+        let newick = root.to_newick();
         // Expect parentheses and two branch lengths formatted to 3 decimals (per implementation)
-        assert!(s_hidden.contains(":0.123"));
-        assert!(s_hidden.contains(":0.568"));
-        // with internal name shown, name appears at end
-        let s_named = root.to_newick(false);
-        assert!(s_named.ends_with("root;"));
+        assert!(newick.contains(":0.123"));
+        assert!(newick.contains(":0.568"));
+        assert!(newick.starts_with("("));
+        assert!(newick.ends_with(")85;"));
     }
 
     #[test]
@@ -379,6 +239,6 @@ mod tests {
         m.set(0, 1, 1.0);
         let tree = m.neighbor_joining().unwrap();
         let children = tree.children.unwrap();
-        assert!((children[0].len + children[1].len - 1.0).abs() < 1e-12);
+        assert!((children[0].len.unwrap() + children[1].len.unwrap() - 1.0).abs() < 1e-12);
     }
 }

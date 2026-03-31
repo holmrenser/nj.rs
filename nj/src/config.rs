@@ -1,8 +1,8 @@
+pub use crate::models::SubstitutionModel;
 pub use crate::msa::MSA;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
-#[derive(Clone, Debug, TS, Serialize, Deserialize)]
+#[derive(Clone, Debug, ts_rs::TS, Serialize, Deserialize)]
 #[ts(export, export_to = "../../wasm/types/lib_types.ts")]
 pub struct FastaSequence {
     pub identifier: String,
@@ -16,10 +16,10 @@ impl FastaSequence {
     }
 }
 
-#[derive(Serialize, Deserialize, TS, Clone, Debug)]
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug)]
 #[ts(export, export_to = "../../wasm/types/lib_types.ts")]
 pub struct NJConfig {
     pub msa: Vec<FastaSequence>,
-    pub show_internal: bool,
     pub n_bootstrap_samples: usize,
+    pub substitution_model: SubstitutionModel,
 }

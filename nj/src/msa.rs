@@ -1,18 +1,22 @@
 use crate::DistMat;
-use crate::config::FastaSequence;
+use crate::alphabet::AlphabetEncoding;
+use crate::models::ModelCalculation;
 use nanorand::Rng;
 use nanorand::WyRand;
+use std::collections::HashMap;
 
-pub struct MSA {
-    pub sequences: Vec<FastaSequence>,
+pub struct MSA<A: AlphabetEncoding> {
+    pub identifiers: Vec<String>,
+    pub sequences: Vec<Vec<A::Symbol>>,
     pub n_sequences: usize,
     pub n_characters: usize,
 }
 
-impl MSA {
+impl<A: AlphabetEncoding> MSA<A> {
     /// Creates a new, empty MSA.
     pub fn new() -> Self {
         Self {
+            identifiers: Vec::new(),
             sequences: Vec::new(),
             n_sequences: 0,
             n_characters: 0,
@@ -30,32 +34,37 @@ impl MSA {
     }
 
     /// Adds a FastaSequence to the MSA.
-    pub fn push(&mut self, seq: FastaSequence) {
+    pub fn push(&mut self, id: String, seq: String) {
+        let encoded: Vec<A::Symbol> = seq.as_bytes().iter().map(|&b| A::encode(b)).collect();
+        self.identifiers.push(id);
+        self.sequences.push(encoded);
         self.n_sequences += 1;
-        self.n_characters = seq.sequence.len();
-        self.sequences.push(seq);
+        self.n_characters = seq.len();
     }
 
+    fn push_encoded(&mut self, id: String, seq: Vec<A::Symbol>) {
+        self.identifiers.push(id);
+        self.sequences.push(seq);
+        self.n_sequences += 1;
+        self.n_characters = self.sequences[0].len();
+    }
+
+    /// Creates an MSA from a vector of unnamed sequences, assigning default names.
     pub fn from_unnamed_sequences(sequences: Vec<String>) -> Self {
-        let n_sequences = sequences.len();
-        let n_characters = if n_sequences == 0 {
-            0
-        } else {
-            sequences[0].len()
-        };
-        let s = sequences
-            .into_iter()
-            .enumerate()
-            .map(|(i, s)| FastaSequence {
-                identifier: format!("Seq{}", i),
-                sequence: s,
-            })
-            .collect();
-        MSA {
-            sequences: s,
-            n_sequences,
-            n_characters,
+        let mut msa = MSA::new();
+        for (i, seq) in sequences.into_iter().enumerate() {
+            msa.push(format!("Seq{}", i), seq);
         }
+        msa
+    }
+
+    /// Creates an index map from sequence identifiers to their indices in the MSA.
+    pub fn to_index_map(&self) -> HashMap<String, usize> {
+        self.identifiers
+            .iter()
+            .enumerate()
+            .map(|(i, identifier)| (identifier.clone(), i))
+            .collect()
     }
 
     /// Generates a bootstrap replicate of the MSA by resampling columns with replacement.
@@ -66,85 +75,205 @@ impl MSA {
             .collect();
 
         let mut new_msa = MSA::new();
-        for fs in &self.sequences {
-            let new_sequence: String = sampled_indices
+        for (orig_seq, identifier) in self.sequences.iter().zip(self.identifiers.iter()) {
+            let new_sequence = sampled_indices
                 .iter()
-                .map(|&i| fs.sequence.chars().nth(i).unwrap())
+                .map(|&i| *orig_seq.iter().nth(i).unwrap())
                 .collect();
-            new_msa.push(FastaSequence {
-                identifier: fs.identifier.clone(),
-                sequence: new_sequence,
-            });
+            new_msa.push_encoded(identifier.clone(), new_sequence);
         }
         new_msa
     }
 
-    /// Converts the MSA to a distance matrix using p-distance (proportion of differing sites).
-    pub fn into_dist(&self) -> DistMat {
-        let n = self.len();
-        let names: Vec<String> = self
-            .sequences
-            .clone()
-            .into_iter()
-            .map(|fs| fs.identifier.clone())
-            .collect();
-        let mut dist = DistMat::empty_with_names(names);
-
-        (0..n).for_each(|i| {
-            (0..i).for_each(|j| {
-                let (diffs, valid) = self.sequences[i]
-                    .sequence
-                    .chars()
-                    .zip(self.sequences[j].sequence.chars())
-                    .filter(|(a, b)| *a != '-' && *b != '-')
-                    .fold((0, 0), |(d, v), (a, b)| {
-                        (d + if a != b { 1 } else { 0 }, v + 1)
-                    });
-                let d = if valid > 0 {
-                    diffs as f64 / valid as f64
-                } else {
-                    0.0
-                };
-                dist.set(i, j, d);
-            })
-        });
-        dist
+    pub fn into_dist<M>(&self) -> DistMat
+    where
+        M: ModelCalculation<A>,
+    {
+        DistMat::from_msa::<M, A>(self)
     }
 }
 
-/// Allows iteration over the sequences in the MSA.
-impl IntoIterator for MSA {
-    type Item = FastaSequence;
-    type IntoIter = std::vec::IntoIter<FastaSequence>;
+impl<A: AlphabetEncoding> IntoIterator for MSA<A> {
+    type Item = (String, Vec<A::Symbol>);
+    type IntoIter = std::iter::Zip<std::vec::IntoIter<String>, std::vec::IntoIter<Vec<A::Symbol>>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.sequences.into_iter()
+        self.identifiers.into_iter().zip(self.sequences.into_iter())
     }
 }
 
-/// Allows creating an MSA from an iterator of FastaSequence.
-impl FromIterator<FastaSequence> for MSA {
-    fn from_iter<I: IntoIterator<Item = FastaSequence>>(iter: I) -> Self {
+impl<A: AlphabetEncoding> FromIterator<(String, String)> for MSA<A> {
+    fn from_iter<I: IntoIterator<Item = (String, String)>>(iter: I) -> Self {
         let mut msa = MSA::new();
-        for seq in iter {
-            msa.push(seq);
+        for (id, seq) in iter {
+            msa.push(id, seq);
         }
         msa
     }
 }
 
-/// Allows indexing into the MSA to get a specific FastaSequence.
-impl std::ops::Index<usize> for MSA {
-    type Output = FastaSequence;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::alphabet::{DNA, Protein};
 
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.sequences[index]
+    #[test]
+    fn test_msa_push_and_len() {
+        let mut msa = MSA::<DNA>::new();
+        msa.push("seq1".into(), "ACGT".into());
+        msa.push("seq2".into(), "AGGT".into());
+        assert_eq!(msa.len(), 2);
+        assert_eq!(msa.n_characters, 4);
     }
-}
 
-/// Allows mutable indexing into the MSA to get a specific FastaSequence.
-impl std::ops::IndexMut<usize> for MSA {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.sequences[index]
+    #[test]
+    fn test_msa_bootstrap() {
+        let mut msa = MSA::<DNA>::new();
+        msa.push("seq1".into(), "ACGT".into());
+        msa.push("seq2".into(), "AGGT".into());
+
+        let boot_msa = msa.bootstrap();
+        assert_eq!(boot_msa.len(), 2);
+        assert_eq!(boot_msa.n_characters, 4);
+    }
+
+    #[test]
+    fn test_msa_to_index_map() {
+        let mut msa = MSA::<DNA>::new();
+        msa.push("seq1".into(), "ACGT".into());
+        msa.push("seq2".into(), "AGGT".into());
+        let index_map = msa.to_index_map();
+        assert_eq!(index_map.get("seq1"), Some(&0));
+        assert_eq!(index_map.get("seq2"), Some(&1));
+    }
+
+    #[test]
+    fn test_msa_from_unnamed_sequences() {
+        let sequences = vec!["ACGT".into(), "AGGT".into()];
+        let msa = MSA::<DNA>::from_unnamed_sequences(sequences);
+        assert_eq!(msa.len(), 2);
+        assert_eq!(msa.identifiers[0], "Seq0");
+        assert_eq!(msa.identifiers[1], "Seq1");
+    }
+
+    #[test]
+    fn test_msa_into_iterator() {
+        let mut msa = MSA::<DNA>::new();
+        msa.push("seq1".into(), "ACGT".into());
+        msa.push("seq2".into(), "AGGT".into());
+        let mut iter = msa.into_iter();
+        let (id1, seq1) = iter.next().unwrap();
+        assert_eq!(id1, "seq1");
+        let (id2, seq2) = iter.next().unwrap();
+        assert_eq!(id2, "seq2");
+    }
+
+    #[test]
+    fn test_msa_from_iterator() {
+        let data = vec![
+            ("seq1".into(), "ACGT".into()),
+            ("seq2".into(), "AGGT".into()),
+        ];
+        let msa: MSA<DNA> = data.into_iter().collect();
+        assert_eq!(msa.len(), 2);
+        assert_eq!(msa.identifiers[0], "seq1");
+        assert_eq!(msa.identifiers[1], "seq2");
+    }
+
+    #[test]
+    fn test_msa_is_empty() {
+        let msa = MSA::<DNA>::new();
+        assert!(msa.is_empty());
+        let mut msa2 = MSA::<DNA>::new();
+        msa2.push("seq1".into(), "ACGT".into());
+        assert!(!msa2.is_empty());
+    }
+
+    #[test]
+    fn test_msa_protein() {
+        let mut msa = MSA::<Protein>::new();
+        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        assert_eq!(msa.len(), 2);
+        assert_eq!(msa.n_characters, 20);
+    }
+
+    #[test]
+    fn test_msa_bootstrap_protein() {
+        let mut msa = MSA::<Protein>::new();
+        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        let boot_msa = msa.bootstrap();
+        assert_eq!(boot_msa.len(), 2);
+        assert_eq!(boot_msa.n_characters, 20);
+    }
+
+    #[test]
+    fn test_msa_to_index_map_protein() {
+        let mut msa = MSA::<Protein>::new();
+        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        let index_map = msa.to_index_map();
+        assert_eq!(index_map.get("prot1"), Some(&0));
+        assert_eq!(index_map.get("prot2"), Some(&1));
+    }
+
+    #[test]
+    fn test_msa_from_unnamed_sequences_protein() {
+        let sequences = vec!["ACDEFGHIKLMNPQRSTVWY".into(), "ACDEFGHIKLMNPQRSTVWY".into()];
+        let msa = MSA::<Protein>::from_unnamed_sequences(sequences);
+        assert_eq!(msa.len(), 2);
+        assert_eq!(msa.identifiers[0], "Seq0");
+        assert_eq!(msa.identifiers[1], "Seq1");
+    }
+
+    #[test]
+    fn test_msa_into_iterator_protein() {
+        let mut msa = MSA::<Protein>::new();
+        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVW   Y".into());
+        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        let mut iter = msa.into_iter();
+        let (id1, seq1) = iter.next().unwrap();
+        assert_eq!(id1, "prot1");
+        let (id2, seq2) = iter.next().unwrap();
+        assert_eq!(id2, "prot2");
+    }
+    #[test]
+    fn test_msa_from_iterator_protein() {
+        let data = vec![
+            ("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into()),
+            ("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into()),
+        ];
+        let msa: MSA<Protein> = data.into_iter().collect();
+        assert_eq!(msa.len(), 2);
+        assert_eq!(msa.identifiers[0], "prot1");
+        assert_eq!(msa.identifiers[1], "prot2");
+    }
+
+    #[test]
+    fn test_msa_is_empty_protein() {
+        let msa = MSA::<Protein>::new();
+        assert!(msa.is_empty());
+        let mut msa2 = MSA::<Protein>::new();
+        msa2.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        assert!(!msa2.is_empty());
+    }
+
+    #[test]
+    fn test_msa_into_dist_dna() {
+        let mut msa = MSA::<DNA>::new();
+        msa.push("seq1".into(), "ACGT".into());
+        msa.push("seq2".into(), "AGGT".into());
+        let dist_mat = msa.into_dist::<crate::models::PDiff>();
+        assert_eq!(dist_mat.names.len(), 2);
+    }
+
+    #[test]
+    fn test_msa_into_dist_protein() {
+        let mut msa = MSA::<Protein>::new();
+        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        let dist_mat = msa.into_dist::<crate::models::PDiff>();
+        assert_eq!(dist_mat.names.len(), 2);
     }
 }

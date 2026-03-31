@@ -1,4 +1,4 @@
-use nj::{FastaSequence, MSA, NJConfig, nj};
+use nj::{FastaSequence, NJConfig, models::SubstitutionModel, nj};
 use std::fs;
 use std::path::PathBuf;
 
@@ -22,18 +22,59 @@ mod cli {
         #[arg(short = 'b', long, default_value_t = 100)]
         pub n_bootstrap_samples: usize,
 
-        /// Show internal node names in Newick output
-        #[arg(short = 'i', long, default_value_t = false)]
-        pub show_internal: bool,
+        /// Substitution model to use
+        #[arg(short = 'm', long, value_name = "MODEL", default_value = "p-diff")]
+        pub substitution_model: SubstitutionModel,
     }
 
-    pub fn run() -> Result<(), String> {
-        let args = Args::parse();
+    /// Parses a FASTA-formatted string into an MSA.
+    /// Returns an error if the input is malformed.
+    pub fn parse_fasta(input: &str) -> Result<Vec<FastaSequence>, String> {
+        let mut msa = Vec::<FastaSequence>::new();
+        let mut current_name: Option<String> = None;
+        let mut current_seq = String::new();
 
-        let fasta = fs::read_to_string(&args.input)
-            .map_err(|e| format!("failed to read {}: {e}", args.input.display()))?;
-
-        let msa = super::parse_fasta(&fasta)?;
+        for line in input.lines() {
+            // Trim whitespace
+            let trimmed = line.trim();
+            // Skip empty lines
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Header line
+            if let Some(fasta_header) = trimmed.strip_prefix('>') {
+                // Save previous sequence if present
+                if let Some(identifier) = current_name.replace(fasta_header.trim().to_string()) {
+                    if current_seq.is_empty() {
+                        return Err(format!(
+                            "Sequence with identifier '{}' has no sequence",
+                            identifier
+                        ));
+                    }
+                    msa.push(FastaSequence {
+                        identifier,
+                        sequence: current_seq,
+                    });
+                    // Reset current sequence
+                    current_seq = String::new();
+                }
+            // Sequence line
+            } else {
+                if current_name.is_none() {
+                    return Err("FASTA sequence encountered before any header".into());
+                }
+                // Append to current sequence
+                current_seq.push_str(trimmed);
+            }
+        }
+        // Push the last sequence if present.
+        if let Some(identifier) = current_name {
+            msa.push(FastaSequence {
+                identifier,
+                sequence: current_seq,
+            });
+        }
+        // Validate sequences
         if msa.is_empty() {
             return Err("input FASTA contains no sequences".into());
         }
@@ -41,7 +82,7 @@ mod cli {
         if expected_len == 0 {
             return Err("input FASTA sequences are empty".into());
         }
-        for (i, fs) in msa.sequences.iter().enumerate() {
+        for (i, fs) in msa.iter().enumerate() {
             if fs.sequence.len() != expected_len {
                 return Err(format!(
                     "sequence {} ({}) has length {}, expected {}",
@@ -52,11 +93,26 @@ mod cli {
                 ));
             }
         }
-        let newick_tree = nj(NJConfig {
-            msa: msa.sequences,
-            show_internal: args.show_internal,
+
+        Ok(msa)
+    }
+
+    /// Runs the CLI application.
+    pub fn run() -> Result<(), String> {
+        let args = Args::parse();
+
+        let fasta = fs::read_to_string(&args.input)
+            .map_err(|e| format!("failed to read {}: {e}", args.input.display()))?;
+
+        let msa = parse_fasta(&fasta)?;
+
+        let nj_conf = NJConfig {
+            msa,
             n_bootstrap_samples: args.n_bootstrap_samples,
-        })?;
+            substitution_model: args.substitution_model,
+        };
+
+        let newick_tree = nj(nj_conf)?;
 
         if let Some(path) = args.output {
             fs::write(&path, format!("{newick_tree}\n"))
@@ -80,61 +136,45 @@ fn main() -> Result<(), String> {
     }
 }
 
-fn parse_fasta(input: &str) -> Result<MSA, String> {
-    let mut msa = MSA::new();
-    let mut current_name: Option<String> = None;
-    let mut current_seq = String::new();
-
-    for line in input.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix('>') {
-            if let Some(name) = current_name.replace(rest.trim().to_string()) {
-                msa.push(FastaSequence {
-                    identifier: name,
-                    sequence: current_seq,
-                });
-                current_seq = String::new();
-            }
-        } else {
-            if current_name.is_none() {
-                return Err("FASTA sequence encountered before any header".into());
-            }
-            current_seq.push_str(trimmed);
-        }
-    }
-
-    if let Some(name) = current_name {
-        msa.push(FastaSequence {
-            identifier: name,
-            sequence: current_seq,
-        });
-    }
-
-    Ok(msa)
-}
-
 #[cfg(test)]
-mod tests {
+mod main_tests {
+    use super::cli::parse_fasta;
     use super::*;
 
     #[test]
-    fn test_parse_empty_input() {
-        let msa = parse_fasta("").expect("should parse empty input");
-        assert!(msa.is_empty());
+    fn test_parse_basic_fasta() {
+        let input = ">seq1\nACGT\n>seq2\nTGCA\n";
+        let expected = vec![
+            FastaSequence {
+                identifier: "seq1".into(),
+                sequence: "ACGT".into(),
+            },
+            FastaSequence {
+                identifier: "seq2".into(),
+                sequence: "TGCA".into(),
+            },
+        ];
+        let msa = parse_fasta(input).expect("parse failed");
+        assert_eq!(msa.len(), expected.len());
+        for (a, b) in msa.into_iter().zip(expected.into_iter()) {
+            assert_eq!(a.identifier, b.identifier);
+            assert_eq!(a.sequence, b.sequence);
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_input_is_error() {
+        assert!(parse_fasta("").is_err());
     }
 
     #[test]
     fn test_parse_single_sequence() {
-        let input = ">seq1\nACGT\n";
+        let input = ">s1\nAA\nCC\n";
+        let expected = vec![FastaSequence {
+            identifier: "s1".into(),
+            sequence: "AACC".into(),
+        }];
         let msa = parse_fasta(input).expect("parse failed");
-        let mut expected = MSA::new();
-        expected.push(FastaSequence {
-            identifier: "seq1".into(),
-            sequence: "ACGT".into(),
-        });
         assert_eq!(msa.len(), expected.len());
         assert_eq!(msa[0].identifier, expected[0].identifier);
         assert_eq!(msa[0].sequence, expected[0].sequence);
@@ -142,17 +182,19 @@ mod tests {
 
     #[test]
     fn test_parse_multiple_sequences_and_multiline_sequence() {
-        let input = ">s1\nAA\nCC\n>s2\nGG\n";
+        let input = ">s1\nAA\nCC\n>s2\nGG\nTT\n";
+        let expected = vec![
+            FastaSequence {
+                identifier: "s1".into(),
+                sequence: "AACC".into(),
+            },
+            FastaSequence {
+                identifier: "s2".into(),
+                sequence: "GGTT".into(),
+            },
+        ];
         let msa = parse_fasta(input).expect("parse failed");
-        let mut expected = MSA::new();
-        expected.push(FastaSequence {
-            identifier: "s1".into(),
-            sequence: "AACC".into(),
-        });
-        expected.push(FastaSequence {
-            identifier: "s2".into(),
-            sequence: "GG".into(),
-        });
+
         assert_eq!(msa.len(), expected.len());
         for (a, b) in msa.into_iter().zip(expected.into_iter()) {
             assert_eq!(a.identifier, b.identifier);
@@ -162,13 +204,18 @@ mod tests {
 
     #[test]
     fn test_parse_with_blank_lines_and_trimming() {
-        let input = "\n  > name \n   ACTG   \n\n";
+        let input = ">s1\nAA\nCC\n>s2\nGG\nTT\n";
+        let expected = vec![
+            FastaSequence {
+                identifier: "s1".into(),
+                sequence: "AACC".into(),
+            },
+            FastaSequence {
+                identifier: "s2".into(),
+                sequence: "GGTT".into(),
+            },
+        ];
         let msa = parse_fasta(input).expect("parse failed");
-        let mut expected = MSA::new();
-        expected.push(FastaSequence {
-            identifier: "name".into(),
-            sequence: "ACTG".into(),
-        });
         assert_eq!(msa.len(), expected.len());
         assert_eq!(msa[0].identifier, expected[0].identifier);
         assert_eq!(msa[0].sequence, expected[0].sequence);
@@ -181,22 +228,84 @@ mod tests {
     }
 
     #[test]
-    fn test_header_with_no_sequence_produces_empty_sequence() {
+    fn test_header_with_no_sequence_is_error() {
         let input = ">only_header\n";
-        let msa = parse_fasta(input).expect("parse failed");
-        assert_eq!(msa.len(), 1);
-        assert_eq!(msa[0].identifier, "only_header");
-        assert_eq!(msa[0].sequence, "");
+        assert!(parse_fasta(input).is_err())
     }
 
     #[test]
-    fn test_neighbor_joining_three_taxa() {
+    fn test_inconsistent_sequence_lengths_are_error() {
+        let input = ">s1\nACGT\n>s2\nAC\n";
+        assert!(parse_fasta(input).is_err());
+    }
+
+    #[test]
+    fn test_empty_sequence_is_error() {
+        let input = ">s1\n\n>s2\nACGT\n";
+        assert!(parse_fasta(input).is_err());
+    }
+
+    #[test]
+    fn test_parse_fasta_with_whitespace() {
+        let input = "   >seq1   \n  ACGT  \n>seq2\n TGCA \n ";
+        let expected = vec![
+            FastaSequence {
+                identifier: "seq1".into(),
+                sequence: "ACGT".into(),
+            },
+            FastaSequence {
+                identifier: "seq2".into(),
+                sequence: "TGCA".into(),
+            },
+        ];
+        let msa = parse_fasta(input).expect("parse failed");
+        assert_eq!(msa.len(), expected.len());
+        for (a, b) in msa.into_iter().zip(expected.into_iter()) {
+            assert_eq!(a.identifier, b.identifier);
+            assert_eq!(a.sequence, b.sequence);
+        }
+    }
+
+    #[test]
+    fn test_parse_fasta_with_no_sequences_is_error() {
+        let input = ">seq1\n>seq2\n";
+        assert!(parse_fasta(input).is_err());
+    }
+
+    #[test]
+    fn test_nj_single_taxon() {
+        let input = ">A\nACGT\n";
+        let msa = parse_fasta(input).expect("parse failed");
+        let newick = nj(NJConfig {
+            msa,
+            n_bootstrap_samples: 1,
+            substitution_model: SubstitutionModel::PDiff,
+        })
+        .expect("NJ failed");
+        assert_eq!(newick, "A;");
+    }
+
+    #[test]
+    fn test_nj_two_taxa() {
+        let input = ">A\nACG\n>B\nATG\n";
+        let msa = parse_fasta(input).expect("parse failed");
+        let newick = nj(NJConfig {
+            msa,
+            n_bootstrap_samples: 1,
+            substitution_model: SubstitutionModel::PDiff,
+        })
+        .expect("NJ failed");
+        assert_eq!(newick, "(A:0.167,B:0.167);");
+    }
+
+    #[test]
+    fn test_nj_three_taxa() {
         let input = ">A\nACG\n>B\nATG\n>C\nA-G\n";
         let msa = parse_fasta(input).expect("parse failed");
         let newick = nj(NJConfig {
-            msa: msa.sequences,
-            show_internal: true,
+            msa,
             n_bootstrap_samples: 1,
+            substitution_model: SubstitutionModel::PDiff,
         })
         .expect("NJ failed");
         // The expected Newick string may vary depending on implementation details.
@@ -204,5 +313,30 @@ mod tests {
         assert!(newick.contains("A"));
         assert!(newick.contains("B"));
         assert!(newick.contains("C"));
+    }
+
+    #[test]
+    fn test_nj_protein_sequences() {
+        let input = ">Prot1\nACDEFGHIK\n>Prot2\nACDFFGHIK\n";
+        let msa = parse_fasta(input).expect("parse failed");
+        let newick = nj(NJConfig {
+            msa,
+            n_bootstrap_samples: 1,
+            substitution_model: SubstitutionModel::PDiff,
+        })
+        .expect("NJ failed");
+        assert!(newick.contains("Prot1"));
+        assert!(newick.contains("Prot2"));
+    }
+
+    #[test]
+    fn test_nj_empty_msa_is_error() {
+        let msa = Vec::<FastaSequence>::new();
+        let result = nj(NJConfig {
+            msa,
+            n_bootstrap_samples: 1,
+            substitution_model: SubstitutionModel::PDiff,
+        });
+        assert!(result.is_err());
     }
 }

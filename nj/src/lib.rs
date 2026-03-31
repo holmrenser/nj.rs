@@ -73,7 +73,7 @@
 //! let msa = vec!["ACG".into(), "ATG".into(), "A-G".into()];
 //! let tm = tri_from_msa(&msa, None);
 //! let tree = neighbor_joining(tm).expect("NJ failed");
-//! let newick = tree.to_newick(true);
+//! let newick = tree.to_newick();
 //! ```
 //!
 //! # Errors & Panics
@@ -90,41 +90,56 @@
 //! behavior with gaps, two- and three-taxon NJ behavior, and Newick output
 //! formatting. They also validate that branch lengths are non-negative after
 //! clamping.
+mod alphabet;
 mod config;
 mod dist;
+pub mod models;
 mod msa;
+mod nj;
 mod tree;
 use bitvec::prelude::{BitVec, Lsb0, bitvec};
 use std::collections::HashMap;
 
+use crate::alphabet::{Alphabet, AlphabetEncoding, DNA, Protein};
+use crate::config::SubstitutionModel;
 pub use crate::config::{FastaSequence, MSA, NJConfig};
 use crate::dist::DistMat;
-use crate::tree::TreeNode;
+use crate::models::{JukesCantor, Kimura2P, ModelCalculation, PDiff, Poisson};
+use crate::tree::{NameOrSupport, TreeNode};
 
 /// Collect leaves into a BitVec according to index map.
-fn bitset_of(node: &TreeNode, idx: &HashMap<String, usize>, out: &mut BitVec<u8, Lsb0>) {
+fn bitset_of(
+    node: &TreeNode,
+    idx: &HashMap<String, usize>,
+    out: &mut BitVec<u8, Lsb0>,
+) -> Result<(), String> {
     match &node.children {
-        None => {
-            let i = idx[&node.name];
-            out.set(i, true);
-        }
+        None => match &node.label {
+            Some(NameOrSupport::Name(name)) => {
+                let i = idx[name];
+                out.set(i, true);
+                Ok(())
+            }
+            _ => Err("Leaf node without a name label".into()),
+        },
         Some([l, r]) => {
-            bitset_of(l, idx, out);
-            bitset_of(r, idx, out);
+            bitset_of(l, idx, out)?;
+            bitset_of(r, idx, out)?;
+            Ok(())
         }
     }
 }
 
-pub fn count_clades_bitvec_noset(
+pub fn count_clades(
     tree: &TreeNode,
     idx: &HashMap<String, usize>,
     n_taxa: usize,
     counter: &mut HashMap<Vec<u8>, usize>,
-) {
+) -> Result<(), String> {
     if let Some([l, r]) = &tree.children {
         // compute clade bitvec
         let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
-        bitset_of(tree, idx, &mut bv);
+        bitset_of(tree, idx, &mut bv).unwrap();
 
         let n = bv.count_ones();
         if n > 1 && n < n_taxa {
@@ -136,109 +151,196 @@ pub fn count_clades_bitvec_noset(
         }
 
         // recursion
-        count_clades_bitvec_noset(l, idx, n_taxa, counter);
-        count_clades_bitvec_noset(r, idx, n_taxa, counter);
+        count_clades(l, idx, n_taxa, counter)?;
+        count_clades(r, idx, n_taxa, counter)?;
     }
+    Ok(())
 }
 
-pub fn bootstrap_clade_counts(
-    trees: &[TreeNode],
+/// Performs bootstrap sampling and counts clades across bootstrap trees.
+pub fn bootstrap_clade_counts<A: AlphabetEncoding, M: ModelCalculation<A>>(
+    msa: &MSA<A>,
+    n_bootstrap_samples: usize,
+) -> Option<HashMap<Vec<u8>, usize>> {
+    if n_bootstrap_samples == 0 {
+        return None;
+    }
+    let idx_map: HashMap<String, usize> = msa.to_index_map();
+    let mut counter = HashMap::new();
+    for _ in 0..n_bootstrap_samples {
+        let tree = msa
+            .bootstrap()
+            .into_dist::<M>()
+            .neighbor_joining()
+            .expect("NJ bootstrap iteration failed");
+        count_clades(&tree, &idx_map, msa.n_sequences, &mut counter).unwrap();
+    }
+    Some(counter)
+}
+
+/// Recursively adds bootstrap support values to internal nodes of the tree.
+fn add_bootstrap_to_tree(
+    node: &mut TreeNode,
     idx: &HashMap<String, usize>,
     n_taxa: usize,
-) -> HashMap<Vec<u8>, usize> {
-    let mut counter = HashMap::new();
+    counts: &HashMap<Vec<u8>, usize>,
+) {
+    if node.children.is_some() {
+        // compute clade bitvec
+        let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
+        bitset_of(node, idx, &mut bv).unwrap();
 
-    for t in trees {
-        count_clades_bitvec_noset(t, idx, n_taxa, &mut counter);
+        let n = bv.count_ones();
+        if n > 1 && n < n_taxa {
+            if let Some(c) = counts.get(&bv.as_raw_slice().to_vec()) {
+                node.label = Some(NameOrSupport::Support(*c));
+            }
+        }
+
+        // recursion
+        if let Some([l, r]) = &mut node.children {
+            add_bootstrap_to_tree(l, idx, n_taxa, counts);
+            add_bootstrap_to_tree(r, idx, n_taxa, counts);
+        }
     }
-
-    counter
 }
 
-/// Main entry point for Neighbor-Joining tree construction.
-/// Takes an NJConfig with MSA sequences, internal node name hiding option,
-/// and number of bootstrap samples.
-pub fn nj(conf: NJConfig) -> Result<String, String> {
-    let msa = MSA::from_iter(conf.msa.into_iter());
-    let clade_counts = if conf.n_bootstrap_samples > 0 {
-        let mut idx_map = HashMap::new();
-        for (i, fs) in msa.sequences.iter().enumerate() {
-            idx_map.insert(fs.identifier.clone(), i);
-        }
-        let bootstap_trees: Vec<TreeNode> = (0..conf.n_bootstrap_samples)
-            .map(|i| {
-                println!(
-                    "Generating bootstrap tree {}/{}",
-                    i + 1,
-                    conf.n_bootstrap_samples
-                );
-                return msa.bootstrap().into_dist().neighbor_joining().unwrap();
-            })
-            .collect();
-        Some(bootstrap_clade_counts(
-            &bootstap_trees,
-            &idx_map,
-            msa.n_sequences,
-        ))
-    } else {
-        None
-    };
+pub fn detect_alphabet(msa: &[FastaSequence]) -> Result<Alphabet, String> {
+    // Simple heuristic: if any character is > A,C,G,T,N, assume protein
+    let mut is_protein = false;
 
-    let main_tree = msa.into_dist().neighbor_joining()?;
-    let newick = match clade_counts {
-        Some(counts) => {
-            // annotate internal nodes with bootstrap support
-            fn annotate_bootstrap(
-                node: &mut TreeNode,
-                idx: &HashMap<String, usize>,
-                n_taxa: usize,
-                counts: &HashMap<Vec<u8>, usize>,
-            ) {
-                if node.children.is_some() {
-                    // compute clade bitvec
-                    let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
-                    bitset_of(node, idx, &mut bv);
-
-                    let n = bv.count_ones();
-                    if n > 1 && n < n_taxa {
-                        if let Some(c) = counts.get(&bv.as_raw_slice().to_vec()) {
-                            node.name = format!("{}:{}", node.name, c);
-                        }
-                    }
-
-                    // recursion
-                    if let Some([l, r]) = &mut node.children {
-                        annotate_bootstrap(l, idx, n_taxa, counts);
-                        annotate_bootstrap(r, idx, n_taxa, counts);
-                    }
+    for seq in msa {
+        for c in seq.sequence.bytes() {
+            match c.to_ascii_uppercase() {
+                b'A' | b'C' | b'G' | b'T' | b'U' | b'N' | b'-' => { /* still possible DNA */ }
+                _ => {
+                    is_protein = true;
+                    break;
                 }
             }
-
-            let mut idx_map = HashMap::new();
-            for (i, fs) in msa.sequences.iter().enumerate() {
-                idx_map.insert(fs.identifier.clone(), i);
-            }
-            let mut main_tree_mut = main_tree;
-            annotate_bootstrap(&mut main_tree_mut, &idx_map, msa.n_sequences, &counts);
-            main_tree_mut.to_newick(conf.show_internal)
         }
-        None => main_tree.to_newick(conf.show_internal),
+        if is_protein {
+            break;
+        }
+    }
+
+    Ok(if is_protein {
+        Alphabet::Protein
+    } else {
+        Alphabet::DNA
+    })
+}
+
+/// Runs Neighbor-Joining on the given MSA with specified model and number of bootstrap samples.
+/// Returns Newick string of the resulting tree.
+fn run_nj<A, M>(msa: MSA<A>, n_bootstrap_samples: usize) -> Result<String, String>
+where
+    A: AlphabetEncoding,
+    M: ModelCalculation<A>,
+{
+    // bootstrap_clade_counts should be generic over A,M too (not shown here)
+    let clade_counts = bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples);
+
+    let mut main_tree = msa.into_dist::<M>().neighbor_joining()?;
+    let newick = match clade_counts {
+        Some(counts) => {
+            let main_idx_map: HashMap<String, usize> = msa.to_index_map();
+            add_bootstrap_to_tree(&mut main_tree, &main_idx_map, msa.n_sequences, &counts);
+            main_tree.to_newick()
+        }
+        None => main_tree.to_newick(),
     };
-    //let newick = main_tree.to_newick(conf.hide_internal);
     Ok(newick)
+}
+
+/// Main Neighbor-Joining wrapper function.
+pub fn nj(conf: NJConfig) -> Result<String, String> {
+    if conf.msa.is_empty() {
+        return Err("Input MSA is empty".into());
+    }
+    let alphabet = detect_alphabet(&conf.msa)?;
+    match alphabet {
+        Alphabet::DNA => {
+            // build MSA specialized to DNA (pre-encodes using DNA::encode)
+            let msa =
+                MSA::<DNA>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
+
+            match conf.substitution_model {
+                SubstitutionModel::PDiff => run_nj::<DNA, PDiff>(msa, conf.n_bootstrap_samples),
+                SubstitutionModel::JukesCantor => {
+                    run_nj::<DNA, JukesCantor>(msa, conf.n_bootstrap_samples)
+                }
+                SubstitutionModel::Kimura2P => {
+                    run_nj::<DNA, Kimura2P>(msa, conf.n_bootstrap_samples)
+                }
+                // Poisson is a protein model — either disallow here or handle by error:
+                SubstitutionModel::Poisson => {
+                    Err("Poisson is a protein model; cannot use with DNA".into())
+                }
+            }
+        }
+
+        Alphabet::Protein => {
+            let msa =
+                MSA::<Protein>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
+
+            match conf.substitution_model {
+                // Poisson is valid for protein:
+                SubstitutionModel::Poisson => {
+                    run_nj::<Protein, Poisson>(msa, conf.n_bootstrap_samples)
+                }
+                SubstitutionModel::PDiff => run_nj::<Protein, PDiff>(msa, conf.n_bootstrap_samples),
+                // DNA-only models should be rejected for proteins:
+                SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
+                    Err("Selected model is for DNA; cannot use with Protein".into())
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::SubstitutionModel;
+
+    #[test]
+    fn test_nj_wrapper_simple_tree() {
+        let sequences = vec![
+            FastaSequence {
+                identifier: "A".into(),
+                sequence: "ACGTCG".into(),
+            },
+            FastaSequence {
+                identifier: "B".into(),
+                sequence: "ACG-GC".into(),
+            },
+        ];
+        let conf = NJConfig {
+            msa: sequences,
+            n_bootstrap_samples: 0,
+            substitution_model: SubstitutionModel::PDiff,
+        };
+        let newick = nj(conf).expect("NJ failed");
+        assert_eq!(newick, "(A:0.167,B:0.167);");
+    }
 
     #[test]
     fn test_nj_wrapper_adds_semicolon() {
-        let msa = MSA::from_unnamed_sequences(vec!["A".into(), "A".into()]);
+        let sequences = vec![
+            FastaSequence {
+                identifier: "Seq0".into(),
+                sequence: "A".into(),
+            },
+            FastaSequence {
+                identifier: "Seq1".into(),
+                sequence: "A".into(),
+            },
+        ];
         let conf = NJConfig {
-            msa: msa.sequences,
-            show_internal: false,
-            n_bootstrap_samples: 1,
+            msa: sequences,
+            n_bootstrap_samples: 0,
+            substitution_model: SubstitutionModel::PDiff,
         };
         let out = nj(conf).unwrap();
         assert!(out.ends_with(';'));
@@ -246,15 +348,113 @@ mod tests {
 
     #[test]
     fn test_nj_deterministic_order() {
-        let msa = MSA::from_unnamed_sequences(vec!["ACG".into(), "ATG".into(), "AGG".into()]);
+        let sequences = vec![
+            FastaSequence {
+                identifier: "Seq0".into(),
+                sequence: "ACGTCG".into(),
+            },
+            FastaSequence {
+                identifier: "Seq1".into(),
+                sequence: "ACG-GC".into(),
+            },
+            FastaSequence {
+                identifier: "Seq2".into(),
+                sequence: "ACGCGT".into(),
+            },
+        ];
         let conf = NJConfig {
-            msa: msa.sequences,
-            show_internal: false,
-            n_bootstrap_samples: 1,
+            msa: sequences,
+            n_bootstrap_samples: 0,
+            substitution_model: SubstitutionModel::PDiff,
         };
 
         let t1 = nj(conf.clone()).unwrap();
         let t2 = nj(conf).unwrap();
         assert_eq!(t1, t2);
+    }
+
+    #[test]
+    fn test_nj_wrapper_empty_msa() {
+        let conf = NJConfig {
+            msa: vec![],
+            n_bootstrap_samples: 0,
+            substitution_model: SubstitutionModel::PDiff,
+        };
+        let result = nj(conf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_nj_wrapper_incorrect_model_for_alphabet() {
+        let sequences = vec![
+            FastaSequence {
+                identifier: "Seq0".into(),
+                sequence: "ACGTCG".into(),
+            },
+            FastaSequence {
+                identifier: "Seq1".into(),
+                sequence: "ACG-GC".into(),
+            },
+        ];
+        let conf = NJConfig {
+            msa: sequences,
+            n_bootstrap_samples: 0,
+            substitution_model: SubstitutionModel::Poisson, // protein model for DNA MSA
+        };
+        let result = nj(conf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_nj_wrapper_incorrect_model_for_protein() {
+        let sequences = vec![
+            FastaSequence {
+                identifier: "Seq0".into(),
+                sequence: "ACDEFGH".into(),
+            },
+            FastaSequence {
+                identifier: "Seq1".into(),
+                sequence: "ACD-FGH".into(),
+            },
+        ];
+        let conf = NJConfig {
+            msa: sequences,
+            n_bootstrap_samples: 0,
+            substitution_model: SubstitutionModel::JukesCantor, // DNA model for protein MSA
+        };
+        let result = nj(conf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_detect_alphabet_dna() {
+        let msa = vec![
+            FastaSequence {
+                identifier: "Seq0".into(),
+                sequence: "ACGTACGT".into(),
+            },
+            FastaSequence {
+                identifier: "Seq1".into(),
+                sequence: "ACG-ACGT".into(),
+            },
+        ];
+        let alphabet = detect_alphabet(&msa).expect("detection failed");
+        assert_eq!(alphabet, Alphabet::DNA);
+    }
+
+    #[test]
+    fn test_detect_alphabet_protein() {
+        let msa = vec![
+            FastaSequence {
+                identifier: "Seq0".into(),
+                sequence: "ACDEFGHIK".into(),
+            },
+            FastaSequence {
+                identifier: "Seq1".into(),
+                sequence: "ACD-FGHIK".into(),
+            },
+        ];
+        let alphabet = detect_alphabet(&msa).expect("detection failed");
+        assert_eq!(alphabet, Alphabet::Protein);
     }
 }
