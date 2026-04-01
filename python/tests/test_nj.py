@@ -1,120 +1,106 @@
 import pytest
-import nj_py
+from nj_py import nj
 
 
-def make_config(msa, substitution_model="PDiff", n_bootstrap_samples=0):
-    return {
-        "msa": [{"identifier": name, "sequence": seq} for name, seq in msa],
-        "substitution_model": substitution_model,
-        "n_bootstrap_samples": n_bootstrap_samples,
-    }
+def msa(*pairs):
+    return [{"identifier": name, "sequence": seq} for name, seq in pairs]
 
 
 class TestBasic:
     def test_returns_string(self):
-        config = make_config([("A", "ACGT"), ("B", "ACGA")])
-        result = nj_py.nj(config)
+        result = nj(msa(("A", "ACGT"), ("B", "ACGA")))
         assert isinstance(result, str)
 
     def test_newick_format(self):
-        config = make_config([("A", "ACGT"), ("B", "ACGA")])
-        result = nj_py.nj(config)
+        result = nj(msa(("A", "ACGT"), ("B", "ACGA")))
         assert result.startswith("(")
         assert result.endswith(";")
 
     def test_two_identical_taxa_zero_distance(self):
-        config = make_config([("A", "ACGT"), ("B", "ACGT")])
-        result = nj_py.nj(config)
+        result = nj(msa(("A", "ACGT"), ("B", "ACGT")))
         assert result == "(A:0.000,B:0.000);"
 
     def test_three_taxa_contains_all_leaves(self):
-        config = make_config([("Sp1", "ACGT"), ("Sp2", "ACGA"), ("Sp3", "AGGT")])
-        result = nj_py.nj(config)
+        result = nj(msa(("Sp1", "ACGT"), ("Sp2", "ACGA"), ("Sp3", "AGGT")))
         assert "Sp1" in result
         assert "Sp2" in result
         assert "Sp3" in result
 
     def test_deterministic(self):
-        config = make_config([("A", "ACGTCG"), ("B", "ACG-GC"), ("C", "ACGCGT")])
-        assert nj_py.nj(config) == nj_py.nj(config)
+        sequences = msa(("A", "ACGTCG"), ("B", "ACG-GC"), ("C", "ACGCGT"))
+        assert nj(sequences) == nj(sequences)
 
 
 class TestSubstitutionModels:
     def test_jukes_cantor_dna(self):
-        config = make_config(
-            [("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")],
+        result = nj(
+            msa(("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")),
             substitution_model="JukesCantor",
         )
-        result = nj_py.nj(config)
         assert result.endswith(";")
 
     def test_kimura2p_dna(self):
-        config = make_config(
-            [("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")],
+        result = nj(
+            msa(("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")),
             substitution_model="Kimura2P",
         )
-        result = nj_py.nj(config)
         assert result.endswith(";")
 
     def test_pdiff_protein(self):
-        config = make_config(
-            [("A", "ACDEFGH"), ("B", "ACDEFGK"), ("C", "ACDLFGH")],
+        result = nj(
+            msa(("A", "ACDEFGH"), ("B", "ACDEFGK"), ("C", "ACDLFGH")),
             substitution_model="PDiff",
         )
-        result = nj_py.nj(config)
         assert result.endswith(";")
 
     def test_poisson_protein(self):
-        config = make_config(
-            [("A", "ACDEFGH"), ("B", "ACDEFGK"), ("C", "ACDLFGH")],
+        result = nj(
+            msa(("A", "ACDEFGH"), ("B", "ACDEFGK"), ("C", "ACDLFGH")),
             substitution_model="Poisson",
         )
-        result = nj_py.nj(config)
         assert result.endswith(";")
 
 
 class TestErrors:
     def test_empty_msa_raises(self):
-        config = {"msa": [], "substitution_model": "PDiff", "n_bootstrap_samples": 0}
         with pytest.raises(ValueError, match="[Ee]mpty"):
-            nj_py.nj(config)
+            nj([])
 
     def test_poisson_on_dna_raises(self):
-        config = make_config([("A", "ACGT"), ("B", "ACGA")], substitution_model="Poisson")
         with pytest.raises(ValueError):
-            nj_py.nj(config)
+            nj(msa(("A", "ACGT"), ("B", "ACGA")), substitution_model="Poisson")
 
     def test_jukes_cantor_on_protein_raises(self):
-        config = make_config(
-            [("A", "ACDEFGH"), ("B", "ACDEFGK")],
-            substitution_model="JukesCantor",
-        )
         with pytest.raises(ValueError):
-            nj_py.nj(config)
+            nj(msa(("A", "ACDEFGH"), ("B", "ACDEFGK")), substitution_model="JukesCantor")
 
     def test_kimura2p_on_protein_raises(self):
-        config = make_config(
-            [("A", "ACDEFGH"), ("B", "ACDEFGK")],
-            substitution_model="Kimura2P",
-        )
         with pytest.raises(ValueError):
-            nj_py.nj(config)
+            nj(msa(("A", "ACDEFGH"), ("B", "ACDEFGK")), substitution_model="Kimura2P")
 
 
 class TestBootstrap:
-    def test_bootstrap_zero_samples_no_support_values(self):
-        config = make_config(
-            [("A", "ACGTACGT"), ("B", "ACGAACGA"), ("C", "AGGTCGGT"), ("D", "TGGTCGGT")],
+    def test_bootstrap_zero_samples(self):
+        result = nj(
+            msa(("A", "ACGTACGT"), ("B", "ACGAACGA"), ("C", "AGGTCGGT"), ("D", "TGGTCGGT")),
             n_bootstrap_samples=0,
         )
-        result = nj_py.nj(config)
         assert result.endswith(";")
 
     def test_bootstrap_nonzero_returns_valid_newick(self):
-        config = make_config(
-            [("A", "ACGTACGT"), ("B", "ACGAACGA"), ("C", "AGGTCGGT"), ("D", "TGGTCGGT")],
+        result = nj(
+            msa(("A", "ACGTACGT"), ("B", "ACGAACGA"), ("C", "AGGTCGGT"), ("D", "TGGTCGGT")),
             n_bootstrap_samples=10,
         )
-        result = nj_py.nj(config)
         assert isinstance(result, str)
         assert result.endswith(";")
+
+    def test_on_progress_called_correct_number_of_times(self):
+        calls = []
+        nj(
+            msa(("A", "ACGTACGT"), ("B", "ACGAACGA"), ("C", "AGGTCGGT"), ("D", "TGGTCGGT")),
+            n_bootstrap_samples=5,
+            on_progress=lambda current, total: calls.append((current, total)),
+        )
+        assert len(calls) == 5
+        assert calls[-1] == (5, 5)

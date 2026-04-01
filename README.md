@@ -54,17 +54,18 @@ pip install nj_py
 from tqdm import tqdm
 from nj_py import nj
 
-config = {
-    "msa": [
-        {"identifier": "A", "sequence": "ACGT"},
-        {"identifier": "B", "sequence": "ACCT"},
-    ],
-    "n_bootstrap_samples": 100,
-    "substitution_model": "JukesCantor",
-}
+msa = [
+    {"identifier": "A", "sequence": "ACGT"},
+    {"identifier": "B", "sequence": "ACCT"},
+]
 
-with tqdm(total=100) as progress_bar:
-    newick = nj(config, on_progress=lambda current, total: progress_bar.update(1))
+with tqdm(total=100) as bar:
+    newick = nj(
+        msa,
+        substitution_model="JukesCantor",
+        n_bootstrap_samples=100,
+        on_progress=lambda current, total: bar.update(1),
+    )
 ```
 
 ## JavaScript / WASM

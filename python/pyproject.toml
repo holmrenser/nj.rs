@@ -30,8 +30,9 @@ testpaths = ["tests"]
 dev = ["pytest>=8"]
 
 [tool.maturin]
-# Optional: include the wasm build artifacts in the wheel
-strip = false                        # keep symbols for debugging if needed
-bindings = "pyo3"                    # we are using PyO3
-features = ["pyo3/extension-module"] # Rust features
-out = "dist"                         # output directory for wheels
+strip = false
+bindings = "pyo3"
+features = ["pyo3/extension-module"]
+out = "dist"
+module-name = "nj_py._nj_py"
+python-source = "."

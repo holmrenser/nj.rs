@@ -31,7 +31,7 @@
 //! config or NJ failure.
 
 #[pyo3::pymodule]
-mod nj_py {
+mod _nj_py {
     use ::nj::nj as lib_nj;
     use pyo3::exceptions::PyValueError;
     use pyo3::prelude::*;
