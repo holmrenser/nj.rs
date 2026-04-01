@@ -1,6 +1,6 @@
 {
   "name": "@holmrenser/nj",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Neighbor-Joining WASM bindings (Rust → WASM → JS/TS).",
   "license": "MIT",
   "type": "module",

@@ -13,6 +13,11 @@ wasm:
 python:
 	$(MAKE) -C python
 
+test:
+	cargo test
+	$(MAKE) -C wasm test
+	$(MAKE) -C python test
+
 bump:
 	cargo workspaces version patch --yes --no-git-commit
 	$(MAKE) sync-version VERSION=$$(toml get Cargo.toml workspace.package.version)

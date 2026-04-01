@@ -4,5 +4,8 @@ all:
 	CARGO_TARGET_DIR=target RUSTFLAGS=${RUSTFLAGS} cargo build
 	CARGO_TARGET_DIR=target maturin develop --release --uv
 
+test:
+	uv run pytest
+
 clean:
 	CARGO_TARGET_DIR=target cargo clean
