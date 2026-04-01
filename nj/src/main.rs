@@ -134,6 +134,8 @@ mod cli {
     /// Parses arguments, reads the FASTA file, runs NJ, and writes the Newick
     /// output to stdout or a file.
     pub fn run() -> Result<(), String> {
+        use indicatif::{ProgressBar, ProgressStyle};
+
         let args = Args::parse();
 
         let fasta = fs::read_to_string(&args.input)
@@ -141,13 +143,32 @@ mod cli {
 
         let msa = parse_fasta(&fasta)?;
 
+        let n_bootstrap = args.n_bootstrap_samples;
         let nj_conf = NJConfig {
             msa,
-            n_bootstrap_samples: args.n_bootstrap_samples,
+            n_bootstrap_samples: n_bootstrap,
             substitution_model: args.substitution_model,
         };
 
-        let newick_tree = nj(nj_conf)?;
+        let callback: Option<Box<dyn Fn(usize, usize)>> = if n_bootstrap > 0 {
+            let pb = ProgressBar::new(n_bootstrap as u64);
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} bootstrap",
+                )
+                .unwrap(),
+            );
+            Some(Box::new(move |current, _total| {
+                pb.set_position(current as u64);
+                if current == _total {
+                    pb.finish_and_clear();
+                }
+            }))
+        } else {
+            None
+        };
+
+        let newick_tree = nj(nj_conf, callback)?;
 
         if let Some(path) = args.output {
             fs::write(&path, format!("{newick_tree}\n"))
@@ -312,11 +333,14 @@ mod main_tests {
     fn test_nj_single_taxon() {
         let input = ">A\nACGT\n";
         let msa = parse_fasta(input).expect("parse failed");
-        let newick = nj(NJConfig {
-            msa,
-            n_bootstrap_samples: 1,
-            substitution_model: SubstitutionModel::PDiff,
-        })
+        let newick = nj(
+            NJConfig {
+                msa,
+                n_bootstrap_samples: 1,
+                substitution_model: SubstitutionModel::PDiff,
+            },
+            None,
+        )
         .expect("NJ failed");
         assert_eq!(newick, "A;");
     }
@@ -325,11 +349,14 @@ mod main_tests {
     fn test_nj_two_taxa() {
         let input = ">A\nACG\n>B\nATG\n";
         let msa = parse_fasta(input).expect("parse failed");
-        let newick = nj(NJConfig {
-            msa,
-            n_bootstrap_samples: 1,
-            substitution_model: SubstitutionModel::PDiff,
-        })
+        let newick = nj(
+            NJConfig {
+                msa,
+                n_bootstrap_samples: 1,
+                substitution_model: SubstitutionModel::PDiff,
+            },
+            None,
+        )
         .expect("NJ failed");
         assert_eq!(newick, "(A:0.167,B:0.167);");
     }
@@ -338,11 +365,14 @@ mod main_tests {
     fn test_nj_three_taxa() {
         let input = ">A\nACG\n>B\nATG\n>C\nA-G\n";
         let msa = parse_fasta(input).expect("parse failed");
-        let newick = nj(NJConfig {
-            msa,
-            n_bootstrap_samples: 1,
-            substitution_model: SubstitutionModel::PDiff,
-        })
+        let newick = nj(
+            NJConfig {
+                msa,
+                n_bootstrap_samples: 1,
+                substitution_model: SubstitutionModel::PDiff,
+            },
+            None,
+        )
         .expect("NJ failed");
         // The expected Newick string may vary depending on implementation details.
         // Here we just check that it contains the correct taxa names.
@@ -355,11 +385,14 @@ mod main_tests {
     fn test_nj_protein_sequences() {
         let input = ">Prot1\nACDEFGHIK\n>Prot2\nACDFFGHIK\n";
         let msa = parse_fasta(input).expect("parse failed");
-        let newick = nj(NJConfig {
-            msa,
-            n_bootstrap_samples: 1,
-            substitution_model: SubstitutionModel::PDiff,
-        })
+        let newick = nj(
+            NJConfig {
+                msa,
+                n_bootstrap_samples: 1,
+                substitution_model: SubstitutionModel::PDiff,
+            },
+            None,
+        )
         .expect("NJ failed");
         assert!(newick.contains("Prot1"));
         assert!(newick.contains("Prot2"));
@@ -368,11 +401,14 @@ mod main_tests {
     #[test]
     fn test_nj_empty_msa_is_error() {
         let msa = Vec::<SequenceObject>::new();
-        let result = nj(NJConfig {
-            msa,
-            n_bootstrap_samples: 1,
-            substitution_model: SubstitutionModel::PDiff,
-        });
+        let result = nj(
+            NJConfig {
+                msa,
+                n_bootstrap_samples: 1,
+                substitution_model: SubstitutionModel::PDiff,
+            },
+            None,
+        );
         assert!(result.is_err());
     }
 }

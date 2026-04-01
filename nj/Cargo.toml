@@ -1,12 +1,15 @@
 [package]
 name = "nj"
-description = "Neighbor Joining, fast phylogenetic tree construction. Library and CLI."
+description = "Neighbor-Joining phylogenetic tree inference. Auto-detects DNA/protein, supports multiple substitution models and bootstrap."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-
+readme = "../README.md"
+documentation = "https://docs.rs/nj"
+keywords = ["phylogenetics", "bioinformatics", "newick", "neighbor-joining"]
+categories = ["science", "algorithms", "command-line-utilities"]
 
 [lib]
 crate-type = ["rlib"]
@@ -29,10 +32,14 @@ version = "4"
 features = ["derive"]
 optional = true
 
+[dependencies.indicatif]
+version = "0.17"
+optional = true
+
 
 [features]
 # default build only builds the library
 default = []
 
 # feature to build CLI
-cli = ["clap"]
+cli = ["clap", "indicatif"]

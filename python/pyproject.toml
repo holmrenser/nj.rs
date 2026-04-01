@@ -1,12 +1,23 @@
 [project]
 name = "nj_py"
-version = "0.0.12"
+version = "0.0.13"
 requires-python = ">=3.10"
+readme = "../README.md"
+description = "Neighbor-Joining phylogenetic tree inference. Auto-detects DNA/protein, supports multiple substitution models and bootstrap."
+license = "MIT"
+keywords = ["phylogenetics", "bioinformatics", "neighbor-joining", "newick"]
 classifiers = [
   "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Intended Audience :: Science/Research",
 ]
+
+[project.urls]
+Repository = "https://github.com/holmrenser/nj.rs"
+"Bug Tracker" = "https://github.com/holmrenser/nj.rs/issues"
 
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
