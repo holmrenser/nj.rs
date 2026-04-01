@@ -54,6 +54,7 @@ jobs:
             target: x86_64
     steps:
       - uses: actions/checkout@v4
+      - run: cp README.md python/README.md
       - uses: actions/setup-python@v5
         with:
           # One Python is enough to *find* an interpreter, but for wheels you
@@ -83,6 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: cp README.md python/README.md
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -157,6 +159,7 @@ jobs:
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
+      - run: cp README.md wasm/README.md
       - run: npm ci
         working-directory: wasm
       - run: CARGO_TARGET_DIR=target npm run build
