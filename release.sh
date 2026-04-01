@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euxo pipefail
 
 kind="$1"
 
@@ -11,7 +11,7 @@ case "$kind" in
     ;;
 esac
 
-cargo workspaces version "$kind" --yes --no-git-tag
+cargo workspaces version "$kind" --yes --no-git-commit
 
 if git diff --quiet Cargo.toml Cargo.lock */Cargo.toml; then
   exit 0
