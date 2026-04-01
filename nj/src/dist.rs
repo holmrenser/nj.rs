@@ -7,8 +7,8 @@ use crate::tree::TreeNode;
 /// Triangular distance matrix with node names
 #[derive(Clone, Debug)]
 pub struct DistMat {
-    pub data: Vec<f64>,
-    pub names: Vec<String>,
+    pub data: Vec<f64>,     // stores only i > j entries
+    pub names: Vec<String>, // names of the nodes corresponding to indices
 }
 
 /// (Lower) Triangular distance matrix implementation
@@ -18,7 +18,7 @@ impl DistMat {
     pub fn empty_with_names(names: Vec<String>) -> Self {
         let n = names.len();
         Self {
-            data: vec![0.0; n * (n - 1) / 2],
+            data: vec![0.0; n.saturating_mul(n.saturating_sub(1)) / 2],
             names,
         }
     }
@@ -121,24 +121,40 @@ mod tests {
     }
 
     #[test]
+    fn test_dist_empty_with_names_zero_dim() {
+        let m = DistMat::empty_with_names(vec![]);
+        assert_eq!(m.dim(), 0);
+        assert!(m.data.is_empty());
+    }
+
+    #[test]
     fn test_dist_from_msa_basic() {
         // seq0 vs seq1 differ at middle position only
         let seqs: Vec<String> = vec!["ACG".into(), "ATG".into(), "A-G".into()];
-        let msa = MSA::<DNA>::from_unnamed_sequences(seqs);
+        let msa = MSA::<DNA>::from_unnamed_sequences(seqs).unwrap();
         let mat = msa.into_dist::<PDiff>();
         // names default Seq0, Seq1, Seq2
         assert_eq!(mat.names, vec!["Seq0", "Seq1", "Seq2"]);
-        // seq0 vs seq1: positions considered all three -> diffs 1/3
+        // seq0 vs seq1: one mismatch across three aligned positions -> 1/3
         assert!((mat.get(0, 1) - (1.0 / 3.0)).abs() < 1e-12);
-        // seq0 vs seq2: position considered 0 and 2 -> diffs 0/2
+        // seq0 vs seq2: the gap position is ignored for mismatches and the full alignment length is still the denominator
         assert!((mat.get(0, 2) - 0.0).abs() < 1e-12);
-        // seq1 vs seq2: compare positions 0 and 2 -> both are identical ('A' vs 'A', 'G' vs 'G') -> 0.0
+        // seq1 vs seq2: same behavior, no non-gap mismatches so the distance is 0.0
         assert!((mat.get(1, 2) - 0.0).abs() < 1e-12);
     }
 
     #[test]
+    fn test_dist_from_msa_gap_positions_do_not_change_denominator() {
+        let seqs: Vec<String> = vec!["AT-".into(), "ACG".into()];
+        let msa = MSA::<DNA>::from_unnamed_sequences(seqs).unwrap();
+        let mat = msa.into_dist::<PDiff>();
+
+        assert!((mat.get(0, 1) - (1.0 / 3.0)).abs() < 1e-12);
+    }
+
+    #[test]
     fn test_dist_from_msa_no_overlap() {
-        // no overlapping non-gap positions between the two sequences -> distance 0.0
+        // no non-gap mismatches are counted, so the distance remains 0.0
         let seqs = vec![("X".into(), "A--".into()), ("Y".into(), "--A".into())];
         let msa = MSA::<DNA>::from_iter(seqs.into_iter());
         let mat = msa.into_dist::<PDiff>();
@@ -162,6 +178,13 @@ mod tests {
             .expect("NJ should succeed for one taxon");
         assert!(tree.children.is_none());
         assert!(matches!(tree.label, Some(NameOrSupport::Name(ref s)) if s == "A"));
+    }
+
+    #[test]
+    fn test_neighbor_joining_empty_matrix_returns_error() {
+        let m = DistMat::empty_with_names(vec![]);
+        let err = m.neighbor_joining().unwrap_err();
+        assert_eq!(err, "Empty distance matrix");
     }
 
     #[test]

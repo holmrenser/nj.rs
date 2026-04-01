@@ -1,4 +1,4 @@
-use nj::{FastaSequence, NJConfig, models::SubstitutionModel, nj};
+use nj::{NJConfig, SequenceObject, models::SubstitutionModel, nj};
 use std::fs;
 use std::path::PathBuf;
 
@@ -29,8 +29,8 @@ mod cli {
 
     /// Parses a FASTA-formatted string into an MSA.
     /// Returns an error if the input is malformed.
-    pub fn parse_fasta(input: &str) -> Result<Vec<FastaSequence>, String> {
-        let mut msa = Vec::<FastaSequence>::new();
+    pub fn parse_fasta(input: &str) -> Result<Vec<SequenceObject>, String> {
+        let mut msa = Vec::<SequenceObject>::new();
         let mut current_name: Option<String> = None;
         let mut current_seq = String::new();
 
@@ -51,7 +51,7 @@ mod cli {
                             identifier
                         ));
                     }
-                    msa.push(FastaSequence {
+                    msa.push(SequenceObject {
                         identifier,
                         sequence: current_seq,
                     });
@@ -69,7 +69,13 @@ mod cli {
         }
         // Push the last sequence if present.
         if let Some(identifier) = current_name {
-            msa.push(FastaSequence {
+            if current_seq.is_empty() {
+                return Err(format!(
+                    "Sequence with identifier '{}' has no sequence",
+                    identifier
+                ));
+            }
+            msa.push(SequenceObject {
                 identifier,
                 sequence: current_seq,
             });
@@ -137,6 +143,7 @@ fn main() -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "cli")]
 mod main_tests {
     use super::cli::parse_fasta;
     use super::*;
@@ -145,11 +152,11 @@ mod main_tests {
     fn test_parse_basic_fasta() {
         let input = ">seq1\nACGT\n>seq2\nTGCA\n";
         let expected = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "seq1".into(),
                 sequence: "ACGT".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "seq2".into(),
                 sequence: "TGCA".into(),
             },
@@ -170,7 +177,7 @@ mod main_tests {
     #[test]
     fn test_parse_single_sequence() {
         let input = ">s1\nAA\nCC\n";
-        let expected = vec![FastaSequence {
+        let expected = vec![SequenceObject {
             identifier: "s1".into(),
             sequence: "AACC".into(),
         }];
@@ -184,11 +191,11 @@ mod main_tests {
     fn test_parse_multiple_sequences_and_multiline_sequence() {
         let input = ">s1\nAA\nCC\n>s2\nGG\nTT\n";
         let expected = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "s1".into(),
                 sequence: "AACC".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "s2".into(),
                 sequence: "GGTT".into(),
             },
@@ -204,13 +211,13 @@ mod main_tests {
 
     #[test]
     fn test_parse_with_blank_lines_and_trimming() {
-        let input = ">s1\nAA\nCC\n>s2\nGG\nTT\n";
+        let input = "\n  >s1    \nAA   \nCC\n\n>s2  \nGG\nTT\n";
         let expected = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "s1".into(),
                 sequence: "AACC".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "s2".into(),
                 sequence: "GGTT".into(),
             },
@@ -249,11 +256,11 @@ mod main_tests {
     fn test_parse_fasta_with_whitespace() {
         let input = "   >seq1   \n  ACGT  \n>seq2\n TGCA \n ";
         let expected = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "seq1".into(),
                 sequence: "ACGT".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "seq2".into(),
                 sequence: "TGCA".into(),
             },
@@ -331,7 +338,7 @@ mod main_tests {
 
     #[test]
     fn test_nj_empty_msa_is_error() {
-        let msa = Vec::<FastaSequence>::new();
+        let msa = Vec::<SequenceObject>::new();
         let result = nj(NJConfig {
             msa,
             n_bootstrap_samples: 1,

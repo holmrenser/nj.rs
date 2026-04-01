@@ -33,29 +33,45 @@ impl<A: AlphabetEncoding> MSA<A> {
         self.sequences.len()
     }
 
+    fn validate_sequence_length(&self, seq_len: usize) -> Result<(), String> {
+        if self.n_sequences > 0 && seq_len != self.n_characters {
+            return Err(format!(
+                "All sequences must have the same length. Expected {}, got {}",
+                self.n_characters, seq_len
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Adds a FastaSequence to the MSA.
-    pub fn push(&mut self, id: String, seq: String) {
+    pub fn push(&mut self, id: String, seq: String) -> Result<(), String> {
         let encoded: Vec<A::Symbol> = seq.as_bytes().iter().map(|&b| A::encode(b)).collect();
+        self.validate_sequence_length(encoded.len())?;
         self.identifiers.push(id);
         self.sequences.push(encoded);
         self.n_sequences += 1;
         self.n_characters = seq.len();
+        Ok(())
     }
 
-    fn push_encoded(&mut self, id: String, seq: Vec<A::Symbol>) {
+    fn push_encoded(&mut self, id: String, seq: Vec<A::Symbol>) -> Result<(), String> {
+        let seq_len = seq.len();
+        self.validate_sequence_length(seq_len)?;
         self.identifiers.push(id);
         self.sequences.push(seq);
         self.n_sequences += 1;
-        self.n_characters = self.sequences[0].len();
+        self.n_characters = seq_len;
+        Ok(())
     }
 
     /// Creates an MSA from a vector of unnamed sequences, assigning default names.
-    pub fn from_unnamed_sequences(sequences: Vec<String>) -> Self {
+    pub fn from_unnamed_sequences(sequences: Vec<String>) -> Result<Self, String> {
         let mut msa = MSA::new();
         for (i, seq) in sequences.into_iter().enumerate() {
-            msa.push(format!("Seq{}", i), seq);
+            msa.push(format!("Seq{}", i), seq)?;
         }
-        msa
+        Ok(msa)
     }
 
     /// Creates an index map from sequence identifiers to their indices in the MSA.
@@ -68,7 +84,7 @@ impl<A: AlphabetEncoding> MSA<A> {
     }
 
     /// Generates a bootstrap replicate of the MSA by resampling columns with replacement.
-    pub fn bootstrap(&self) -> Self {
+    pub fn bootstrap(&self) -> Result<Self, String> {
         let mut rng = WyRand::new();
         let sampled_indices: Vec<usize> = (0..self.n_characters)
             .map(|_| rng.generate_range(0..self.n_characters))
@@ -80,9 +96,9 @@ impl<A: AlphabetEncoding> MSA<A> {
                 .iter()
                 .map(|&i| *orig_seq.iter().nth(i).unwrap())
                 .collect();
-            new_msa.push_encoded(identifier.clone(), new_sequence);
+            new_msa.push_encoded(identifier.clone(), new_sequence)?;
         }
-        new_msa
+        Ok(new_msa)
     }
 
     pub fn into_dist<M>(&self) -> DistMat
@@ -106,7 +122,8 @@ impl<A: AlphabetEncoding> FromIterator<(String, String)> for MSA<A> {
     fn from_iter<I: IntoIterator<Item = (String, String)>>(iter: I) -> Self {
         let mut msa = MSA::new();
         for (id, seq) in iter {
-            msa.push(id, seq);
+            msa.push(id, seq)
+                .expect("All sequences in an MSA must have the same length");
         }
         msa
     }
@@ -120,19 +137,27 @@ mod tests {
     #[test]
     fn test_msa_push_and_len() {
         let mut msa = MSA::<DNA>::new();
-        msa.push("seq1".into(), "ACGT".into());
-        msa.push("seq2".into(), "AGGT".into());
+        msa.push("seq1".into(), "ACGT".into()).unwrap();
+        msa.push("seq2".into(), "AGGT".into()).unwrap();
         assert_eq!(msa.len(), 2);
         assert_eq!(msa.n_characters, 4);
     }
 
     #[test]
+    fn test_msa_push_rejects_ragged_alignment() {
+        let mut msa = MSA::<DNA>::new();
+        msa.push("seq1".into(), "ACGT".into()).unwrap();
+        let err = msa.push("seq2".into(), "AGG".into()).unwrap_err();
+        assert!(err.contains("All sequences must have the same length"));
+    }
+
+    #[test]
     fn test_msa_bootstrap() {
         let mut msa = MSA::<DNA>::new();
-        msa.push("seq1".into(), "ACGT".into());
-        msa.push("seq2".into(), "AGGT".into());
+        msa.push("seq1".into(), "ACGT".into()).unwrap();
+        msa.push("seq2".into(), "AGGT".into()).unwrap();
 
-        let boot_msa = msa.bootstrap();
+        let boot_msa = msa.bootstrap().unwrap();
         assert_eq!(boot_msa.len(), 2);
         assert_eq!(boot_msa.n_characters, 4);
     }
@@ -140,8 +165,8 @@ mod tests {
     #[test]
     fn test_msa_to_index_map() {
         let mut msa = MSA::<DNA>::new();
-        msa.push("seq1".into(), "ACGT".into());
-        msa.push("seq2".into(), "AGGT".into());
+        msa.push("seq1".into(), "ACGT".into()).unwrap();
+        msa.push("seq2".into(), "AGGT".into()).unwrap();
         let index_map = msa.to_index_map();
         assert_eq!(index_map.get("seq1"), Some(&0));
         assert_eq!(index_map.get("seq2"), Some(&1));
@@ -150,7 +175,7 @@ mod tests {
     #[test]
     fn test_msa_from_unnamed_sequences() {
         let sequences = vec!["ACGT".into(), "AGGT".into()];
-        let msa = MSA::<DNA>::from_unnamed_sequences(sequences);
+        let msa = MSA::<DNA>::from_unnamed_sequences(sequences).unwrap();
         assert_eq!(msa.len(), 2);
         assert_eq!(msa.identifiers[0], "Seq0");
         assert_eq!(msa.identifiers[1], "Seq1");
@@ -159,12 +184,12 @@ mod tests {
     #[test]
     fn test_msa_into_iterator() {
         let mut msa = MSA::<DNA>::new();
-        msa.push("seq1".into(), "ACGT".into());
-        msa.push("seq2".into(), "AGGT".into());
+        msa.push("seq1".into(), "ACGT".into()).unwrap();
+        msa.push("seq2".into(), "AGGT".into()).unwrap();
         let mut iter = msa.into_iter();
-        let (id1, seq1) = iter.next().unwrap();
+        let (id1, _) = iter.next().unwrap();
         assert_eq!(id1, "seq1");
-        let (id2, seq2) = iter.next().unwrap();
+        let (id2, _) = iter.next().unwrap();
         assert_eq!(id2, "seq2");
     }
 
@@ -185,15 +210,17 @@ mod tests {
         let msa = MSA::<DNA>::new();
         assert!(msa.is_empty());
         let mut msa2 = MSA::<DNA>::new();
-        msa2.push("seq1".into(), "ACGT".into());
+        msa2.push("seq1".into(), "ACGT".into()).unwrap();
         assert!(!msa2.is_empty());
     }
 
     #[test]
     fn test_msa_protein() {
         let mut msa = MSA::<Protein>::new();
-        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into());
-        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
+        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
         assert_eq!(msa.len(), 2);
         assert_eq!(msa.n_characters, 20);
     }
@@ -201,9 +228,11 @@ mod tests {
     #[test]
     fn test_msa_bootstrap_protein() {
         let mut msa = MSA::<Protein>::new();
-        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into());
-        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into());
-        let boot_msa = msa.bootstrap();
+        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
+        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
+        let boot_msa = msa.bootstrap().unwrap();
         assert_eq!(boot_msa.len(), 2);
         assert_eq!(boot_msa.n_characters, 20);
     }
@@ -211,8 +240,10 @@ mod tests {
     #[test]
     fn test_msa_to_index_map_protein() {
         let mut msa = MSA::<Protein>::new();
-        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into());
-        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
+        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
         let index_map = msa.to_index_map();
         assert_eq!(index_map.get("prot1"), Some(&0));
         assert_eq!(index_map.get("prot2"), Some(&1));
@@ -221,7 +252,7 @@ mod tests {
     #[test]
     fn test_msa_from_unnamed_sequences_protein() {
         let sequences = vec!["ACDEFGHIKLMNPQRSTVWY".into(), "ACDEFGHIKLMNPQRSTVWY".into()];
-        let msa = MSA::<Protein>::from_unnamed_sequences(sequences);
+        let msa = MSA::<Protein>::from_unnamed_sequences(sequences).unwrap();
         assert_eq!(msa.len(), 2);
         assert_eq!(msa.identifiers[0], "Seq0");
         assert_eq!(msa.identifiers[1], "Seq1");
@@ -230,12 +261,14 @@ mod tests {
     #[test]
     fn test_msa_into_iterator_protein() {
         let mut msa = MSA::<Protein>::new();
-        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVW   Y".into());
-        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
+        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
         let mut iter = msa.into_iter();
-        let (id1, seq1) = iter.next().unwrap();
+        let (id1, _) = iter.next().unwrap();
         assert_eq!(id1, "prot1");
-        let (id2, seq2) = iter.next().unwrap();
+        let (id2, _) = iter.next().unwrap();
         assert_eq!(id2, "prot2");
     }
     #[test]
@@ -255,15 +288,16 @@ mod tests {
         let msa = MSA::<Protein>::new();
         assert!(msa.is_empty());
         let mut msa2 = MSA::<Protein>::new();
-        msa2.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        msa2.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
         assert!(!msa2.is_empty());
     }
 
     #[test]
     fn test_msa_into_dist_dna() {
         let mut msa = MSA::<DNA>::new();
-        msa.push("seq1".into(), "ACGT".into());
-        msa.push("seq2".into(), "AGGT".into());
+        msa.push("seq1".into(), "ACGT".into()).unwrap();
+        msa.push("seq2".into(), "AGGT".into()).unwrap();
         let dist_mat = msa.into_dist::<crate::models::PDiff>();
         assert_eq!(dist_mat.names.len(), 2);
     }
@@ -271,8 +305,10 @@ mod tests {
     #[test]
     fn test_msa_into_dist_protein() {
         let mut msa = MSA::<Protein>::new();
-        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into());
-        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into());
+        msa.push("prot1".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
+        msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into())
+            .unwrap();
         let dist_mat = msa.into_dist::<crate::models::PDiff>();
         assert_eq!(dist_mat.names.len(), 2);
     }

@@ -102,7 +102,7 @@ use std::collections::HashMap;
 
 use crate::alphabet::{Alphabet, AlphabetEncoding, DNA, Protein};
 use crate::config::SubstitutionModel;
-pub use crate::config::{FastaSequence, MSA, NJConfig};
+pub use crate::config::{MSA, NJConfig, SequenceObject};
 use crate::dist::DistMat;
 use crate::models::{JukesCantor, Kimura2P, ModelCalculation, PDiff, Poisson};
 use crate::tree::{NameOrSupport, TreeNode};
@@ -161,21 +161,21 @@ pub fn count_clades(
 pub fn bootstrap_clade_counts<A: AlphabetEncoding, M: ModelCalculation<A>>(
     msa: &MSA<A>,
     n_bootstrap_samples: usize,
-) -> Option<HashMap<Vec<u8>, usize>> {
+) -> Result<Option<HashMap<Vec<u8>, usize>>, String> {
     if n_bootstrap_samples == 0 {
-        return None;
+        return Ok(None);
     }
     let idx_map: HashMap<String, usize> = msa.to_index_map();
     let mut counter = HashMap::new();
     for _ in 0..n_bootstrap_samples {
         let tree = msa
-            .bootstrap()
+            .bootstrap()?
             .into_dist::<M>()
             .neighbor_joining()
             .expect("NJ bootstrap iteration failed");
-        count_clades(&tree, &idx_map, msa.n_sequences, &mut counter).unwrap();
+        count_clades(&tree, &idx_map, msa.n_sequences, &mut counter)?;
     }
-    Some(counter)
+    Ok(Some(counter))
 }
 
 /// Recursively adds bootstrap support values to internal nodes of the tree.
@@ -205,7 +205,7 @@ fn add_bootstrap_to_tree(
     }
 }
 
-pub fn detect_alphabet(msa: &[FastaSequence]) -> Result<Alphabet, String> {
+pub fn detect_alphabet(msa: &[SequenceObject]) -> Result<Alphabet, String> {
     // Simple heuristic: if any character is > A,C,G,T,N, assume protein
     let mut is_protein = false;
 
@@ -239,7 +239,7 @@ where
     M: ModelCalculation<A>,
 {
     // bootstrap_clade_counts should be generic over A,M too (not shown here)
-    let clade_counts = bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples);
+    let clade_counts = bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples)?;
 
     let mut main_tree = msa.into_dist::<M>().neighbor_joining()?;
     let newick = match clade_counts {
@@ -307,11 +307,11 @@ mod tests {
     #[test]
     fn test_nj_wrapper_simple_tree() {
         let sequences = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "A".into(),
                 sequence: "ACGTCG".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "B".into(),
                 sequence: "ACG-GC".into(),
             },
@@ -328,11 +328,11 @@ mod tests {
     #[test]
     fn test_nj_wrapper_adds_semicolon() {
         let sequences = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq0".into(),
                 sequence: "A".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq1".into(),
                 sequence: "A".into(),
             },
@@ -349,15 +349,15 @@ mod tests {
     #[test]
     fn test_nj_deterministic_order() {
         let sequences = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq0".into(),
                 sequence: "ACGTCG".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq1".into(),
                 sequence: "ACG-GC".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq2".into(),
                 sequence: "ACGCGT".into(),
             },
@@ -387,11 +387,11 @@ mod tests {
     #[test]
     fn test_nj_wrapper_incorrect_model_for_alphabet() {
         let sequences = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq0".into(),
                 sequence: "ACGTCG".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq1".into(),
                 sequence: "ACG-GC".into(),
             },
@@ -408,11 +408,11 @@ mod tests {
     #[test]
     fn test_nj_wrapper_incorrect_model_for_protein() {
         let sequences = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq0".into(),
                 sequence: "ACDEFGH".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq1".into(),
                 sequence: "ACD-FGH".into(),
             },
@@ -429,11 +429,11 @@ mod tests {
     #[test]
     fn test_detect_alphabet_dna() {
         let msa = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq0".into(),
                 sequence: "ACGTACGT".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq1".into(),
                 sequence: "ACG-ACGT".into(),
             },
@@ -445,11 +445,11 @@ mod tests {
     #[test]
     fn test_detect_alphabet_protein() {
         let msa = vec![
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq0".into(),
                 sequence: "ACDEFGHIK".into(),
             },
-            FastaSequence {
+            SequenceObject {
                 identifier: "Seq1".into(),
                 sequence: "ACD-FGHIK".into(),
             },
