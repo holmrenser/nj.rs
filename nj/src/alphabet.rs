@@ -161,6 +161,7 @@ pub enum Alphabet {
 /// let seq = dna!("ACGT-N");
 /// assert_eq!(seq[4], DnaSymbol::Gap);
 /// ```
+#[cfg(test)]
 macro_rules! dna {
     ($s:expr) => {
         $s.bytes()
@@ -168,6 +169,7 @@ macro_rules! dna {
             .collect::<Vec<$crate::alphabet::DnaSymbol>>()
     };
 }
+#[cfg(test)]
 pub(crate) use dna;
 
 /// Encodes a string literal into a `Vec<ProteinSymbol>` using [`Protein::encode`].
@@ -179,6 +181,7 @@ pub(crate) use dna;
 /// let seq = protein!("ARND-");
 /// assert_eq!(seq[4], ProteinSymbol::Gap);
 /// ```
+#[cfg(test)]
 macro_rules! protein {
     ($s:expr) => {
         $s.bytes()
@@ -186,6 +189,7 @@ macro_rules! protein {
             .collect::<Vec<$crate::alphabet::ProteinSymbol>>()
     };
 }
+#[cfg(test)]
 pub(crate) use protein;
 #[cfg(test)]
 mod tests {
