@@ -25,6 +25,12 @@ bump-%:
 	fi
 
 	cargo workspaces version $* --yes --no-git-tag
+
+	@if git diff --quiet Cargo.toml Cargo.lock */Cargo.toml; then \
+		echo "No version changes detected, stopping"; \
+		exit 0; \
+	fi
+
 	$(eval VERSION := $(toml get Cargo.toml workspace.package.version | tr -d '"'))
 	toml set python/pyproject.toml project.version "$$VERSION" | sponge python/pyproject.toml
 	jq --arg v "$$VERSION" '.version = $$v' wasm/package.json | sponge wasm/package.json
