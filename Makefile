@@ -18,9 +18,16 @@ test:
 	$(MAKE) -C wasm test
 	$(MAKE) -C python test
 
-bump:
-	cargo workspaces version patch --yes --no-git-commit
+bump-%:
+	@if [ "$*" != "patch" ] && [ "$*" != "minor" ] && [ "$*" != "major" ]; then \
+		echo "Usage: make bump-{patch|minor|major}"; \
+		exit 1; \
+	fi
+
+	cargo workspaces version $* --yes --no-git-commit --no-git-tag
 	$(MAKE) sync-version VERSION=$$(toml get Cargo.toml workspace.package.version)
+	git commit -am "Release v$$(toml get Cargo.toml workspace.package.version)"
+	git tag v$$(toml get Cargo.toml workspace.package.version)
 
 sync-version:
 	echo "syncing version to $(VERSION)"
