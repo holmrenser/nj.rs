@@ -22,11 +22,13 @@ nj sequences.fasta
 nj --substitution-model kimura2-p --n-bootstrap-samples 100 sequences.fasta > tree.nwk
 ```
 
+A progress bar is shown on stderr when bootstrapping.
+
 ## Rust
 
 ```toml
 [dependencies]
-nj = "0.0.9" # This might not be the latest version
+nj = "0.0.12"
 ```
 
 ```rust
@@ -37,9 +39,9 @@ let newick = nj(NJConfig {
         SequenceObject { identifier: "A".into(), sequence: "ACGT".into() },
         SequenceObject { identifier: "B".into(), sequence: "ACCT".into() },
     ],
-    n_bootstrap_samples: 0,
+    n_bootstrap_samples: 100,
     substitution_model: SubstitutionModel::JukesCantor,
-})?;
+}, Some(Box::new(|current, total| println!("{current}/{total}"))))?;
 ```
 
 ## Python
@@ -49,17 +51,20 @@ pip install nj_py
 ```
 
 ```python
+from tqdm import tqdm
 from nj_py import nj
 
-nj_config = {
-  "msa": [
-      {"identifier": "A", "sequence": "ACGT"},
-      {"identifier": "B", "sequence": "ACCT"},
-  ],
-  "n_bootstrap_samples": 0,
-  "substitution_model": "JukesCantor",
+config = {
+    "msa": [
+        {"identifier": "A", "sequence": "ACGT"},
+        {"identifier": "B", "sequence": "ACCT"},
+    ],
+    "n_bootstrap_samples": 100,
+    "substitution_model": "JukesCantor",
 }
-newick = nj(nj_config)
+
+with tqdm(total=100) as progress_bar:
+    newick = nj(config, on_progress=lambda current, total: progress_bar.update(1))
 ```
 
 ## JavaScript / WASM
@@ -70,14 +75,17 @@ npm install @holmrenser/nj
 
 ```js
 import { nj } from '@holmrenser/nj';
-const njConfig = {
-  msa: [
-      { identifier: 'A', sequence: 'ACGT' },
-      { identifier: 'B', sequence: 'ACCT' },
-  ],
-  n_bootstrap_samples: 0,
-  substitution_model: 'JukesCantor',
-}
-const newick = nj(njConfig);
+
+const config = {
+    msa: [
+        { identifier: 'A', sequence: 'ACGT' },
+        { identifier: 'B', sequence: 'ACCT' },
+    ],
+    n_bootstrap_samples: 100,
+    substitution_model: 'JukesCantor',
+};
+
+const newick = nj(config, (current, total) => {
+    progressBar.value = current / total * 100;
+});
 ```
- 

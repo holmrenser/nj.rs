@@ -1,8 +1,11 @@
 {
   "name": "@holmrenser/nj",
   "version": "0.0.12",
-  "description": "Neighbor-Joining WASM bindings (Rust → WASM → JS/TS).",
+  "description": "Neighbor-Joining phylogenetic tree inference. Auto-detects DNA/protein, supports multiple substitution models and bootstrap.",
   "license": "MIT",
+  "keywords": ["phylogenetics", "bioinformatics", "neighbor-joining", "newick", "wasm"],
+  "homepage": "https://github.com/holmrenser/nj.rs#readme",
+  "bugs": "https://github.com/holmrenser/nj.rs/issues",
   "type": "module",
   "main": "./pkg-node/nj_wasm.js",
   "module": "./pkg-web/nj_wasm.js",

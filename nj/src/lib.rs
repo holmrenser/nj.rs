@@ -124,22 +124,28 @@ fn count_clades(
 }
 
 /// Performs bootstrap sampling and counts clades across bootstrap trees.
+///
+/// Calls `on_progress(completed, total)` after each replicate if provided.
 fn bootstrap_clade_counts<A: AlphabetEncoding, M: ModelCalculation<A>>(
     msa: &MSA<A>,
     n_bootstrap_samples: usize,
+    on_progress: Option<&dyn Fn(usize, usize)>,
 ) -> Result<Option<HashMap<Vec<u8>, usize>>, String> {
     if n_bootstrap_samples == 0 {
         return Ok(None);
     }
     let idx_map: HashMap<String, usize> = msa.to_index_map();
     let mut counter = HashMap::new();
-    for _ in 0..n_bootstrap_samples {
+    for i in 0..n_bootstrap_samples {
         let tree = msa
             .bootstrap()?
             .into_dist::<M>()
             .neighbor_joining()
             .expect("NJ bootstrap iteration failed");
         count_clades(&tree, &idx_map, msa.n_sequences, &mut counter)?;
+        if let Some(cb) = on_progress {
+            cb(i + 1, n_bootstrap_samples);
+        }
     }
     Ok(Some(counter))
 }
@@ -214,13 +220,16 @@ fn detect_alphabet(msa: &[SequenceObject]) -> Result<Alphabet, String> {
 /// If `n_bootstrap_samples > 0`, generates that many bootstrap replicates,
 /// collects clade counts via [`bootstrap_clade_counts`], runs NJ on the
 /// original distances, and annotates the tree before serialising to Newick.
-fn run_nj<A, M>(msa: MSA<A>, n_bootstrap_samples: usize) -> Result<String, String>
+fn run_nj<A, M>(
+    msa: MSA<A>,
+    n_bootstrap_samples: usize,
+    on_progress: Option<&dyn Fn(usize, usize)>,
+) -> Result<String, String>
 where
     A: AlphabetEncoding,
     M: ModelCalculation<A>,
 {
-    // bootstrap_clade_counts should be generic over A,M too (not shown here)
-    let clade_counts = bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples)?;
+    let clade_counts = bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples, on_progress)?;
 
     let mut main_tree = msa.into_dist::<M>().neighbor_joining()?;
     let newick = match clade_counts {
@@ -241,7 +250,15 @@ where
 /// compatible with the detected alphabet (see the module-level compatibility
 /// table). Returns `Err` for an empty MSA, an incompatible model, or any
 /// internal NJ failure.
-pub fn nj(conf: NJConfig) -> Result<String, String> {
+///
+/// `on_progress` is called as `(completed, total)` after each bootstrap
+/// replicate. It is never called when `n_bootstrap_samples` is 0. Pass `None`
+/// if progress reporting is not needed.
+pub fn nj(
+    conf: NJConfig,
+    on_progress: Option<Box<dyn Fn(usize, usize)>>,
+) -> Result<String, String> {
+    let cb = on_progress.as_deref();
     if conf.msa.is_empty() {
         return Err("Input MSA is empty".into());
     }
@@ -253,14 +270,15 @@ pub fn nj(conf: NJConfig) -> Result<String, String> {
                 MSA::<DNA>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
 
             match conf.substitution_model {
-                SubstitutionModel::PDiff => run_nj::<DNA, PDiff>(msa, conf.n_bootstrap_samples),
+                SubstitutionModel::PDiff => {
+                    run_nj::<DNA, PDiff>(msa, conf.n_bootstrap_samples, cb)
+                }
                 SubstitutionModel::JukesCantor => {
-                    run_nj::<DNA, JukesCantor>(msa, conf.n_bootstrap_samples)
+                    run_nj::<DNA, JukesCantor>(msa, conf.n_bootstrap_samples, cb)
                 }
                 SubstitutionModel::Kimura2P => {
-                    run_nj::<DNA, Kimura2P>(msa, conf.n_bootstrap_samples)
+                    run_nj::<DNA, Kimura2P>(msa, conf.n_bootstrap_samples, cb)
                 }
-                // Poisson is a protein model — either disallow here or handle by error:
                 SubstitutionModel::Poisson => {
                     Err("Poisson is a protein model; cannot use with DNA".into())
                 }
@@ -272,12 +290,12 @@ pub fn nj(conf: NJConfig) -> Result<String, String> {
                 MSA::<Protein>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
 
             match conf.substitution_model {
-                // Poisson is valid for protein:
                 SubstitutionModel::Poisson => {
-                    run_nj::<Protein, Poisson>(msa, conf.n_bootstrap_samples)
+                    run_nj::<Protein, Poisson>(msa, conf.n_bootstrap_samples, cb)
                 }
-                SubstitutionModel::PDiff => run_nj::<Protein, PDiff>(msa, conf.n_bootstrap_samples),
-                // DNA-only models should be rejected for proteins:
+                SubstitutionModel::PDiff => {
+                    run_nj::<Protein, PDiff>(msa, conf.n_bootstrap_samples, cb)
+                }
                 SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
                     Err("Selected model is for DNA; cannot use with Protein".into())
                 }
@@ -308,7 +326,7 @@ mod tests {
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::PDiff,
         };
-        let newick = nj(conf).expect("NJ failed");
+        let newick = nj(conf, None).expect("NJ failed");
         assert_eq!(newick, "(A:0.167,B:0.167);");
     }
 
@@ -329,7 +347,7 @@ mod tests {
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::PDiff,
         };
-        let out = nj(conf).unwrap();
+        let out = nj(conf, None).unwrap();
         assert!(out.ends_with(';'));
     }
 
@@ -355,8 +373,8 @@ mod tests {
             substitution_model: SubstitutionModel::PDiff,
         };
 
-        let t1 = nj(conf.clone()).unwrap();
-        let t2 = nj(conf).unwrap();
+        let t1 = nj(conf.clone(), None).unwrap();
+        let t2 = nj(conf, None).unwrap();
         assert_eq!(t1, t2);
     }
 
@@ -367,7 +385,7 @@ mod tests {
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::PDiff,
         };
-        let result = nj(conf);
+        let result = nj(conf, None);
         assert!(result.is_err());
     }
 
@@ -388,7 +406,7 @@ mod tests {
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::Poisson, // protein model for DNA MSA
         };
-        let result = nj(conf);
+        let result = nj(conf, None);
         assert!(result.is_err());
     }
 
@@ -409,7 +427,7 @@ mod tests {
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::JukesCantor, // DNA model for protein MSA
         };
-        let result = nj(conf);
+        let result = nj(conf, None);
         assert!(result.is_err());
     }
 
