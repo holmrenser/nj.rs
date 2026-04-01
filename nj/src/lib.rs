@@ -1,95 +1,50 @@
-//! Neighbor-Joining tree builder and triangular distance matrix utilities.
+//! Neighbor-Joining phylogenetic tree inference library.
 //!
-//! This module provides a compact representation for pairwise distances (TriMat),
-//! a simple tree node structure used to represent Neighbor-Joining (NJ) trees
-//! (NJNode), a robust, borrow-safe implementation of the Neighbor-Joining
-//! algorithm (neighbor_joining), and a helper to build a TriMat from a multiple
-//! sequence alignment (tri_from_msa).
+//! # Data flow
 //!
-//! # Types
-//!
-//! - TriMat
-//!   - Compact triangular (upper-triangular stored as a flat Vec) distance
-//!     matrix with associated node names.
-//!   - Access via `get(i, j)` and `set(i, j, value)`. Diagonal distances are
-//!     always treated as 0. The internal index mapping follows a strict
-//!     triangular packing so only i != j is stored.
-//!   - Construct with `TriMat::with_names(names)`; `dim()` returns the number
-//!     of taxa.
-//!
-//! - TreeNode
-//!   - Binary tree node representing either a leaf (no children) or an
-//!     internal node with exactly two children.
-//!   - Stores child branch lengths on the parent as `left_len` and `right_len`.
-//!   - `to_newick(hide_internal)` emits a Newick string with branch lengths
-//!     formatted to 3 decimal places. When `hide_internal` is true the internal
-//!     node labels are omitted.
-//!
-//! # Functions
-//!
-//! - neighbor_joining(dist: TriMat) -> Result<NJNode, String>
-//!   - Performs the Neighbor-Joining algorithm on the provided triangular
-//!     distance matrix and returns the inferred tree as an `NJNode`.
-//!   - The implementation is iterator-oriented and avoids borrowing issues by
-//!     moving and reorganizing node ownership via a HashMap of indices -> nodes.
-//!   - Uses a BitVec to track active taxa and maintains a `row_sums` vector
-//!     for efficient Q-matrix computation.
-//!   - Branch lengths computed for joins are clamped to >= 0.0 to avoid
-//!     negative lengths caused by rounding or non-ultrametric inputs.
-//!   - Returns an `Err` if the input matrix is empty or if an internal
-//!     consistency check fails (e.g., no pair to join or unexpected number of
-//!     remaining active nodes).
-//!   - Complexity: O(n^2) memory for the distance representation and O(n^3)
-//!     worst-case time if implemented naively; this implementation reduces
-//!     repeated work via row sums but still iterates over active pairs while
-//!     choosing minimal Q entries.
-//!
-//! - tri_from_msa(msa: &[String], names: Option<&[String]>) -> TriMat
-//!   - Builds a `TriMat` from a multiple sequence alignment (MSA).
-//!   - Pairwise distance = (number of differing positions) / (number of
-//!     compared positions), ignoring any column where either sequence has a
-//!     gap (`'-'`). If two sequences share no compared positions the distance
-//!     is set to 0.0.
-//!   - If `names` is omitted, default names are generated as `Seq0`, `Seq1`, ....
-//!
-//! # Usage notes and invariants
-//!
-//! - TriMat stores only i != j entries; `get(i,i)` is defined to be 0.0.
-//! - Indices used with TriMat must be valid (0..dim()). `set` silently ignores
-//!   attempts to set diagonal entries.
-//! - neighbor_joining consumes the distance matrix (it is taken by value) and
-//!   returns a tree whose leaves preserve the original node name strings.
-//! - The NJ implementation expects a symmetric distance matrix; asymmetries
-//!   will lead to undefined/incorrect results.
-//! - Branch lengths are clamped to non-negative values to keep the tree valid
-//!   in downstream tools; if you require different handling of negative lengths
-//!   adjust the implementation accordingly.
-//!
-//! # Examples
-//!
-//! Construct a TriMat from an MSA and produce a Newick tree:
-//!
-//! ```ignore
-//! let msa = vec!["ACG".into(), "ATG".into(), "A-G".into()];
-//! let tm = tri_from_msa(&msa, None);
-//! let tree = neighbor_joining(tm).expect("NJ failed");
-//! let newick = tree.to_newick();
+//! ```text
+//! [FASTA / Python dict / JS object]
+//!         │
+//!         ▼
+//!      NJConfig  (config.rs)
+//!         │
+//!         ▼
+//!   detect_alphabet()  ──►  Alphabet::DNA | Alphabet::Protein
+//!         │
+//!         ▼
+//!     MSA<DNA|Protein>  (msa.rs)
+//!      ├── bootstrap() ──► bootstrap_clade_counts()
+//!      └── into_dist::<Model>()
+//!               │
+//!               ▼
+//!           DistMat  (dist.rs)
+//!               │
+//!               ▼
+//!         neighbor_joining()  ──►  NJState::run()  (nj.rs)
+//!               │
+//!               ▼
+//!           TreeNode  (tree.rs)
+//!               │
+//!               ▼
+//!           to_newick()  ──►  Newick String
 //! ```
 //!
-//! # Errors & Panics
+//! # Public API
 //!
-//! - Functions in this module return `Result` where appropriate to indicate
-//!   recoverable errors (e.g., empty input). Internal indexing errors return
-//!   descriptive strings rather than panicking.
-//! - The code assumes reasonably small `n` such that triangular storage in a
-//!   Vec is practical; very large numbers of taxa may cause memory pressure.
+//! The single public entry point is [`nj`], which accepts an [`NJConfig`] and
+//! returns a Newick string. Everything else is internal implementation detail
+//! exposed only to the Python and WASM wrapper crates.
 //!
-//! # Testing
+//! # Model–alphabet compatibility
 //!
-//! The accompanying unit tests exercise TriMat indexing, distance-building
-//! behavior with gaps, two- and three-taxon NJ behavior, and Newick output
-//! formatting. They also validate that branch lengths are non-negative after
-//! clamping.
+//! | Model | DNA | Protein |
+//! |-------|-----|---------|
+//! | `PDiff` | ✓ | ✓ |
+//! | `JukesCantor` | ✓ | — |
+//! | `Kimura2P` | ✓ | — |
+//! | `Poisson` | — | ✓ |
+//!
+//! Providing an incompatible model returns an `Err` from [`nj`].
 mod alphabet;
 mod config;
 mod dist;
@@ -107,7 +62,11 @@ use crate::dist::DistMat;
 use crate::models::{JukesCantor, Kimura2P, ModelCalculation, PDiff, Poisson};
 use crate::tree::{NameOrSupport, TreeNode};
 
-/// Collect leaves into a BitVec according to index map.
+/// Fills `out` with the leaf indices of all taxa in the subtree rooted at `node`.
+///
+/// Bits in `out` are set to `true` for each leaf encountered. The bit position
+/// is looked up in `idx` by the leaf's name label. Returns `Err` if a leaf
+/// has no name label (should not occur for well-formed NJ trees).
 fn bitset_of(
     node: &TreeNode,
     idx: &HashMap<String, usize>,
@@ -130,6 +89,12 @@ fn bitset_of(
     }
 }
 
+/// Recursively counts how many times each non-trivial clade appears in `tree`.
+///
+/// A clade is represented as a raw-byte encoding of a `BitVec` over the `n_taxa`
+/// leaf indices. Only clades with `1 < size < n_taxa` (i.e. proper internal
+/// clades) are counted. Each call increments the clade's entry in `counter` by 1.
+/// Used by [`bootstrap_clade_counts`] to aggregate over bootstrap replicates.
 pub fn count_clades(
     tree: &TreeNode,
     idx: &HashMap<String, usize>,
@@ -178,7 +143,12 @@ pub fn bootstrap_clade_counts<A: AlphabetEncoding, M: ModelCalculation<A>>(
     Ok(Some(counter))
 }
 
-/// Recursively adds bootstrap support values to internal nodes of the tree.
+/// Annotates internal nodes with bootstrap support values from `counts`.
+///
+/// For each internal node, computes its clade `BitVec`, looks up the count in
+/// `counts`, and assigns a [`NameOrSupport::Support`] label if a matching
+/// entry is found. Nodes whose clade was never observed in bootstrap replicates
+/// receive no label.
 fn add_bootstrap_to_tree(
     node: &mut TreeNode,
     idx: &HashMap<String, usize>,
@@ -205,6 +175,13 @@ fn add_bootstrap_to_tree(
     }
 }
 
+/// Heuristically detects whether the MSA contains DNA or protein sequences.
+///
+/// Returns [`Alphabet::DNA`] unless any sequence contains a byte that is not
+/// in `{A, C, G, T, U, N, -}` (case-insensitive), in which case
+/// [`Alphabet::Protein`] is returned. This covers all 20 standard amino acids
+/// since letters like `D`, `E`, `F`, `H`, `I`, `K`, `L`, `M`, `P`, `Q`,
+/// `R`, `S`, `V`, `W`, `Y` cannot appear in a DNA alignment.
 pub fn detect_alphabet(msa: &[SequenceObject]) -> Result<Alphabet, String> {
     // Simple heuristic: if any character is > A,C,G,T,N, assume protein
     let mut is_protein = false;
@@ -231,8 +208,11 @@ pub fn detect_alphabet(msa: &[SequenceObject]) -> Result<Alphabet, String> {
     })
 }
 
-/// Runs Neighbor-Joining on the given MSA with specified model and number of bootstrap samples.
-/// Returns Newick string of the resulting tree.
+/// Runs NJ with model `M` on alphabet `A` and returns a Newick string.
+///
+/// If `n_bootstrap_samples > 0`, generates that many bootstrap replicates,
+/// collects clade counts via [`bootstrap_clade_counts`], runs NJ on the
+/// original distances, and annotates the tree before serialising to Newick.
 fn run_nj<A, M>(msa: MSA<A>, n_bootstrap_samples: usize) -> Result<String, String>
 where
     A: AlphabetEncoding,
@@ -253,7 +233,13 @@ where
     Ok(newick)
 }
 
-/// Main Neighbor-Joining wrapper function.
+/// Infers a phylogenetic tree from an aligned MSA and returns a Newick string.
+///
+/// This is the single public entry point for the library. The alphabet is
+/// auto-detected from the sequences; `conf.substitution_model` must be
+/// compatible with the detected alphabet (see the module-level compatibility
+/// table). Returns `Err` for an empty MSA, an incompatible model, or any
+/// internal NJ failure.
 pub fn nj(conf: NJConfig) -> Result<String, String> {
     if conf.msa.is_empty() {
         return Err("Input MSA is empty".into());

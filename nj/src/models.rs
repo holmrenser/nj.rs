@@ -2,14 +2,40 @@ use serde::{Deserialize, Serialize};
 
 use crate::alphabet::{AlphabetEncoding, DNA, DnaSymbol, Protein, ProteinSymbol};
 
+/// Trait for substitution model calculations over a given alphabet.
+///
+/// Implementations follow a three-phase accumulator pattern so the distance
+/// computation is a single linear pass over aligned columns:
+///
+/// 1. [`init`](ModelCalculation::init) — create a zeroed accumulator
+/// 2. [`accumulate`](ModelCalculation::accumulate) — update the accumulator for one aligned column
+/// 3. [`finalize`](ModelCalculation::finalize) — convert the accumulator to a distance
+///
+/// Gap positions (`DnaSymbol::Gap` / `ProteinSymbol::Gap`) are ignored in all
+/// implementations: a column where either sequence has a gap is not counted as
+/// a difference, but the full alignment length is still used as the denominator.
 pub trait ModelCalculation<A: AlphabetEncoding> {
+    /// Accumulator type — e.g. `usize` for simple difference counts, or
+    /// `(usize, usize)` for models that track multiple substitution classes.
     type Acc;
 
+    /// Returns a zeroed accumulator.
     fn init() -> Self::Acc;
+
+    /// Updates `acc` for one aligned column `(a, b)` and returns the updated value.
     fn accumulate(acc: &mut Self::Acc, a: A::Symbol, b: A::Symbol) -> Self::Acc;
+
+    /// Converts the final accumulator to an evolutionary distance.
+    ///
+    /// Returns [`f64::INFINITY`] when the model's formula is undefined for the
+    /// observed substitution frequencies (e.g. saturation). The NJ algorithm
+    /// handles infinite distances gracefully.
     fn finalize(acc: &Self::Acc, aln_len: usize) -> f64;
 }
 
+/// Computes the pairwise distance between two aligned sequences using model `M`.
+///
+/// `s1` and `s2` must have equal length (i.e. already be aligned).
 #[inline(always)]
 pub fn pairwise_distance<M, A>(s1: &[A::Symbol], s2: &[A::Symbol]) -> f64
 where
@@ -26,6 +52,13 @@ where
     M::finalize(&acc, aln_len)
 }
 
+/// p-distance (proportion of differing sites).
+///
+/// `d = n_diff / aln_len`
+///
+/// The simplest possible distance: the raw fraction of alignment columns where
+/// the two sequences differ, ignoring gaps. Valid for both DNA and protein.
+/// Does not correct for multiple substitutions at the same site.
 pub struct PDiff;
 
 impl ModelCalculation<DNA> for PDiff {
@@ -66,6 +99,13 @@ impl ModelCalculation<Protein> for PDiff {
     }
 }
 
+/// Jukes-Cantor (1969) distance for DNA.
+///
+/// `d = -0.75 · ln(1 - (4/3) · p)`
+///
+/// Assumes equal base frequencies and equal substitution rates among all four
+/// nucleotides. Corrects for multiple hits at the same site. Returns
+/// [`f64::INFINITY`] when `p ≥ 0.75` (the formula is undefined at saturation).
 pub struct JukesCantor;
 
 impl ModelCalculation<DNA> for JukesCantor {
@@ -92,6 +132,14 @@ impl ModelCalculation<DNA> for JukesCantor {
     }
 }
 
+/// Kimura two-parameter (1980) distance for DNA.
+///
+/// `d = -0.5 · ln(1 - 2p - q) - 0.25 · ln(1 - 2q)`
+///
+/// Distinguishes transitions (A↔G, C↔T) from transversions (all other
+/// substitutions), allowing the two classes to have different rates. Returns
+/// [`f64::INFINITY`] when either denominator is non-positive, which occurs at
+/// high divergence or when transversion frequency alone reaches 0.5.
 pub struct Kimura2P;
 
 impl ModelCalculation<DNA> for Kimura2P {
@@ -128,6 +176,12 @@ impl ModelCalculation<DNA> for Kimura2P {
     }
 }
 
+/// Poisson distance for protein sequences.
+///
+/// `d = -ln(1 - p)`
+///
+/// Assumes all amino acid substitutions occur at equal rates (Poisson process).
+/// Corrects for multiple hits. Returns [`f64::INFINITY`] when `p ≥ 1.0`.
 pub struct Poisson;
 
 impl ModelCalculation<Protein> for Poisson {
@@ -154,59 +208,193 @@ impl ModelCalculation<Protein> for Poisson {
     }
 }
 
+/// Available substitution models.
+///
+/// | Variant | Alphabet | Formula |
+/// |---------|----------|---------|
+/// | `PDiff` | DNA, Protein | `p` |
+/// | `JukesCantor` | DNA only | `-0.75 · ln(1 - 4p/3)` |
+/// | `Kimura2P` | DNA only | `-0.5 · ln(1-2p-q) - 0.25 · ln(1-2q)` |
+/// | `Poisson` | Protein only | `-ln(1 - p)` |
+///
+/// Model–alphabet compatibility is enforced at runtime in [`crate::nj`].
 #[derive(Clone, Debug, ts_rs::TS, Serialize, Deserialize)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum SubstitutionModel {
+    /// p-distance: raw proportion of differing sites. No multiple-hit correction.
     PDiff,
+    /// Jukes-Cantor (1969): single-rate DNA model with multiple-hit correction.
     JukesCantor,
+    /// Kimura two-parameter (1980): separates transition and transversion rates.
     Kimura2P,
+    /// Poisson: equal-rate protein model with multiple-hit correction.
     Poisson,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::alphabet::{DNA, Protein};
+    use crate::alphabet::{DNA, Protein, dna, protein};
+
+    // --- PDiff DNA ---
 
     #[test]
-    fn test_pdiff_dna() {
-        let s1 = vec![
-            DnaSymbol::A,
-            DnaSymbol::C,
-            DnaSymbol::G,
-            DnaSymbol::T,
-            DnaSymbol::A,
-        ];
-        let s2 = vec![
-            DnaSymbol::A,
-            DnaSymbol::G,
-            DnaSymbol::G,
-            DnaSymbol::T,
-            DnaSymbol::C,
-        ];
-        let dist = pairwise_distance::<PDiff, DNA>(&s1, &s2);
-        assert_eq!(dist, 0.4); // 2 differences out of 5
+    fn test_pdiff_dna_two_differences() {
+        assert_eq!(
+            pairwise_distance::<PDiff, DNA>(&dna!("ACGTA"), &dna!("AGGTC")),
+            0.4
+        );
     }
 
     #[test]
+    fn test_pdiff_dna_identical() {
+        let s = dna!("ACGT");
+        assert_eq!(pairwise_distance::<PDiff, DNA>(&s, &s), 0.0);
+    }
+
+    #[test]
+    fn test_pdiff_dna_gaps_not_counted_as_differences() {
+        // pos 0: A vs T — difference; pos 1: Gap vs C — not counted; pos 2: same
+        // denominator is still full length (3), so 1/3
+        assert!(
+            (pairwise_distance::<PDiff, DNA>(&dna!("A-G"), &dna!("TCG")) - 1.0 / 3.0).abs() < 1e-12
+        );
+    }
+
+    // --- PDiff Protein ---
+
+    #[test]
+    fn test_pdiff_protein_one_difference() {
+        assert_eq!(
+            pairwise_distance::<PDiff, Protein>(&protein!("ACDE"), &protein!("ACDF")),
+            0.25
+        );
+    }
+
+    #[test]
+    fn test_pdiff_protein_identical() {
+        let s = protein!("ARN");
+        assert_eq!(pairwise_distance::<PDiff, Protein>(&s, &s), 0.0);
+    }
+
+    #[test]
+    fn test_pdiff_protein_gaps_not_counted_as_differences() {
+        assert_eq!(
+            pairwise_distance::<PDiff, Protein>(&protein!("A-D"), &protein!("ARD")),
+            0.0
+        );
+    }
+
+    // --- JukesCantor ---
+
+    #[test]
     fn test_jukes_cantor_dna() {
-        let s1 = vec![
-            DnaSymbol::A,
-            DnaSymbol::C,
-            DnaSymbol::G,
-            DnaSymbol::T,
-            DnaSymbol::A,
-        ];
-        let s2 = vec![
-            DnaSymbol::A,
-            DnaSymbol::G,
-            DnaSymbol::G,
-            DnaSymbol::T,
-            DnaSymbol::C,
-        ];
-        let dist = pairwise_distance::<JukesCantor, DNA>(&s1, &s2);
-        let p = 0.4;
-        let expected = -0.75 * ((1.0 - (4.0 / 3.0) * p) as f64).ln();
-        assert!((dist - expected).abs() < 1e-6);
+        let p = 0.4_f64;
+        let expected = -0.75 * (1.0 - (4.0 / 3.0) * p).ln();
+        assert!(
+            (pairwise_distance::<JukesCantor, DNA>(&dna!("ACGTA"), &dna!("AGGTC")) - expected)
+                .abs()
+                < 1e-6
+        );
+    }
+
+    #[test]
+    fn test_jukes_cantor_identical() {
+        let s = dna!("ACGT");
+        assert_eq!(pairwise_distance::<JukesCantor, DNA>(&s, &s), 0.0);
+    }
+
+    #[test]
+    fn test_jukes_cantor_saturated_returns_infinity() {
+        // p >= 0.75 means the formula is undefined
+        assert_eq!(
+            pairwise_distance::<JukesCantor, DNA>(&dna!("AAAA"), &dna!("CGTC")),
+            f64::INFINITY
+        );
+    }
+
+    // --- Kimura2P ---
+
+    #[test]
+    fn test_kimura2p_identical() {
+        let s = dna!("ACGT");
+        assert_eq!(pairwise_distance::<Kimura2P, DNA>(&s, &s), 0.0);
+    }
+
+    #[test]
+    fn test_kimura2p_pure_transitions() {
+        // A↔G and C↔T are transitions; p = 1.0, q = 0.0 → denom1 = -1 ≤ 0 → infinity
+        assert_eq!(
+            pairwise_distance::<Kimura2P, DNA>(&dna!("ACAC"), &dna!("GTGT")),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn test_kimura2p_pure_transversions() {
+        // A↔C, A↔T, G↔C, G↔T are transversions; p = 0, q = 1.0 → denom2 = -1 ≤ 0 → infinity
+        assert_eq!(
+            pairwise_distance::<Kimura2P, DNA>(&dna!("AAGG"), &dna!("CTCT")),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn test_kimura2p_mixed() {
+        // 1 transition (A→G) and 1 transversion (A→C) out of 4 positions
+        let p = 0.25_f64;
+        let q = 0.25_f64;
+        let expected = -0.5 * (1.0 - 2.0 * p - q).ln() - 0.25 * (1.0 - 2.0 * q).ln();
+        assert!(
+            (pairwise_distance::<Kimura2P, DNA>(&dna!("AATT"), &dna!("GCTT")) - expected).abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn test_kimura2p_saturated_transversions_returns_infinity() {
+        // q = 1.0 → denom2 = 1 - 2*1 = -1 ≤ 0 → infinity
+        assert_eq!(
+            pairwise_distance::<Kimura2P, DNA>(&dna!("AG"), &dna!("CT")),
+            f64::INFINITY
+        );
+    }
+
+    // --- Poisson (Protein) ---
+
+    #[test]
+    fn test_poisson_identical() {
+        let s = protein!("ARND");
+        assert_eq!(pairwise_distance::<Poisson, Protein>(&s, &s), 0.0);
+    }
+
+    #[test]
+    fn test_poisson_one_difference() {
+        // p = 0.25 → d = -ln(0.75)
+        let expected = -(1.0_f64 - 0.25).ln();
+        assert!(
+            (pairwise_distance::<Poisson, Protein>(&protein!("ARND"), &protein!("ARNE"))
+                - expected)
+                .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn test_poisson_fully_different_returns_infinity() {
+        // p = 1.0 → infinity
+        assert_eq!(
+            pairwise_distance::<Poisson, Protein>(&protein!("AR"), &protein!("DE")),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn test_poisson_gaps_not_counted_as_differences() {
+        // only 0 real differences out of 3 positions → p = 0 → d = 0
+        assert_eq!(
+            pairwise_distance::<Poisson, Protein>(&protein!("A-N"), &protein!("ARN")),
+            0.0
+        );
     }
 }

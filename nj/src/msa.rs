@@ -1,13 +1,30 @@
+//! Multiple sequence alignment container and bootstrap resampling.
+
 use crate::DistMat;
 use crate::alphabet::AlphabetEncoding;
 use crate::models::ModelCalculation;
 use nanorand::{Rng, WyRand};
 use std::collections::HashMap;
 
+/// A typed multiple sequence alignment (MSA).
+///
+/// Sequences are stored as pre-encoded symbol vectors rather than raw strings,
+/// so model calculations never need to re-parse characters. All sequences must
+/// have the same length (ragged alignments are rejected at insertion time).
+///
+/// The type parameter `A` selects the alphabet; use `MSA::<DNA>` or
+/// `MSA::<Protein>`. Build an MSA from raw strings with [`push`](MSA::push),
+/// [`from_unnamed_sequences`](MSA::from_unnamed_sequences), or by collecting
+/// from an iterator of `(String, String)` tuples via the [`FromIterator`] impl.
 pub struct MSA<A: AlphabetEncoding> {
+    /// Sequence identifiers in insertion order.
     pub identifiers: Vec<String>,
+    /// Encoded sequences in insertion order; each inner `Vec` has length
+    /// `n_characters`.
     pub sequences: Vec<Vec<A::Symbol>>,
+    /// Number of sequences currently in the alignment.
     pub n_sequences: usize,
+    /// Alignment length (number of columns), i.e. the length of each sequence.
     pub n_characters: usize,
 }
 
@@ -82,7 +99,12 @@ impl<A: AlphabetEncoding> MSA<A> {
             .collect()
     }
 
-    /// Generates a bootstrap replicate of the MSA by resampling columns with replacement.
+    /// Generates a bootstrap replicate by resampling alignment columns with replacement.
+    ///
+    /// Draws `n_characters` column indices uniformly at random (with replacement)
+    /// using a cryptographically seeded PRNG (`getrandom` → `WyRand`). The
+    /// `getrandom` backend is WASM-compatible (uses the JS `crypto` API in
+    /// that environment). Returns `Err` if entropy collection fails.
     pub fn bootstrap(&self) -> Result<Self, String> {
         let mut seed_bytes = [0u8; 8];
         getrandom::getrandom(&mut seed_bytes).map_err(|e| format!("RNG error: {e}"))?;
@@ -102,6 +124,12 @@ impl<A: AlphabetEncoding> MSA<A> {
         Ok(new_msa)
     }
 
+    /// Computes a pairwise distance matrix using substitution model `M`.
+    ///
+    /// Convenience wrapper around [`DistMat::from_msa`]. Choose `M` to match
+    /// the alphabet: DNA models (`JukesCantor`, `Kimura2P`, `PDiff`) for
+    /// `MSA::<DNA>`, and protein models (`Poisson`, `PDiff`) for
+    /// `MSA::<Protein>`.
     pub fn into_dist<M>(&self) -> DistMat
     where
         M: ModelCalculation<A>,

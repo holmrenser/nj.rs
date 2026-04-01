@@ -1,3 +1,22 @@
+//! Command-line interface for the `nj` Neighbor-Joining tool.
+//!
+//! The CLI is gated behind the `cli` Cargo feature (which pulls in `clap`).
+//! Build with `cargo build --features cli` or `cargo install nj --features cli`.
+//!
+//! # Usage
+//!
+//! ```text
+//! nj [OPTIONS] <FASTA>
+//!
+//! Arguments:
+//!   <FASTA>  MSA FASTA file to process
+//!
+//! Options:
+//!   -b, --n-bootstrap-samples <N>   Number of bootstrap replicates [default: 100]
+//!   -m, --substitution-model <MODEL> Substitution model [default: p-diff]
+//!   -o, --output <FILE>              Write Newick output to file instead of stdout
+//! ```
+
 use nj::{NJConfig, SequenceObject, models::SubstitutionModel, nj};
 use std::fs;
 use std::path::PathBuf;
@@ -7,28 +26,35 @@ mod cli {
     use super::*;
     use clap::Parser;
 
+    /// Parsed command-line arguments.
     #[derive(Parser, Debug)]
     #[command(author, version, about)]
     pub struct Args {
-        /// MSA FASTA file to process
+        /// MSA FASTA file to process.
         #[arg(value_name = "FASTA")]
         pub input: PathBuf,
 
-        /// Write Newick output to this file instead of stdout
+        /// Write Newick output to this file instead of stdout.
         #[arg(short, long, value_name = "FILE")]
         pub output: Option<PathBuf>,
 
-        /// Number of bootstrap samples to generate
+        /// Number of bootstrap replicates to generate (0 = no bootstrap).
         #[arg(short = 'b', long, default_value_t = 100)]
         pub n_bootstrap_samples: usize,
 
-        /// Substitution model to use
+        /// Substitution model used to compute pairwise distances.
         #[arg(short = 'm', long, value_name = "MODEL", default_value = "p-diff")]
         pub substitution_model: SubstitutionModel,
     }
 
-    /// Parses a FASTA-formatted string into an MSA.
-    /// Returns an error if the input is malformed.
+    /// Parses a FASTA-formatted string into a vector of [`SequenceObject`]s.
+    ///
+    /// - Whitespace at the start and end of each line is stripped.
+    /// - Multi-line sequences are concatenated.
+    /// - Empty lines are ignored.
+    /// - Returns `Err` if a header has no sequence, a sequence appears before
+    ///   any header, the file is empty, any sequence is empty, or sequences
+    ///   differ in length.
     pub fn parse_fasta(input: &str) -> Result<Vec<SequenceObject>, String> {
         let mut msa = Vec::<SequenceObject>::new();
         let mut current_name: Option<String> = None;
@@ -103,7 +129,8 @@ mod cli {
         Ok(msa)
     }
 
-    /// Runs the CLI application.
+    /// Parses arguments, reads the FASTA file, runs NJ, and writes the Newick
+    /// output to stdout or a file.
     pub fn run() -> Result<(), String> {
         let args = Args::parse();
 

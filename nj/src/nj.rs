@@ -1,9 +1,33 @@
+//! Core Neighbor-Joining algorithm implementation.
+//!
+//! The algorithm runs in three phases:
+//! 1. **Initialisation** ([`NJState::new`]) — build leaf nodes, precompute
+//!    row sums of the distance matrix, and mark all nodes active.
+//! 2. **Iteration** ([`NJState::run`]) — repeat `n-2` times: select the pair
+//!    `(i, j)` minimising the Q-criterion, join them into a new internal node,
+//!    update the distance matrix, and deactivate `j`.
+//! 3. **Final join** ([`NJState::final_join`]) — connect the two remaining
+//!    active nodes to form the root, splitting the remaining distance equally.
+//!
+//! The distance matrix is mutated in-place during iteration, so [`NJState`]
+//! holds a mutable reference. All active node tracking is done via a
+//! [`bitvec::prelude::BitVec`] for compact storage.
+
 use bitvec::prelude::{BitVec, Lsb0};
 
 use crate::{dist::DistMat, tree::TreeNode};
 
-/// Computes branch lengths for the new node joining i and j.
-/// Clamps lengths to be non-negative.
+/// Computes the branch lengths from the new internal node to taxa `i` and `j`.
+///
+/// Uses the standard NJ formula:
+/// ```text
+/// l_i = 0.5 * d(i,j) + (S_i - S_j) / (2 * (n - 2))
+/// l_j = d(i,j) - l_i
+/// ```
+/// where `S_i` and `S_j` are the row sums of the Q-reduced distance matrix
+/// and `n` is the number of currently active taxa. Both lengths are clamped
+/// to `0.0` to prevent negative branch lengths from rounding or
+/// non-ultrametric inputs.
 fn compute_branch_lengths(
     d_ij: f64,
     row_sums: &[f64],
@@ -18,8 +42,11 @@ fn compute_branch_lengths(
 
     (li, lj)
 }
-/// Internal state for the NJ algorithm.
-/// Holds the distance matrix, active nodes, row sums, and current tree nodes.
+/// Mutable state for a single NJ run.
+///
+/// Owns the partial tree nodes, tracks which taxa are still active, and
+/// maintains incremental row sums so the Q-criterion can be evaluated in
+/// O(n²) per iteration rather than recomputing from scratch.
 pub struct NJState<'a> {
     dist: &'a mut DistMat,
     active: BitVec<u8, Lsb0>,
@@ -28,8 +55,11 @@ pub struct NJState<'a> {
     next_internal: usize,
 }
 
-/// Implementation of the NJ algorithm state and methods.
 impl<'a> NJState<'a> {
+    /// Initialises the NJ state from a distance matrix.
+    ///
+    /// Creates one leaf [`TreeNode`] per taxon, precomputes the full row sums
+    /// `S_i = Σ_j d(i,j)`, and marks all `n` taxa as active.
     pub fn new(dist: &'a mut DistMat) -> Self {
         let n = dist.dim();
 
@@ -58,7 +88,11 @@ impl<'a> NJState<'a> {
         }
     }
 
-    /// Run NJ and return a TreeNode or Err.
+    /// Runs the NJ algorithm to completion and returns the root [`TreeNode`].
+    ///
+    /// Returns `Err` if the distance matrix is empty, if no pair can be found
+    /// during an iteration (should be unreachable with a valid matrix), or if
+    /// the number of active nodes after the main loop is not exactly 2.
     pub fn run(mut self) -> Result<TreeNode, String> {
         let n = self.dist.dim();
         if n == 0 {
@@ -94,7 +128,13 @@ impl<'a> NJState<'a> {
         self.final_join()
     }
 
-    /// Select pair i,j minimizing the Q-metric.
+    /// Selects the active pair `(i, j)` with the smallest Q value.
+    ///
+    /// Q(i,j) = (n-2)·d(i,j) - S_i - S_j, where `n` is the current number
+    /// of active taxa and `S_i` is the precomputed row sum. Returns the pair
+    /// indices and the raw distance `d(i,j)` (not the Q value). NaN Q values
+    /// (which can arise when distances are infinite) are treated as the worst
+    /// case via `unwrap_or(Ordering::Greater)`.
     fn select_min_q_pair(&self) -> Option<(usize, usize, f64)> {
         let n_active = self.active.count_ones() as f64;
 
@@ -111,7 +151,11 @@ impl<'a> NJState<'a> {
             .map(|(i, j, _, d)| (i, j, d))
     }
 
-    /// Join nodes i and j into a new internal node at index i.
+    /// Merges nodes `i` and `j` into a new internal node stored at index `i`.
+    ///
+    /// Assigns branch lengths `li` and `lj` to the child nodes, then replaces
+    /// `nodes[i]` with a new internal [`TreeNode`]. Node `j` is consumed here
+    /// and its slot is left empty; it will be marked inactive by the caller.
     fn join_nodes(&mut self, i: usize, j: usize, li: f64, lj: f64) {
         let mut left = self.nodes[i].take().expect("node i exists");
         left.len = Some(li);
@@ -128,7 +172,16 @@ impl<'a> NJState<'a> {
         self.next_internal += 1;
     }
 
-    // Update distances after joining i (the new node) and removing j.
+    /// Updates the distance matrix and row sums after joining `i` and `j`.
+    ///
+    /// For every remaining active taxon `k` (excluding `i` and `j`), applies
+    /// the classic NJ distance update formula:
+    /// ```text
+    /// d(new, k) = 0.5 * (d(i,k) + d(j,k) - d(i,j))
+    /// ```
+    /// Row sums are maintained incrementally so they need not be recomputed
+    /// from scratch each iteration. Must be called **before** marking `j`
+    /// inactive, since the loop iterates over currently active nodes.
     fn update_distances(&mut self, i: usize, j: usize) {
         // Get the distance between i and j before they are joined, which is needed for the update.
         let d_ij = self.dist.get(i, j);
@@ -155,7 +208,10 @@ impl<'a> NJState<'a> {
         self.row_sums[j] = 0.0;
     }
 
-    /// Final join of the last two remaining active nodes.
+    /// Connects the two remaining active nodes to form the root.
+    ///
+    /// The remaining distance `d(i,j)` is split equally between the two
+    /// branches (`d/2` each), producing an unrooted-style midpoint root.
     fn final_join(mut self) -> Result<TreeNode, String> {
         let mut it = self.active.iter_ones();
         let i = it.next().expect("at least one active node");

@@ -1,20 +1,30 @@
+//! Lower-triangular pairwise distance matrix and entry point for NJ.
+
 use crate::MSA;
 use crate::alphabet::AlphabetEncoding;
 use crate::models::{ModelCalculation, pairwise_distance};
 use crate::nj::NJState;
 use crate::tree::TreeNode;
 
-/// Triangular distance matrix with node names
+/// Lower-triangular pairwise distance matrix.
+///
+/// For `n` taxa, only the `n*(n-1)/2` strictly lower-triangular entries
+/// (`i > j`) are stored in a flat `Vec<f64>`, in row-major order. Diagonal
+/// entries (`d(i,i)`) are always treated as `0.0` and are never stored.
+/// Symmetry is maintained by [`get`](DistMat::get) and
+/// [`set`](DistMat::set): accessing or writing `(i, j)` and `(j, i)` always
+/// refer to the same stored element.
 #[derive(Clone, Debug)]
 pub struct DistMat {
-    pub data: Vec<f64>,     // stores only i > j entries
-    pub names: Vec<String>, // names of the nodes corresponding to indices
+    /// Flat storage for the strictly lower-triangular entries, packed in
+    /// row-major order: index `i*(i-1)/2 + j` for `i > j`.
+    pub data: Vec<f64>,
+    /// Sequence/taxa names, one per row/column.
+    pub names: Vec<String>,
 }
 
-/// (Lower) Triangular distance matrix implementation
-/// Stores only the i > j entries in a flat Vec for memory efficiency.
 impl DistMat {
-    /// Creates an empty distance matrix with the given node names.
+    /// Creates a zeroed distance matrix for `names.len()` taxa.
     pub fn empty_with_names(names: Vec<String>) -> Self {
         let n = names.len();
         Self {
@@ -28,8 +38,11 @@ impl DistMat {
         self.names.len()
     }
 
-    /// Computes the internal index in the flat Vec for the (i, j) entry.
-    /// Assumes i != j. Returns the index for the stored entry.
+    /// Returns the flat-vector index for the `(i, j)` pair.
+    ///
+    /// Normalises so that the larger index is used as the row:
+    /// `index = max(i,j) * (max(i,j) - 1) / 2 + min(i,j)`.
+    /// The caller is responsible for ensuring `i != j`.
     fn idx(&self, i: usize, j: usize) -> usize {
         let (i, j) = if i > j { (i, j) } else { (j, i) };
         i * (i - 1) / 2 + j
@@ -52,6 +65,11 @@ impl DistMat {
         }
     }
 
+    /// Computes a pairwise distance matrix from an MSA using substitution model `M`.
+    ///
+    /// Iterates over all `n*(n-1)/2` sequence pairs and fills the lower triangle
+    /// using [`pairwise_distance`]. Prefer [`MSA::into_dist`] over calling this
+    /// directly.
     pub fn from_msa<M, A>(msa: &MSA<A>) -> DistMat
     where
         M: ModelCalculation<A>,
@@ -71,8 +89,11 @@ impl DistMat {
         dist
     }
 
-    /// Performs the Neighbor-Joining algorithm on the distance matrix.
-    /// Returns the resulting tree as a (recursive) TreeNode struct.
+    /// Runs the Neighbor-Joining algorithm and returns the inferred tree.
+    ///
+    /// Consumes `self` because the NJ state machine mutates the matrix in
+    /// place during the join iterations. Returns `Err` for an empty matrix
+    /// or if an internal consistency check fails.
     pub fn neighbor_joining(mut self: DistMat) -> Result<TreeNode, String> {
         NJState::new(&mut self).run()
     }
