@@ -15,7 +15,7 @@
 
 use bitvec::prelude::{BitVec, Lsb0};
 
-use crate::{dist::DistMat, tree::TreeNode};
+use crate::{distance_matrix::DistMat, tree::TreeNode};
 
 /// Computes the branch lengths from the new internal node to taxa `i` and `j`.
 ///
@@ -236,7 +236,7 @@ impl<'a> NJState<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::dist::DistMat;
+    use crate::distance_matrix::DistMat;
 
     #[test]
     fn test_nj_simple() {

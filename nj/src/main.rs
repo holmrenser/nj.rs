@@ -17,7 +17,9 @@
 //!   -o, --output <FILE>              Write Newick output to file instead of stdout
 //! ```
 
-use nj::{NJConfig, SequenceObject, models::SubstitutionModel, nj};
+use ::nj::config::{NJConfig, SequenceObject};
+use ::nj::models::SubstitutionModel;
+use nj::nj;
 use std::fs;
 use std::path::PathBuf;
 

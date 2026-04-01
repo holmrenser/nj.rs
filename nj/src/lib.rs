@@ -45,20 +45,21 @@
 //! | `Poisson` | — | ✓ |
 //!
 //! Providing an incompatible model returns an `Err` from [`nj`].
-mod alphabet;
-mod config;
-mod dist;
+pub mod alphabet;
+pub mod config;
+pub mod distance_matrix;
 pub mod models;
-mod msa;
-mod nj;
-mod tree;
+pub mod msa;
+pub mod nj;
+pub mod tree;
+
 use bitvec::prelude::{BitVec, Lsb0, bitvec};
 use std::collections::HashMap;
 
 use crate::alphabet::{Alphabet, AlphabetEncoding, DNA, Protein};
 use crate::config::SubstitutionModel;
 pub use crate::config::{MSA, NJConfig, SequenceObject};
-use crate::dist::DistMat;
+use crate::distance_matrix::DistMat;
 use crate::models::{JukesCantor, Kimura2P, ModelCalculation, PDiff, Poisson};
 use crate::tree::{NameOrSupport, TreeNode};
 
@@ -95,7 +96,7 @@ fn bitset_of(
 /// leaf indices. Only clades with `1 < size < n_taxa` (i.e. proper internal
 /// clades) are counted. Each call increments the clade's entry in `counter` by 1.
 /// Used by [`bootstrap_clade_counts`] to aggregate over bootstrap replicates.
-pub fn count_clades(
+fn count_clades(
     tree: &TreeNode,
     idx: &HashMap<String, usize>,
     n_taxa: usize,
@@ -123,7 +124,7 @@ pub fn count_clades(
 }
 
 /// Performs bootstrap sampling and counts clades across bootstrap trees.
-pub fn bootstrap_clade_counts<A: AlphabetEncoding, M: ModelCalculation<A>>(
+fn bootstrap_clade_counts<A: AlphabetEncoding, M: ModelCalculation<A>>(
     msa: &MSA<A>,
     n_bootstrap_samples: usize,
 ) -> Result<Option<HashMap<Vec<u8>, usize>>, String> {
@@ -182,7 +183,7 @@ fn add_bootstrap_to_tree(
 /// [`Alphabet::Protein`] is returned. This covers all 20 standard amino acids
 /// since letters like `D`, `E`, `F`, `H`, `I`, `K`, `L`, `M`, `P`, `Q`,
 /// `R`, `S`, `V`, `W`, `Y` cannot appear in a DNA alignment.
-pub fn detect_alphabet(msa: &[SequenceObject]) -> Result<Alphabet, String> {
+fn detect_alphabet(msa: &[SequenceObject]) -> Result<Alphabet, String> {
     // Simple heuristic: if any character is > A,C,G,T,N, assume protein
     let mut is_protein = false;
 
