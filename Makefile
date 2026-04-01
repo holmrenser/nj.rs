@@ -19,7 +19,8 @@ test:
 	$(MAKE) -C python test
 
 bump-%:
-	$(shell ./release.sh $*)
+	./release.sh $*
+
 clean:
 	$(MAKE) -C nj clean
 	$(MAKE) -C wasm clean

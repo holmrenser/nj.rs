@@ -74,7 +74,7 @@ jobs:
           working-directory: python
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.target }}
+          name: wheels-${{matrix.os}}-${{ matrix.target }}
           path: python/dist
 
   pypi-sdist:
@@ -89,7 +89,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
-          args: --out dist -i python3.12
+          args: --out dist
           working-directory: python
       - uses: actions/upload-artifact@v4
         with:
