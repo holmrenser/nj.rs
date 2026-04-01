@@ -26,7 +26,7 @@ nj --substitution-model kimura2-p --n-bootstrap-samples 100 sequences.fasta > tr
 
 ```toml
 [dependencies]
-nj = "0.0.6"
+nj = "0.0.9" # This might not be the latest version
 ```
 
 ```rust

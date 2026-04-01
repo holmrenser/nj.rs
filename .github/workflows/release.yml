@@ -54,10 +54,21 @@ jobs:
             target: x86_64
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # One Python is enough to *find* an interpreter, but for wheels you
+          # generally want to build multiple; see args below.
+          python-version: "3.12"
       - uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --out dist
+          # Explicitly provide interpreters so maturin doesn't have to discover them.
+          args: >
+            --release
+            --out dist
+            -i python3.10
+            -i python3.11
+            -i python3.12
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           working-directory: python
@@ -72,10 +83,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
-          args: --out dist
+          args: --out dist -i python3.12
           working-directory: python
       - uses: actions/upload-artifact@v4
         with:

@@ -6,6 +6,10 @@
   "type": "module",
   "main": "./pkg-node/nj_wasm.js",
   "module": "./pkg-web/nj_wasm.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/holmrenser/nj.rs"
+  },
   "types": "nj.d.ts",
   "scripts": {
     "build:web": "wasm-pack build --target bundler --out-dir pkg-web --release --no-typescript",
