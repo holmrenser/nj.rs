@@ -24,7 +24,7 @@ bump-%:
 		exit 1; \
 	fi
 
-	cargo workspaces version $* --yes --no-git-commit --no-git-tag
+	cargo workspaces version $* --yes --no-git-tag
 	$(MAKE) sync-version VERSION=$$(toml get Cargo.toml workspace.package.version)
 	git commit -am "Release v$$(toml get Cargo.toml workspace.package.version)"
 	git tag v$$(toml get Cargo.toml workspace.package.version)
