@@ -107,7 +107,7 @@ impl<'a> NJState<'a> {
                     (i, j, q, d_ij)
                 })
             })
-            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
+            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Greater))
             .map(|(i, j, _, d)| (i, j, d))
     }
 

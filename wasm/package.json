@@ -13,7 +13,7 @@
     "build": "npm run build:web && npm run build:node && rm */.gitignore",
     "clean": "rm -rf pkg-web pkg-node",
     "test:web": "NODE_OPTIONS=--experimental-wasm-modules mocha --recursive --extensions mjs --exit \"tests/*.web.test.js\"",
-    "test:node": "node --test tests/nj_js.test.mjs",
+    "test:node": "node --test tests/nj_js.node.test.mjs",
     "test": "npm run test:web && npm run test:node"
   },
   "files": [

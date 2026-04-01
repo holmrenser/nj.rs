@@ -1,8 +1,7 @@
 use crate::DistMat;
 use crate::alphabet::AlphabetEncoding;
 use crate::models::ModelCalculation;
-use nanorand::Rng;
-use nanorand::WyRand;
+use nanorand::{Rng, WyRand};
 use std::collections::HashMap;
 
 pub struct MSA<A: AlphabetEncoding> {
@@ -85,7 +84,9 @@ impl<A: AlphabetEncoding> MSA<A> {
 
     /// Generates a bootstrap replicate of the MSA by resampling columns with replacement.
     pub fn bootstrap(&self) -> Result<Self, String> {
-        let mut rng = WyRand::new();
+        let mut seed_bytes = [0u8; 8];
+        getrandom::getrandom(&mut seed_bytes).map_err(|e| format!("RNG error: {e}"))?;
+        let mut rng = WyRand::new_seed(u64::from_le_bytes(seed_bytes));
         let sampled_indices: Vec<usize> = (0..self.n_characters)
             .map(|_| rng.generate_range(0..self.n_characters))
             .collect();
