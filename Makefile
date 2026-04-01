@@ -25,7 +25,7 @@ bump-%:
 	fi
 
 	cargo workspaces version $* --yes --no-git-tag
-	$(eval VERSION := $(shell toml get Cargo.toml workspace.package.version | tr -d '"'))
+	$(eval VERSION := $(toml get Cargo.toml workspace.package.version | tr -d '"'))
 	toml set python/pyproject.toml project.version "$$VERSION" | sponge python/pyproject.toml
 	jq --arg v "$$VERSION" '.version = $$v' wasm/package.json | sponge wasm/package.json
 	git commit -am "Release v$$VERSION"
