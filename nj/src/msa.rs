@@ -1,4 +1,9 @@
 //! Multiple sequence alignment container and bootstrap resampling.
+//!
+//! [`MSA<A>`] stores sequences pre-encoded into typed symbol vectors so that
+//! model calculations never need to re-parse raw characters. The type parameter
+//! `A` binds the alphabet at compile time, ensuring model–alphabet compatibility
+//! is enforced without runtime branching inside the distance computation.
 
 use crate::DistMat;
 use crate::alphabet::AlphabetEncoding;
@@ -49,6 +54,7 @@ impl<A: AlphabetEncoding> MSA<A> {
         self.sequences.len()
     }
 
+    /// Returns `Err` if the MSA is non-empty and `seq_len` differs from `n_characters`.
     fn validate_sequence_length(&self, seq_len: usize) -> Result<(), String> {
         if self.n_sequences > 0 && seq_len != self.n_characters {
             return Err(format!(
@@ -60,7 +66,8 @@ impl<A: AlphabetEncoding> MSA<A> {
         Ok(())
     }
 
-    /// Adds a FastaSequence to the MSA.
+    /// Encodes `seq` and appends it to the MSA. Returns `Err` if `seq` has a
+    /// different length than the sequences already present.
     pub fn push(&mut self, id: String, seq: String) -> Result<(), String> {
         let encoded: Vec<A::Symbol> = seq.as_bytes().iter().map(|&b| A::encode(b)).collect();
         self.validate_sequence_length(encoded.len())?;
@@ -71,6 +78,8 @@ impl<A: AlphabetEncoding> MSA<A> {
         Ok(())
     }
 
+    /// Appends an already-encoded sequence. Used by [`bootstrap`](MSA::bootstrap)
+    /// to avoid re-encoding symbols that were derived from existing MSA data.
     fn push_encoded(&mut self, id: String, seq: Vec<A::Symbol>) -> Result<(), String> {
         let seq_len = seq.len();
         self.validate_sequence_length(seq_len)?;
@@ -81,7 +90,7 @@ impl<A: AlphabetEncoding> MSA<A> {
         Ok(())
     }
 
-    /// Creates an MSA from a vector of unnamed sequences, assigning default names.
+    /// Creates an MSA from raw sequences, assigning `Seq0`, `Seq1`, … as identifiers.
     pub fn from_unnamed_sequences(sequences: Vec<String>) -> Result<Self, String> {
         let mut msa = MSA::new();
         for (i, seq) in sequences.into_iter().enumerate() {
@@ -90,7 +99,7 @@ impl<A: AlphabetEncoding> MSA<A> {
         Ok(msa)
     }
 
-    /// Creates an index map from sequence identifiers to their indices in the MSA.
+    /// Returns a map from sequence identifier to its 0-based position in the MSA.
     pub fn to_index_map(&self) -> HashMap<String, usize> {
         self.identifiers
             .iter()

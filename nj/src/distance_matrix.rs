@@ -1,4 +1,11 @@
 //! Lower-triangular pairwise distance matrix and entry point for NJ.
+//!
+//! [`DistMat`] stores only the `n*(n-1)/2` strictly lower-triangular entries
+//! in a flat `Vec<f64>`, keeping memory at O(n²/2). Access and mutation via
+//! [`get`](DistMat::get) / [`set`](DistMat::set) are symmetric, so callers
+//! never need to worry about index ordering. Build from an [`MSA`] via
+//! [`DistMat::from_msa`] (or the [`MSA::into_dist`] convenience wrapper), then
+//! call [`neighbor_joining`](DistMat::neighbor_joining) to run the algorithm.
 
 use crate::MSA;
 use crate::alphabet::AlphabetEncoding;

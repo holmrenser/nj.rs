@@ -63,7 +63,6 @@ impl<'a> NJState<'a> {
     pub fn new(dist: &'a mut DistMat) -> Self {
         let n = dist.dim();
 
-        // Initialize tree nodes as leaves with identifiers corresponding to their index.
         let nodes = dist
             .names
             .iter()
@@ -71,12 +70,10 @@ impl<'a> NJState<'a> {
             .map(|(i, name)| Some(TreeNode::leaf(i, name.clone(), None)))
             .collect();
 
-        // Precompute row sums for the initial distance matrix.
         let row_sums = (0..n)
             .map(|i| (0..n).map(|j| dist.get(i, j)).sum())
             .collect();
 
-        // All nodes start as active (not yet joined).
         let active = BitVec::repeat(true, n);
 
         NJState {
@@ -103,18 +100,12 @@ impl<'a> NJState<'a> {
         }
 
         for _ in 0..(n - 2) {
-            // Select pair i,j minimizing Q-metric.
             let (i, j, d_ij) = self.select_min_q_pair().ok_or("No pair found")?;
-            // Compute branch lengths for the new node to i and j.
             let (li, lj) =
                 compute_branch_lengths(d_ij, &self.row_sums, i, j, self.active.count_ones());
-
-            // New node goes in position i, j is removed
             self.join_nodes(i, j, li, lj);
-            // Update distances and row sums after joining.
-            // It is important to do this before marking j as inactive, since we need j's distances.
+            // Must precede marking j inactive: update_distances iterates active nodes.
             self.update_distances(i, j);
-            // Mark j as inactive.
             self.active.set(j, false);
         }
 
@@ -183,26 +174,18 @@ impl<'a> NJState<'a> {
     /// from scratch each iteration. Must be called **before** marking `j`
     /// inactive, since the loop iterates over currently active nodes.
     fn update_distances(&mut self, i: usize, j: usize) {
-        // Get the distance between i and j before they are joined, which is needed for the update.
         let d_ij = self.dist.get(i, j);
-
         self.row_sums[i] -= d_ij;
 
-        // Update distances to the new node i and maintain row sums incrementally.
         for k in self.active.iter_ones() {
-            // Skip j since it's being removed and skip i since it's the new node.
             if k == i || k == j {
                 continue;
             }
             let d_ik = self.dist.get(i, k);
             let d_jk = self.dist.get(j, k);
-            // Classic NJ update formula
             let d_new = 0.5 * (d_ik + d_jk - d_ij);
-
-            // Update row sums for i and k. We can do this incrementally by subtracting the old distances and adding the new one.
             self.row_sums[i] = self.row_sums[i] - d_ik + d_new;
             self.row_sums[k] = self.row_sums[k] - d_ik - d_jk + d_new;
-            // Update the distance matrix with the new distance to i.
             self.dist.set(i, k, d_new);
         }
         self.row_sums[j] = 0.0;
