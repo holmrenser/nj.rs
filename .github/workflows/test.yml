@@ -22,7 +22,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.rust }}
-      - run: cargo test
+      - run: make test
+        working-directory: nj
 
   wasm:
     name: WASM tests
@@ -37,14 +38,14 @@ jobs:
           workspaces: wasm -> wasm/target
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
           cache: npm
           cache-dependency-path: wasm/package-lock.json
       - run: npm ci
         working-directory: wasm
-      - run: CARGO_TARGET_DIR=target npm run build
+      - run: make
         working-directory: wasm
-      - run: npm test
+      - run: make test
         working-directory: wasm
 
   python:
@@ -52,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python: ['3.11', '3.12', '3.13']
+        python: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -64,5 +65,5 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - uses: astral-sh/setup-uv@v5
-      - run: uv run pytest
+      - run: make test
         working-directory: python
