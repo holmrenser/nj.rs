@@ -79,6 +79,33 @@ class TestErrors:
             nj(msa(("A", "ACDEFGH"), ("B", "ACDEFGK")), substitution_model="Kimura2P")
 
 
+class TestMixedCase:
+    def test_lowercase_dna_detected_as_dna(self):
+        result = nj(msa(("A", "acgt"), ("B", "acga")))
+        assert result.endswith(";")
+
+    def test_mixedcase_dna(self):
+        result = nj(msa(("A", "AcGt"), ("B", "aCgA")))
+        assert result.endswith(";")
+
+    def test_lowercase_matches_uppercase(self):
+        upper = nj(msa(("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")))
+        lower = nj(msa(("A", "acgt"), ("B", "acga"), ("C", "aggt")))
+        assert upper == lower
+
+
+class TestSpecialNames:
+    def test_sequence_name_with_spaces(self):
+        result = nj(msa(("Seq A", "ACGT"), ("Seq B", "ACGA")))
+        assert "Seq A" in result
+        assert "Seq B" in result
+
+    def test_sequence_name_with_special_chars(self):
+        result = nj(msa(("Sp|1.1", "ACGT"), ("Sp|2.1", "ACGA")))
+        assert "Sp|1.1" in result
+        assert "Sp|2.1" in result
+
+
 class TestBootstrap:
     def test_bootstrap_zero_samples(self):
         result = nj(

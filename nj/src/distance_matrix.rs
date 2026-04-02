@@ -34,8 +34,12 @@ impl DistMat {
     /// Creates a zeroed distance matrix for `names.len()` taxa.
     pub fn empty_with_names(names: Vec<String>) -> Self {
         let n = names.len();
+        let n_entries = n
+            .checked_mul(n.saturating_sub(1))
+            .expect("distance matrix too large: n * (n-1) overflows usize")
+            / 2;
         Self {
-            data: vec![0.0; n.saturating_mul(n.saturating_sub(1)) / 2],
+            data: vec![0.0; n_entries],
             names,
         }
     }

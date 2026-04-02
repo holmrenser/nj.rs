@@ -124,10 +124,7 @@ impl<A: AlphabetEncoding> MSA<A> {
 
         let mut new_msa = MSA::new();
         for (orig_seq, identifier) in self.sequences.iter().zip(self.identifiers.iter()) {
-            let new_sequence = sampled_indices
-                .iter()
-                .map(|&i| *orig_seq.iter().nth(i).unwrap())
-                .collect();
+            let new_sequence = sampled_indices.iter().map(|&i| orig_seq[i]).collect();
             new_msa.push_encoded(identifier.clone(), new_sequence)?;
         }
         Ok(new_msa)

@@ -2,8 +2,12 @@
 members = ["nj", "wasm", "python"]
 resolver = "3"
 
+[profile.release]
+opt-level = 3
+lto = true
+
 [workspace.package]
-version = "0.0.16"
+version = "0.0.17"
 edition = "2024"
 authors = ["Rens Holmer"]
 license = "MIT"
