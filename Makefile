@@ -14,7 +14,7 @@ python:
 	$(MAKE) -C python
 
 test:
-	cargo test
+	$(MAKE) -C nj test
 	$(MAKE) -C wasm test
 	$(MAKE) -C python test
 

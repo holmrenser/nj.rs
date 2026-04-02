@@ -27,7 +27,7 @@ build-backend = "maturin"
 testpaths = ["tests"]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "maturin>=1.0,<2.0"]
 
 [tool.maturin]
 strip = false
