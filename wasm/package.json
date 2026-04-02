@@ -13,8 +13,8 @@
   "homepage": "https://github.com/holmrenser/nj.rs#readme",
   "bugs": "https://github.com/holmrenser/nj.rs/issues",
   "type": "module",
-  "main": "./pkg-node/nj_wasm.js",
-  "module": "./pkg-web/nj_wasm.js",
+  "main": "./pkg-node/nj_js.js",
+  "module": "./pkg-web/nj_js.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/holmrenser/nj.rs"
