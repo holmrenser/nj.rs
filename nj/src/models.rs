@@ -1,3 +1,11 @@
+//! Substitution models for computing pairwise evolutionary distances.
+//!
+//! All models implement [`ModelCalculation`] via a three-phase accumulator
+//! pattern over aligned column pairs: [`init`](ModelCalculation::init) → per-column
+//! [`accumulate`](ModelCalculation::accumulate) → [`finalize`](ModelCalculation::finalize).
+//! Gap positions are skipped during accumulation, but the full alignment length
+//! is always used as the denominator in the final distance formula.
+
 use serde::{Deserialize, Serialize};
 
 use crate::alphabet::{AlphabetEncoding, DNA, DnaSymbol, Protein, ProteinSymbol};

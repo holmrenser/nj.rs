@@ -103,20 +103,17 @@ fn count_clades(
     counter: &mut HashMap<Vec<u8>, usize>,
 ) -> Result<(), String> {
     if let Some([l, r]) = &tree.children {
-        // compute clade bitvec
         let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
         bitset_of(tree, idx, &mut bv).unwrap();
 
         let n = bv.count_ones();
         if n > 1 && n < n_taxa {
-            // unique by structure; no HashSet needed
             counter
                 .entry(bv.as_raw_slice().to_vec())
                 .and_modify(|c| *c += 1)
                 .or_insert(1);
         }
 
-        // recursion
         count_clades(l, idx, n_taxa, counter)?;
         count_clades(r, idx, n_taxa, counter)?;
     }
@@ -163,7 +160,6 @@ fn add_bootstrap_to_tree(
     counts: &HashMap<Vec<u8>, usize>,
 ) {
     if node.children.is_some() {
-        // compute clade bitvec
         let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
         bitset_of(node, idx, &mut bv).unwrap();
 
@@ -174,7 +170,6 @@ fn add_bootstrap_to_tree(
             }
         }
 
-        // recursion
         if let Some([l, r]) = &mut node.children {
             add_bootstrap_to_tree(l, idx, n_taxa, counts);
             add_bootstrap_to_tree(r, idx, n_taxa, counts);

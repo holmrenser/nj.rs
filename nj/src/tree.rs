@@ -1,8 +1,9 @@
 //! Binary tree representation for Neighbor-Joining output.
 //!
-//! Trees are built bottom-up by the NJ algorithm: the algorithm starts with
-//! leaf nodes and repeatedly joins pairs into new internal nodes. The final
-//! result is a single [`TreeNode`] at the root.
+//! Trees are built bottom-up: the NJ algorithm starts with leaf [`TreeNode`]s
+//! and repeatedly joins pairs into new internal nodes, leaving a single root
+//! node at the end. Call [`TreeNode::to_newick`] on the root to serialise the
+//! tree to a semicolon-terminated Newick string.
 
 use std::fmt::{Display, Formatter, Result as FmtResult};
 

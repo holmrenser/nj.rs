@@ -61,7 +61,7 @@ def nj(
             "n_bootstrap_samples": n_bootstrap_samples,
         },
         on_progress,
-    )
+    )  # pyright: ignore[reportUnknownVariableType]
 
 
 __all__ = ["nj", "SubstitutionModel"]
