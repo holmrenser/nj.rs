@@ -137,3 +137,81 @@ impl TreeNode {
         newick
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_leaf_newick_with_branch_length() {
+        let node = TreeNode::leaf(0, "A".into(), Some(0.5));
+        // Leaves serialise as just their name; the branch length is added by the parent.
+        assert_eq!(node.to_newick_recursion(), "A");
+        // to_newick on a lone leaf still appends the semicolon.
+        assert_eq!(node.to_newick(), "A;");
+    }
+
+    #[test]
+    fn test_leaf_newick_no_branch_length() {
+        let node = TreeNode::leaf(0, "X".into(), None);
+        assert_eq!(node.to_newick(), "X;");
+    }
+
+    #[test]
+    fn test_internal_node_branch_lengths_three_decimals() {
+        let left = TreeNode::leaf(0, "L".into(), Some(0.1234));
+        let right = TreeNode::leaf(1, "R".into(), Some(0.5678));
+        let root = TreeNode::internal(2, Some([Box::new(left), Box::new(right)]), Some(0.0), None);
+        let newick = root.to_newick();
+        // Branch lengths must be formatted to exactly 3 decimal places.
+        assert!(newick.contains("L:0.123"), "got {newick}");
+        assert!(newick.contains("R:0.568"), "got {newick}");
+        assert!(newick.starts_with('('));
+        assert!(newick.ends_with(");"));
+    }
+
+    #[test]
+    fn test_internal_node_bootstrap_support_label() {
+        let left = TreeNode::leaf(0, "A".into(), Some(0.1));
+        let right = TreeNode::leaf(1, "B".into(), Some(0.2));
+        let root =
+            TreeNode::internal(2, Some([Box::new(left), Box::new(right)]), Some(0.0), Some(85));
+        let newick = root.to_newick();
+        assert!(newick.ends_with(")85;"), "got {newick}");
+    }
+
+    #[test]
+    fn test_internal_node_no_support_label() {
+        let left = TreeNode::leaf(0, "A".into(), Some(0.1));
+        let right = TreeNode::leaf(1, "B".into(), Some(0.2));
+        let root = TreeNode::internal(2, Some([Box::new(left), Box::new(right)]), Some(0.0), None);
+        let newick = root.to_newick();
+        // No support value → closing paren immediately followed by semicolon.
+        assert!(newick.ends_with(");"), "got {newick}");
+    }
+
+    #[test]
+    fn test_nested_tree_newick() {
+        // ((A:0.1,B:0.2):0.3,C:0.4);
+        let a = TreeNode::leaf(0, "A".into(), Some(0.1));
+        let b = TreeNode::leaf(1, "B".into(), Some(0.2));
+        let ab = TreeNode::internal(3, Some([Box::new(a), Box::new(b)]), Some(0.3), None);
+        let c = TreeNode::leaf(2, "C".into(), Some(0.4));
+        let root =
+            TreeNode::internal(4, Some([Box::new(ab), Box::new(c)]), Some(0.0), None);
+        let newick = root.to_newick();
+        assert!(newick.contains("A:0.100"), "got {newick}");
+        assert!(newick.contains("B:0.200"), "got {newick}");
+        assert!(newick.contains("C:0.400"), "got {newick}");
+        assert!(newick.starts_with("(("), "got {newick}");
+        assert!(newick.ends_with(");"), "got {newick}");
+    }
+
+    #[test]
+    fn test_zero_branch_length_newick() {
+        let left = TreeNode::leaf(0, "A".into(), Some(0.0));
+        let right = TreeNode::leaf(1, "B".into(), Some(0.0));
+        let root = TreeNode::internal(2, Some([Box::new(left), Box::new(right)]), Some(0.0), None);
+        assert_eq!(root.to_newick(), "(A:0.000,B:0.000);");
+    }
+}

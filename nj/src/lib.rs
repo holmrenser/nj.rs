@@ -104,7 +104,7 @@ fn count_clades(
 ) -> Result<(), String> {
     if let Some([l, r]) = &tree.children {
         let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
-        bitset_of(tree, idx, &mut bv).unwrap();
+        bitset_of(tree, idx, &mut bv)?;
 
         let n = bv.count_ones();
         if n > 1 && n < n_taxa {
@@ -158,10 +158,10 @@ fn add_bootstrap_to_tree(
     idx: &HashMap<String, usize>,
     n_taxa: usize,
     counts: &HashMap<Vec<u8>, usize>,
-) {
+) -> Result<(), String> {
     if node.children.is_some() {
         let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
-        bitset_of(node, idx, &mut bv).unwrap();
+        bitset_of(node, idx, &mut bv)?;
 
         let n = bv.count_ones();
         if n > 1 && n < n_taxa {
@@ -171,10 +171,11 @@ fn add_bootstrap_to_tree(
         }
 
         if let Some([l, r]) = &mut node.children {
-            add_bootstrap_to_tree(l, idx, n_taxa, counts);
-            add_bootstrap_to_tree(r, idx, n_taxa, counts);
+            add_bootstrap_to_tree(l, idx, n_taxa, counts)?;
+            add_bootstrap_to_tree(r, idx, n_taxa, counts)?;
         }
     }
+    Ok(())
 }
 
 /// Heuristically detects whether the MSA contains DNA or protein sequences.
@@ -230,7 +231,7 @@ where
     let newick = match clade_counts {
         Some(counts) => {
             let main_idx_map: HashMap<String, usize> = msa.to_index_map();
-            add_bootstrap_to_tree(&mut main_tree, &main_idx_map, msa.n_sequences, &counts);
+            add_bootstrap_to_tree(&mut main_tree, &main_idx_map, msa.n_sequences, &counts)?;
             main_tree.to_newick()
         }
         None => main_tree.to_newick(),
@@ -256,6 +257,20 @@ pub fn nj(
     let cb = on_progress.as_deref();
     if conf.msa.is_empty() {
         return Err("Input MSA is empty".into());
+    }
+    let expected_len = conf.msa[0].sequence.len();
+    if expected_len == 0 {
+        return Err("Sequences must not be empty".into());
+    }
+    for s in &conf.msa {
+        if s.sequence.len() != expected_len {
+            return Err(format!(
+                "All sequences must have the same length. Expected {}, got {} for '{}'",
+                expected_len,
+                s.sequence.len(),
+                s.identifier
+            ));
+        }
     }
     let alphabet = detect_alphabet(&conf.msa)?;
     match alphabet {
