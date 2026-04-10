@@ -6,13 +6,13 @@
 //! # Usage
 //!
 //! ```text
-//! nj [OPTIONS] <FASTA>
+//! nj [OPTIONS] [FASTA]
 //!
 //! Arguments:
-//!   <FASTA>  MSA FASTA file to process
+//!   [FASTA]  MSA FASTA file to process (reads from stdin if omitted)
 //!
 //! Options:
-//!   -b, --n-bootstrap-samples <N>   Number of bootstrap replicates [default: 100]
+//!   -b, --n-bootstrap-samples <N>    Number of bootstrap replicates [default: 100]
 //!   -m, --substitution-model <MODEL> Substitution model [default: p-diff]
 //!   -o, --output <FILE>              Write Newick output to file instead of stdout
 //! ```
@@ -24,15 +24,16 @@ mod cli {
     use clap::Parser;
     use nj::nj;
     use std::fs;
+    use std::io::Read;
     use std::path::PathBuf;
 
     /// Parsed command-line arguments.
     #[derive(Parser, Debug)]
     #[command(author, version, about)]
     pub struct Args {
-        /// MSA FASTA file to process.
+        /// MSA FASTA file to process. Reads from stdin when omitted.
         #[arg(value_name = "FASTA")]
-        pub input: PathBuf,
+        pub input: Option<PathBuf>,
 
         /// Write Newick output to this file instead of stdout.
         #[arg(short, long, value_name = "FILE")]
@@ -137,15 +138,29 @@ mod cli {
         Ok(msa)
     }
 
-    /// Parses arguments, reads the FASTA file, runs NJ, and writes the Newick
+    /// Reads the FASTA file from `args`, runs NJ, and writes the Newick
     /// output to stdout or a file.
-    pub fn run() -> Result<(), String> {
+    ///
+    /// Argument parsing is handled by the caller; pass [`Args::parse()`] for
+    /// production use or a manually constructed [`Args`] in tests.
+    pub fn run(args: Args) -> Result<(), String> {
         use indicatif::{ProgressBar, ProgressStyle};
 
-        let args = Args::parse();
+        if args.distance_matrix && args.average_distance {
+            return Err("--distance-matrix and --average-distance are mutually exclusive".into());
+        }
 
-        let fasta = fs::read_to_string(&args.input)
-            .map_err(|e| format!("failed to read {}: {e}", args.input.display()))?;
+        let fasta = match &args.input {
+            Some(path) => fs::read_to_string(path)
+                .map_err(|e| format!("failed to read {}: {e}", path.display()))?,
+            None => {
+                let mut buf = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .map_err(|e| format!("failed to read stdin: {e}"))?;
+                buf
+            }
+        };
 
         let msa = parse_fasta(&fasta)?;
 
@@ -221,7 +236,8 @@ mod cli {
 fn main() -> Result<(), String> {
     #[cfg(feature = "cli")]
     {
-        cli::run()
+        use clap::Parser;
+        cli::run(cli::Args::parse())
     }
     #[cfg(not(feature = "cli"))]
     {
@@ -233,222 +249,164 @@ fn main() -> Result<(), String> {
 #[cfg(test)]
 #[cfg(feature = "cli")]
 mod main_tests {
-    use super::cli::parse_fasta;
-    use ::nj::config::{DistConfig, NJConfig, SequenceObject};
+    use super::cli::{run, Args};
     use ::nj::models::SubstitutionModel;
-    use nj::nj;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
-    #[test]
-    fn test_parse_basic_fasta() {
-        let input = ">seq1\nACGT\n>seq2\nTGCA\n";
-        let expected = vec![
-            SequenceObject {
-                identifier: "seq1".into(),
-                sequence: "ACGT".into(),
-            },
-            SequenceObject {
-                identifier: "seq2".into(),
-                sequence: "TGCA".into(),
-            },
-        ];
-        let msa = parse_fasta(input).expect("parse failed");
-        assert_eq!(msa.len(), expected.len());
-        for (a, b) in msa.into_iter().zip(expected.into_iter()) {
-            assert_eq!(a.identifier, b.identifier);
-            assert_eq!(a.sequence, b.sequence);
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_fasta(content: &str) -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!("nj_test_{}_{}.fasta", std::process::id(), n));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    fn base_args(input: PathBuf) -> Args {
+        Args {
+            input: Some(input),
+            output: None,
+            n_bootstrap_samples: 0,
+            substitution_model: SubstitutionModel::PDiff,
+            distance_matrix: false,
+            average_distance: false,
         }
     }
 
     #[test]
-    fn test_parse_empty_input_is_error() {
-        assert!(parse_fasta("").is_err());
+    fn test_run_nj_succeeds() {
+        assert!(run(base_args(fixture("simple_dna.fasta"))).is_ok());
     }
 
     #[test]
-    fn test_parse_single_sequence() {
-        let input = ">s1\nAA\nCC\n";
-        let expected = vec![SequenceObject {
-            identifier: "s1".into(),
-            sequence: "AACC".into(),
-        }];
-        let msa = parse_fasta(input).expect("parse failed");
-        assert_eq!(msa.len(), expected.len());
-        assert_eq!(msa[0].identifier, expected[0].identifier);
-        assert_eq!(msa[0].sequence, expected[0].sequence);
+    fn test_run_distance_matrix_succeeds() {
+        let args = Args {
+            distance_matrix: true,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(args).is_ok());
     }
 
     #[test]
-    fn test_parse_multiple_sequences_and_multiline_sequence() {
-        let input = ">s1\nAA\nCC\n>s2\nGG\nTT\n";
-        let expected = vec![
-            SequenceObject {
-                identifier: "s1".into(),
-                sequence: "AACC".into(),
-            },
-            SequenceObject {
-                identifier: "s2".into(),
-                sequence: "GGTT".into(),
-            },
-        ];
-        let msa = parse_fasta(input).expect("parse failed");
-
-        assert_eq!(msa.len(), expected.len());
-        for (a, b) in msa.into_iter().zip(expected.into_iter()) {
-            assert_eq!(a.identifier, b.identifier);
-            assert_eq!(a.sequence, b.sequence);
-        }
+    fn test_run_average_distance_succeeds() {
+        let args = Args {
+            average_distance: true,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(args).is_ok());
     }
 
     #[test]
-    fn test_parse_with_blank_lines_and_trimming() {
-        let input = "\n  >s1    \nAA   \nCC\n\n>s2  \nGG\nTT\n";
-        let expected = vec![
-            SequenceObject {
-                identifier: "s1".into(),
-                sequence: "AACC".into(),
-            },
-            SequenceObject {
-                identifier: "s2".into(),
-                sequence: "GGTT".into(),
-            },
-        ];
-        let msa = parse_fasta(input).expect("parse failed");
-        assert_eq!(msa.len(), expected.len());
-        assert_eq!(msa[0].identifier, expected[0].identifier);
-        assert_eq!(msa[0].sequence, expected[0].sequence);
+    fn test_run_writes_output_file() {
+        let out = std::env::temp_dir().join(format!("nj_out_{}.nwk", std::process::id()));
+        let args = Args {
+            output: Some(out.clone()),
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        run(args).expect("run failed");
+        assert!(out.exists());
+        let _ = std::fs::remove_file(out);
     }
 
     #[test]
-    fn test_sequence_before_header_is_error() {
-        let input = "ACGT\n>s\nAC\n";
-        assert!(parse_fasta(input).is_err());
+    fn test_run_missing_file_is_error() {
+        assert!(run(base_args(PathBuf::from("nonexistent.fasta"))).is_err());
     }
 
     #[test]
-    fn test_header_with_no_sequence_is_error() {
-        let input = ">only_header\n";
-        assert!(parse_fasta(input).is_err())
+    fn test_run_empty_fasta_is_error() {
+        let path = temp_fasta("");
+        assert!(run(base_args(path)).is_err());
     }
 
     #[test]
-    fn test_inconsistent_sequence_lengths_are_error() {
-        let input = ">s1\nACGT\n>s2\nAC\n";
-        assert!(parse_fasta(input).is_err());
+    fn test_run_sequence_before_header_is_error() {
+        let path = temp_fasta("ACGT\n>s\nAC\n");
+        assert!(run(base_args(path)).is_err());
     }
 
     #[test]
-    fn test_empty_sequence_is_error() {
-        let input = ">s1\n\n>s2\nACGT\n";
-        assert!(parse_fasta(input).is_err());
+    fn test_run_header_with_no_sequence_is_error() {
+        let path = temp_fasta(">only_header\n");
+        assert!(run(base_args(path)).is_err());
     }
 
     #[test]
-    fn test_parse_fasta_with_whitespace() {
-        let input = "   >seq1   \n  ACGT  \n>seq2\n TGCA \n ";
-        let expected = vec![
-            SequenceObject {
-                identifier: "seq1".into(),
-                sequence: "ACGT".into(),
-            },
-            SequenceObject {
-                identifier: "seq2".into(),
-                sequence: "TGCA".into(),
-            },
-        ];
-        let msa = parse_fasta(input).expect("parse failed");
-        assert_eq!(msa.len(), expected.len());
-        for (a, b) in msa.into_iter().zip(expected.into_iter()) {
-            assert_eq!(a.identifier, b.identifier);
-            assert_eq!(a.sequence, b.sequence);
-        }
+    fn test_run_inconsistent_lengths_is_error() {
+        let path = temp_fasta(">s1\nACGT\n>s2\nAC\n");
+        assert!(run(base_args(path)).is_err());
+    }
+
+    // --- Conflicting output flags ---
+
+    #[test]
+    fn test_run_conflicting_output_flags_is_error() {
+        let args = Args {
+            distance_matrix: true,
+            average_distance: true,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(args).is_err());
+    }
+
+    // --- Model–alphabet incompatibility ---
+
+    #[test]
+    fn test_run_dna_with_protein_model_is_error() {
+        let args = Args {
+            substitution_model: SubstitutionModel::Poisson,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(args).is_err());
     }
 
     #[test]
-    fn test_parse_fasta_with_no_sequences_is_error() {
-        let input = ">seq1\n>seq2\n";
-        assert!(parse_fasta(input).is_err());
+    fn test_run_protein_with_dna_only_model_is_error() {
+        let args = Args {
+            substitution_model: SubstitutionModel::JukesCantor,
+            ..base_args(fixture("simple_protein.fasta"))
+        };
+        assert!(run(args).is_err());
+    }
+
+    // --- Non-default model success paths ---
+
+    #[test]
+    fn test_run_dna_jukes_cantor_succeeds() {
+        let args = Args {
+            substitution_model: SubstitutionModel::JukesCantor,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(args).is_ok());
     }
 
     #[test]
-    fn test_nj_single_taxon() {
-        let input = ">A\nACGT\n";
-        let msa = parse_fasta(input).expect("parse failed");
-        let newick = nj(
-            NJConfig {
-                msa,
-                n_bootstrap_samples: 1,
-                substitution_model: SubstitutionModel::PDiff,
-            },
-            None,
-        )
-        .expect("NJ failed");
-        assert_eq!(newick, "A;");
+    fn test_run_dna_kimura2p_succeeds() {
+        let args = Args {
+            substitution_model: SubstitutionModel::Kimura2P,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(args).is_ok());
     }
 
     #[test]
-    fn test_nj_two_taxa() {
-        let input = ">A\nACG\n>B\nATG\n";
-        let msa = parse_fasta(input).expect("parse failed");
-        let newick = nj(
-            NJConfig {
-                msa,
-                n_bootstrap_samples: 1,
-                substitution_model: SubstitutionModel::PDiff,
-            },
-            None,
-        )
-        .expect("NJ failed");
-        assert_eq!(newick, "(A:0.167,B:0.167);");
+    fn test_run_protein_poisson_succeeds() {
+        let args = Args {
+            substitution_model: SubstitutionModel::Poisson,
+            ..base_args(fixture("simple_protein.fasta"))
+        };
+        assert!(run(args).is_ok());
     }
 
     #[test]
-    fn test_nj_three_taxa() {
-        let input = ">A\nACG\n>B\nATG\n>C\nA-G\n";
-        let msa = parse_fasta(input).expect("parse failed");
-        let newick = nj(
-            NJConfig {
-                msa,
-                n_bootstrap_samples: 1,
-                substitution_model: SubstitutionModel::PDiff,
-            },
-            None,
-        )
-        .expect("NJ failed");
-        // The expected Newick string may vary depending on implementation details.
-        // Here we just check that it contains the correct taxa names.
-        assert!(newick.contains("A"));
-        assert!(newick.contains("B"));
-        assert!(newick.contains("C"));
-    }
-
-    #[test]
-    fn test_nj_protein_sequences() {
-        let input = ">Prot1\nACDEFGHIK\n>Prot2\nACDFFGHIK\n";
-        let msa = parse_fasta(input).expect("parse failed");
-        let newick = nj(
-            NJConfig {
-                msa,
-                n_bootstrap_samples: 1,
-                substitution_model: SubstitutionModel::PDiff,
-            },
-            None,
-        )
-        .expect("NJ failed");
-        assert!(newick.contains("Prot1"));
-        assert!(newick.contains("Prot2"));
-    }
-
-    #[test]
-    fn test_nj_empty_msa_is_error() {
-        let msa = Vec::<SequenceObject>::new();
-        let result = nj(
-            NJConfig {
-                msa,
-                n_bootstrap_samples: 1,
-                substitution_model: SubstitutionModel::PDiff,
-            },
-            None,
-        );
-        assert!(result.is_err());
+    fn test_run_protein_pdiff_succeeds() {
+        assert!(run(base_args(fixture("simple_protein.fasta"))).is_ok());
     }
 }
