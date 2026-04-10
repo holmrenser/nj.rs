@@ -2,6 +2,41 @@
 import type { SubstitutionModel } from "../../nj/bindings/SubstitutionModel";
 
 /**
+ * Configuration for distance-only computation (no NJ, no bootstrap).
+ *
+ * Pass a `DistConfig` to [`crate::distance_matrix`] or [`crate::average_distance`].
+ * The alphabet (DNA vs. protein) is auto-detected from the sequences;
+ * [`substitution_model`](DistConfig::substitution_model) must be compatible with
+ * that alphabet or an error is returned.
+ */
+export type DistConfig = { 
+/**
+ * The aligned sequences. All sequences must have the same length.
+ */
+msa: Array<SequenceObject>, 
+/**
+ * Substitution model used to compute pairwise distances.
+ */
+substitution_model: SubstitutionModel, };
+
+/**
+ * Serializable pairwise distance matrix returned by [`crate::distance_matrix`].
+ *
+ * Expands the internal lower-triangular storage to a full symmetric n×n matrix
+ * for ease of consumption in JSON, Python, and TypeScript.
+ */
+export type DistanceResult = { 
+/**
+ * Sequence/taxa names, one per row/column.
+ */
+names: Array<string>, 
+/**
+ * Full symmetric n×n distance matrix. `matrix[i][j]` is the distance
+ * between taxa `i` and `j`; diagonal entries are `0.0`.
+ */
+matrix: Array<Array<number>>, };
+
+/**
  * Full configuration for a single Neighbor-Joining run.
  *
  * Pass an `NJConfig` to [`crate::nj`] to run the algorithm and receive a

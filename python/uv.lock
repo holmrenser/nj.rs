@@ -58,7 +58,7 @@ wheels = [
 
 [[package]]
 name = "nj-py"
-version = "0.0.13"
+version = "0.0.17"
 source = { editable = "." }
 
 [package.dev-dependencies]

@@ -36,10 +36,14 @@ optional = true
 version = "0.17"
 optional = true
 
+[dependencies.serde_json]
+version = "1"
+optional = true
+
 
 [features]
 # default build only builds the library
 default = []
 
 # feature to build CLI
-cli = ["clap", "indicatif"]
+cli = ["clap", "indicatif", "serde_json"]

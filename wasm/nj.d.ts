@@ -1,6 +1,8 @@
-import type { NJConfig, SequenceObject } from "./types/lib_types";
+import type { DistConfig, DistanceResult, NJConfig, SequenceObject } from "./types/lib_types";
 
-export type { NJConfig, SequenceObject };
+export type { DistConfig, DistanceResult, NJConfig, SequenceObject };
+
+export type NJProgressCallback = (current: number, total: number) => void;
 
 /**
  * Infers a Neighbor-Joining phylogenetic tree from a multiple sequence alignment.
@@ -21,7 +23,25 @@ export type { NJConfig, SequenceObject };
  * @throws {Error} If the MSA is empty, sequences have unequal or zero length,
  *   or an incompatible model–alphabet combination is provided.
  */
-export function nj(
-  config: NJConfig,
-  onProgress?: (current: number, total: number) => void,
-): string;
+export function nj(config: NJConfig, onProgress?: NJProgressCallback): string;
+
+/**
+ * Computes pairwise distances and returns a full symmetric distance matrix.
+ *
+ * @param config - Alignment and model settings. No bootstrap field needed.
+ * @returns An object with `names` (taxon name array) and `matrix` (n×n
+ *   symmetric distance matrix; diagonal entries are `0`).
+ * @throws {Error} If the MSA is empty, sequences have unequal or zero length,
+ *   or an incompatible model–alphabet combination is provided.
+ */
+export function distance_matrix(config: DistConfig): DistanceResult;
+
+/**
+ * Computes the mean of all n*(n-1)/2 unique pairwise distances.
+ *
+ * @param config - Alignment and model settings. No bootstrap field needed.
+ * @returns Mean pairwise distance. Returns `0` for fewer than 2 taxa.
+ * @throws {Error} If the MSA is empty, sequences have unequal or zero length,
+ *   or an incompatible model–alphabet combination is provided.
+ */
+export function average_distance(config: DistConfig): number;

@@ -32,10 +32,11 @@
 
 #[pyo3::pymodule]
 mod _nj_py {
-    use ::nj::nj as lib_nj;
+    use ::nj::{DistConfig, average_distance as lib_average_distance,
+               distance_matrix as lib_distance_matrix, nj as lib_nj};
     use pyo3::exceptions::PyValueError;
     use pyo3::prelude::*;
-    use serde_pyobject::from_pyobject;
+    use serde_pyobject::{from_pyobject, to_pyobject};
 
     /// Run Neighbor-Joining and return a Newick string.
     ///
@@ -59,5 +60,34 @@ mod _nj_py {
         });
 
         lib_nj(config, callback).map_err(|e| PyValueError::new_err(e))
+    }
+
+    /// Compute pairwise distances and return a dict `{"names": [...], "matrix": [[...]]}`.
+    ///
+    /// `config` must be a dict with shape
+    /// `{"msa": [{"identifier": ..., "sequence": ...}, ...], "substitution_model": "PDiff"}`.
+    /// Raises `ValueError` if the config is malformed or the model is incompatible.
+    #[pyfunction]
+    #[pyo3(signature = (py_config))]
+    fn distance_matrix(py: Python<'_>, py_config: Bound<PyAny>) -> PyResult<Py<PyAny>> {
+        let config: DistConfig =
+            from_pyobject(py_config).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let result = lib_distance_matrix(config).map_err(|e| PyValueError::new_err(e))?;
+        to_pyobject(py, &result)
+            .map(|b| b.unbind())
+            .map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Compute the mean pairwise distance and return it as a float.
+    ///
+    /// `config` must be a dict with shape
+    /// `{"msa": [{"identifier": ..., "sequence": ...}, ...], "substitution_model": "PDiff"}`.
+    /// Raises `ValueError` if the config is malformed or the model is incompatible.
+    #[pyfunction]
+    #[pyo3(signature = (py_config))]
+    fn average_distance(py_config: Bound<PyAny>) -> PyResult<f64> {
+        let config: DistConfig =
+            from_pyobject(py_config).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        lib_average_distance(config).map_err(|e| PyValueError::new_err(e))
     }
 }

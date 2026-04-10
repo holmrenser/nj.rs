@@ -12,6 +12,7 @@ use crate::alphabet::AlphabetEncoding;
 use crate::models::{ModelCalculation, pairwise_distance};
 use crate::nj::NJState;
 use crate::tree::TreeNode;
+use serde::{Deserialize, Serialize};
 
 /// Lower-triangular pairwise distance matrix.
 ///
@@ -100,6 +101,25 @@ impl DistMat {
         dist
     }
 
+    /// Converts to a [`DistanceResult`] by expanding to a full symmetric n×n matrix.
+    pub fn into_result(self) -> DistanceResult {
+        let n = self.dim();
+        let matrix = (0..n)
+            .map(|i| (0..n).map(|j| self.get(i, j)).collect())
+            .collect();
+        DistanceResult { names: self.names, matrix }
+    }
+
+    /// Returns the mean of all `n*(n-1)/2` unique pairwise distances.
+    ///
+    /// Returns `0.0` for matrices with fewer than 2 taxa (no pairs exist).
+    pub fn average(&self) -> f64 {
+        if self.data.is_empty() {
+            return 0.0;
+        }
+        self.data.iter().sum::<f64>() / self.data.len() as f64
+    }
+
     /// Runs the Neighbor-Joining algorithm and returns the inferred tree.
     ///
     /// Consumes `self` because the NJ state machine mutates the matrix in
@@ -108,6 +128,20 @@ impl DistMat {
     pub fn neighbor_joining(mut self: DistMat) -> Result<TreeNode, String> {
         NJState::new(&mut self).run()
     }
+}
+
+/// Serializable pairwise distance matrix returned by [`crate::distance_matrix`].
+///
+/// Expands the internal lower-triangular storage to a full symmetric n×n matrix
+/// for ease of consumption in JSON, Python, and TypeScript.
+#[derive(Clone, Debug, ts_rs::TS, Serialize, Deserialize)]
+#[ts(export, export_to = "../../wasm/types/lib_types.ts")]
+pub struct DistanceResult {
+    /// Sequence/taxa names, one per row/column.
+    pub names: Vec<String>,
+    /// Full symmetric n×n distance matrix. `matrix[i][j]` is the distance
+    /// between taxa `i` and `j`; diagonal entries are `0.0`.
+    pub matrix: Vec<Vec<f64>>,
 }
 
 #[cfg(test)]

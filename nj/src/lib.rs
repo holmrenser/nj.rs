@@ -58,8 +58,9 @@ use std::collections::HashMap;
 
 use crate::alphabet::{Alphabet, AlphabetEncoding, DNA, Protein};
 use crate::config::SubstitutionModel;
-pub use crate::config::{MSA, NJConfig, SequenceObject};
+pub use crate::config::{DistConfig, MSA, NJConfig, SequenceObject};
 use crate::distance_matrix::DistMat;
+pub use crate::distance_matrix::DistanceResult;
 use crate::models::{JukesCantor, Kimura2P, ModelCalculation, PDiff, Poisson};
 use crate::tree::{NameOrSupport, TreeNode};
 
@@ -178,6 +179,28 @@ fn add_bootstrap_to_tree(
     Ok(())
 }
 
+/// Validates that the MSA is non-empty and all sequences have equal length.
+fn validate_msa(msa: &[SequenceObject]) -> Result<(), String> {
+    if msa.is_empty() {
+        return Err("Input MSA is empty".into());
+    }
+    let expected_len = msa[0].sequence.len();
+    if expected_len == 0 {
+        return Err("Sequences must not be empty".into());
+    }
+    for s in msa {
+        if s.sequence.len() != expected_len {
+            return Err(format!(
+                "All sequences must have the same length. Expected {}, got {} for '{}'",
+                expected_len,
+                s.sequence.len(),
+                s.identifier
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Heuristically detects whether the MSA contains DNA or protein sequences.
 ///
 /// Returns [`Alphabet::DNA`] unless any sequence contains a byte that is not
@@ -209,6 +232,24 @@ fn detect_alphabet(msa: &[SequenceObject]) -> Result<Alphabet, String> {
     } else {
         Alphabet::DNA
     })
+}
+
+/// Runs distance matrix computation with model `M` on alphabet `A`.
+fn run_distance_matrix<A, M>(msa: MSA<A>) -> Result<DistanceResult, String>
+where
+    A: AlphabetEncoding,
+    M: ModelCalculation<A>,
+{
+    Ok(msa.into_dist::<M>().into_result())
+}
+
+/// Runs average distance computation with model `M` on alphabet `A`.
+fn run_average_distance<A, M>(msa: MSA<A>) -> Result<f64, String>
+where
+    A: AlphabetEncoding,
+    M: ModelCalculation<A>,
+{
+    Ok(msa.into_dist::<M>().average())
 }
 
 /// Runs NJ with model `M` on alphabet `A` and returns a Newick string.
@@ -255,23 +296,7 @@ pub fn nj(
     on_progress: Option<Box<dyn Fn(usize, usize)>>,
 ) -> Result<String, String> {
     let cb = on_progress.as_deref();
-    if conf.msa.is_empty() {
-        return Err("Input MSA is empty".into());
-    }
-    let expected_len = conf.msa[0].sequence.len();
-    if expected_len == 0 {
-        return Err("Sequences must not be empty".into());
-    }
-    for s in &conf.msa {
-        if s.sequence.len() != expected_len {
-            return Err(format!(
-                "All sequences must have the same length. Expected {}, got {} for '{}'",
-                expected_len,
-                s.sequence.len(),
-                s.identifier
-            ));
-        }
-    }
+    validate_msa(&conf.msa)?;
     let alphabet = detect_alphabet(&conf.msa)?;
     match alphabet {
         Alphabet::DNA => {
@@ -314,9 +339,81 @@ pub fn nj(
     }
 }
 
+/// Computes pairwise distances from an aligned MSA and returns a [`DistanceResult`].
+///
+/// The alphabet is auto-detected from the sequences; `conf.substitution_model`
+/// must be compatible with the detected alphabet (see the module-level
+/// compatibility table). Returns `Err` for an empty MSA, incompatible model,
+/// or mismatched sequence lengths. Does not run Neighbor-Joining or bootstrapping.
+pub fn distance_matrix(conf: DistConfig) -> Result<DistanceResult, String> {
+    validate_msa(&conf.msa)?;
+    let alphabet = detect_alphabet(&conf.msa)?;
+    match alphabet {
+        Alphabet::DNA => {
+            let msa =
+                MSA::<DNA>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
+            match conf.substitution_model {
+                SubstitutionModel::PDiff => run_distance_matrix::<DNA, PDiff>(msa),
+                SubstitutionModel::JukesCantor => run_distance_matrix::<DNA, JukesCantor>(msa),
+                SubstitutionModel::Kimura2P => run_distance_matrix::<DNA, Kimura2P>(msa),
+                SubstitutionModel::Poisson => {
+                    Err("Poisson is a protein model; cannot use with DNA".into())
+                }
+            }
+        }
+        Alphabet::Protein => {
+            let msa =
+                MSA::<Protein>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
+            match conf.substitution_model {
+                SubstitutionModel::Poisson => run_distance_matrix::<Protein, Poisson>(msa),
+                SubstitutionModel::PDiff => run_distance_matrix::<Protein, PDiff>(msa),
+                SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
+                    Err("Selected model is for DNA; cannot use with Protein".into())
+                }
+            }
+        }
+    }
+}
+
+/// Computes the mean of all `n*(n-1)/2` unique pairwise distances.
+///
+/// Same alphabet auto-detection and model–alphabet compatibility as [`nj`].
+/// Returns `0.0` for fewer than 2 taxa. Returns `Err` for an empty MSA,
+/// incompatible model, or mismatched sequence lengths.
+pub fn average_distance(conf: DistConfig) -> Result<f64, String> {
+    validate_msa(&conf.msa)?;
+    let alphabet = detect_alphabet(&conf.msa)?;
+    match alphabet {
+        Alphabet::DNA => {
+            let msa =
+                MSA::<DNA>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
+            match conf.substitution_model {
+                SubstitutionModel::PDiff => run_average_distance::<DNA, PDiff>(msa),
+                SubstitutionModel::JukesCantor => run_average_distance::<DNA, JukesCantor>(msa),
+                SubstitutionModel::Kimura2P => run_average_distance::<DNA, Kimura2P>(msa),
+                SubstitutionModel::Poisson => {
+                    Err("Poisson is a protein model; cannot use with DNA".into())
+                }
+            }
+        }
+        Alphabet::Protein => {
+            let msa =
+                MSA::<Protein>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
+            match conf.substitution_model {
+                SubstitutionModel::Poisson => run_average_distance::<Protein, Poisson>(msa),
+                SubstitutionModel::PDiff => run_average_distance::<Protein, PDiff>(msa),
+                SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
+                    Err("Selected model is for DNA; cannot use with Protein".into())
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DistConfig;
     use crate::models::SubstitutionModel;
 
     #[test]
@@ -439,6 +536,164 @@ mod tests {
         };
         let result = nj(conf, None);
         assert!(result.is_err());
+    }
+
+    // --- distance_matrix ---
+
+    fn dist_conf(pairs: &[(&str, &str)], model: SubstitutionModel) -> DistConfig {
+        DistConfig {
+            msa: pairs
+                .iter()
+                .map(|(id, seq)| SequenceObject {
+                    identifier: id.to_string(),
+                    sequence: seq.to_string(),
+                })
+                .collect(),
+            substitution_model: model,
+        }
+    }
+
+    #[test]
+    fn test_distance_matrix_names_and_shape() {
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGA")], SubstitutionModel::PDiff);
+        let result = distance_matrix(conf).unwrap();
+        assert_eq!(result.names, vec!["A", "B"]);
+        assert_eq!(result.matrix.len(), 2);
+        assert_eq!(result.matrix[0].len(), 2);
+        assert_eq!(result.matrix[1].len(), 2);
+    }
+
+    #[test]
+    fn test_distance_matrix_diagonal_zero() {
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")], SubstitutionModel::PDiff);
+        let result = distance_matrix(conf).unwrap();
+        for i in 0..3 {
+            assert_eq!(result.matrix[i][i], 0.0);
+        }
+    }
+
+    #[test]
+    fn test_distance_matrix_symmetric() {
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")], SubstitutionModel::PDiff);
+        let result = distance_matrix(conf).unwrap();
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(result.matrix[i][j], result.matrix[j][i]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_distance_matrix_pdiff_known_value() {
+        // one difference at position 3 (T vs A) out of 4 → 0.25
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGA")], SubstitutionModel::PDiff);
+        let result = distance_matrix(conf).unwrap();
+        assert!((result.matrix[0][1] - 0.25).abs() < 1e-12);
+        assert!((result.matrix[1][0] - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_distance_matrix_identical_sequences_zero() {
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGT")], SubstitutionModel::PDiff);
+        let result = distance_matrix(conf).unwrap();
+        assert_eq!(result.matrix[0][1], 0.0);
+    }
+
+    #[test]
+    fn test_distance_matrix_jukes_cantor_dna() {
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")], SubstitutionModel::JukesCantor);
+        let result = distance_matrix(conf).unwrap();
+        // JC distance for p=0.25: -0.75 * ln(1 - 4/3 * 0.25)
+        let expected = -0.75_f64 * (1.0_f64 - (4.0_f64 / 3.0) * 0.25).ln();
+        assert!((result.matrix[0][1] - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_distance_matrix_kimura2p_dna() {
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")], SubstitutionModel::Kimura2P);
+        let result = distance_matrix(conf).unwrap();
+        assert_eq!(result.names, vec!["A", "B", "C"]);
+        assert!(result.matrix[0][0] == 0.0);
+    }
+
+    #[test]
+    fn test_distance_matrix_poisson_protein() {
+        let conf = dist_conf(&[("A", "ACDEFGH"), ("B", "ACDEFGK")], SubstitutionModel::Poisson);
+        let result = distance_matrix(conf).unwrap();
+        // 1 diff (H vs K) out of 7: p=1/7, d=-ln(1-1/7)
+        let expected = -(1.0_f64 - 1.0 / 7.0).ln();
+        assert!((result.matrix[0][1] - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_distance_matrix_pdiff_protein() {
+        let conf = dist_conf(&[("A", "ACDEFGH"), ("B", "ACDEFGK")], SubstitutionModel::PDiff);
+        let result = distance_matrix(conf).unwrap();
+        assert!((result.matrix[0][1] - 1.0 / 7.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_distance_matrix_empty_msa_errors() {
+        let conf = DistConfig { msa: vec![], substitution_model: SubstitutionModel::PDiff };
+        assert!(distance_matrix(conf).is_err());
+    }
+
+    #[test]
+    fn test_distance_matrix_incompatible_model_errors() {
+        // Poisson on DNA
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGA")], SubstitutionModel::Poisson);
+        assert!(distance_matrix(conf).is_err());
+        // JukesCantor on Protein
+        let conf = dist_conf(&[("A", "ACDEFGH"), ("B", "ACDEFGK")], SubstitutionModel::JukesCantor);
+        assert!(distance_matrix(conf).is_err());
+    }
+
+    // --- average_distance ---
+
+    #[test]
+    fn test_average_distance_identical_sequences_zero() {
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGT")], SubstitutionModel::PDiff);
+        let avg = average_distance(conf).unwrap();
+        assert_eq!(avg, 0.0);
+    }
+
+    #[test]
+    fn test_average_distance_two_taxa_equals_pairwise() {
+        // one difference out of 4 → 0.25
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGA")], SubstitutionModel::PDiff);
+        let avg = average_distance(conf).unwrap();
+        assert!((avg - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_average_distance_three_taxa_known_value() {
+        // A↔B: 1/4=0.25 (T→A), A↔C: 1/4=0.25 (C→G), B↔C: 2/4=0.5 → avg = 1/3
+        let conf = dist_conf(
+            &[("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")],
+            SubstitutionModel::PDiff,
+        );
+        let avg = average_distance(conf).unwrap();
+        assert!((avg - 1.0 / 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_average_distance_jukes_cantor_dna() {
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGA")], SubstitutionModel::JukesCantor);
+        let avg = average_distance(conf).unwrap();
+        let expected = -0.75_f64 * (1.0_f64 - (4.0_f64 / 3.0) * 0.25).ln();
+        assert!((avg - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_average_distance_empty_msa_errors() {
+        let conf = DistConfig { msa: vec![], substitution_model: SubstitutionModel::PDiff };
+        assert!(average_distance(conf).is_err());
+    }
+
+    #[test]
+    fn test_average_distance_incompatible_model_errors() {
+        let conf = dist_conf(&[("A", "ACGT"), ("B", "ACGA")], SubstitutionModel::Poisson);
+        assert!(average_distance(conf).is_err());
     }
 
     #[test]

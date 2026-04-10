@@ -32,6 +32,21 @@ impl SequenceObject {
     }
 }
 
+/// Configuration for distance-only computation (no NJ, no bootstrap).
+///
+/// Pass a `DistConfig` to [`crate::distance_matrix`] or [`crate::average_distance`].
+/// The alphabet (DNA vs. protein) is auto-detected from the sequences;
+/// [`substitution_model`](DistConfig::substitution_model) must be compatible with
+/// that alphabet or an error is returned.
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug)]
+#[ts(export, export_to = "../../wasm/types/lib_types.ts")]
+pub struct DistConfig {
+    /// The aligned sequences. All sequences must have the same length.
+    pub msa: Vec<SequenceObject>,
+    /// Substitution model used to compute pairwise distances.
+    pub substitution_model: SubstitutionModel,
+}
+
 /// Full configuration for a single Neighbor-Joining run.
 ///
 /// Pass an `NJConfig` to [`crate::nj`] to run the algorithm and receive a

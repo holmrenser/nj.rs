@@ -28,8 +28,9 @@
 //! Returns a Newick string on success, or throws a JS error string on failure.
 
 use js_sys::Function;
-use nj::{NJConfig, nj as lib_nj};
-use serde_wasm_bindgen::from_value;
+use nj::{DistConfig, NJConfig, average_distance as lib_average_distance,
+         distance_matrix as lib_distance_matrix, nj as lib_nj};
+use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::prelude::*;
 
 /// Run Neighbor-Joining and return a Newick string.
@@ -56,4 +57,29 @@ pub fn nj(config_json: JsValue, on_progress: Option<Function>) -> Result<String,
     });
 
     lib_nj(config, callback).map_err(|e| JsValue::from_str(&e))
+}
+
+/// Compute pairwise distances and return a `{ names, matrix }` JS object.
+///
+/// `config_json` must be a JS object with shape:
+/// `{ msa: [{ identifier, sequence }, ...], substitution_model: 'PDiff' }`.
+/// Throws a JS error string if the config is invalid or the model is incompatible.
+#[wasm_bindgen]
+pub fn distance_matrix(config_json: JsValue) -> Result<JsValue, JsValue> {
+    let config: DistConfig = from_value(config_json)
+        .map_err(|e| JsValue::from_str(&format!("Invalid DistConfig: {}", e)))?;
+    let result = lib_distance_matrix(config).map_err(|e| JsValue::from_str(&e))?;
+    to_value(&result).map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
+}
+
+/// Compute the mean pairwise distance and return it as a JS number.
+///
+/// `config_json` must be a JS object with shape:
+/// `{ msa: [{ identifier, sequence }, ...], substitution_model: 'PDiff' }`.
+/// Throws a JS error string if the config is invalid or the model is incompatible.
+#[wasm_bindgen]
+pub fn average_distance(config_json: JsValue) -> Result<f64, JsValue> {
+    let config: DistConfig = from_value(config_json)
+        .map_err(|e| JsValue::from_str(&format!("Invalid DistConfig: {}", e)))?;
+    lib_average_distance(config).map_err(|e| JsValue::from_str(&e))
 }

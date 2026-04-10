@@ -17,16 +17,14 @@
 //!   -o, --output <FILE>              Write Newick output to file instead of stdout
 //! ```
 
-use ::nj::config::{NJConfig, SequenceObject};
-use ::nj::models::SubstitutionModel;
-use nj::nj;
-use std::fs;
-use std::path::PathBuf;
-
 #[cfg(feature = "cli")]
 mod cli {
-    use super::*;
+    use ::nj::config::{DistConfig, NJConfig, SequenceObject};
+    use ::nj::models::SubstitutionModel;
     use clap::Parser;
+    use nj::nj;
+    use std::fs;
+    use std::path::PathBuf;
 
     /// Parsed command-line arguments.
     #[derive(Parser, Debug)]
@@ -47,6 +45,14 @@ mod cli {
         /// Substitution model used to compute pairwise distances.
         #[arg(short = 'm', long, value_name = "MODEL", default_value = "p-diff")]
         pub substitution_model: SubstitutionModel,
+
+        /// Output pairwise distance matrix as JSON instead of a Newick tree.
+        #[arg(long, default_value_t = false)]
+        pub distance_matrix: bool,
+
+        /// Output the mean pairwise distance as a single number instead of a Newick tree.
+        #[arg(long, default_value_t = false)]
+        pub average_distance: bool,
     }
 
     /// Parses a FASTA-formatted string into a vector of [`SequenceObject`]s.
@@ -143,6 +149,38 @@ mod cli {
 
         let msa = parse_fasta(&fasta)?;
 
+        if args.distance_matrix {
+            let conf = DistConfig {
+                msa,
+                substitution_model: args.substitution_model,
+            };
+            let result = ::nj::distance_matrix(conf)?;
+            let json = serde_json::to_string_pretty(&result)
+                .map_err(|e| format!("JSON serialization failed: {e}"))?;
+            if let Some(path) = args.output {
+                fs::write(&path, format!("{json}\n"))
+                    .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+            } else {
+                println!("{json}");
+            }
+            return Ok(());
+        }
+
+        if args.average_distance {
+            let conf = DistConfig {
+                msa,
+                substitution_model: args.substitution_model,
+            };
+            let avg = ::nj::average_distance(conf)?;
+            if let Some(path) = args.output {
+                fs::write(&path, format!("{avg}\n"))
+                    .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+            } else {
+                println!("{avg}");
+            }
+            return Ok(());
+        }
+
         let n_bootstrap = args.n_bootstrap_samples;
         let nj_conf = NJConfig {
             msa,
@@ -196,7 +234,9 @@ fn main() -> Result<(), String> {
 #[cfg(feature = "cli")]
 mod main_tests {
     use super::cli::parse_fasta;
-    use super::*;
+    use ::nj::config::{DistConfig, NJConfig, SequenceObject};
+    use ::nj::models::SubstitutionModel;
+    use nj::nj;
 
     #[test]
     fn test_parse_basic_fasta() {
