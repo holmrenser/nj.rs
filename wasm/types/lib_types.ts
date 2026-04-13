@@ -2,12 +2,25 @@
 import type { SubstitutionModel } from "../../nj/bindings/SubstitutionModel";
 
 /**
+ * Runtime alphabet discriminant used by the auto-detection heuristic and
+ * the `alphabet` override field in [`crate::config::NJConfig`] /
+ * [`crate::config::DistConfig`].
+ *
+ * [`crate::detect_alphabet`] inspects the raw sequence bytes and returns
+ * `DNA` unless any character outside the DNA set is found, in which case it
+ * returns `Protein`. The variant is then used to select the appropriate typed
+ * code path.
+ */
+export type Alphabet = "DNA" | "Protein";
+
+/**
  * Configuration for distance-only computation (no NJ, no bootstrap).
  *
  * Pass a `DistConfig` to [`crate::distance_matrix`] or [`crate::average_distance`].
- * The alphabet (DNA vs. protein) is auto-detected from the sequences;
+ * The alphabet (DNA vs. protein) is auto-detected from the sequences unless
+ * [`alphabet`](DistConfig::alphabet) is explicitly set;
  * [`substitution_model`](DistConfig::substitution_model) must be compatible with
- * that alphabet or an error is returned.
+ * the alphabet or an error is returned.
  */
 export type DistConfig = { 
 /**
@@ -17,7 +30,20 @@ msa: Array<SequenceObject>,
 /**
  * Substitution model used to compute pairwise distances.
  */
-substitution_model: SubstitutionModel, };
+substitution_model: SubstitutionModel, 
+/**
+ * Override automatic alphabet detection. When `None` (the default), the
+ * alphabet is inferred from the sequences. Set to `Some(Alphabet::DNA)` or
+ * `Some(Alphabet::Protein)` to force a specific alphabet.
+ */
+alphabet: Alphabet | null, 
+/**
+ * Maximum number of threads to use for parallel distance computation.
+ *
+ * Only effective when the `parallel` Cargo feature is enabled.
+ * When `None` (the default), Rayon uses all available hardware threads.
+ */
+num_threads: number | null, };
 
 /**
  * Serializable pairwise distance matrix returned by [`crate::distance_matrix`].
@@ -37,12 +63,18 @@ names: Array<string>,
 matrix: Array<Array<number>>, };
 
 /**
+ * Log severity level for [`NJEvent::Log`].
+ */
+export type LogLevel = "Info" | "Warning";
+
+/**
  * Full configuration for a single Neighbor-Joining run.
  *
  * Pass an `NJConfig` to [`crate::nj`] to run the algorithm and receive a
  * Newick string. The alphabet (DNA vs. protein) is auto-detected from the
- * sequences; [`substitution_model`](NJConfig::substitution_model) must be
- * compatible with that alphabet or an error is returned.
+ * sequences unless [`alphabet`](NJConfig::alphabet) is explicitly set;
+ * [`substitution_model`](NJConfig::substitution_model) must be compatible with
+ * the alphabet or an error is returned.
  */
 export type NJConfig = { 
 /**
@@ -58,7 +90,29 @@ n_bootstrap_samples: number,
 /**
  * Substitution model used to compute pairwise distances.
  */
-substitution_model: SubstitutionModel, };
+substitution_model: SubstitutionModel, 
+/**
+ * Override automatic alphabet detection. When `None` (the default), the
+ * alphabet is inferred from the sequences. Set to `Some(Alphabet::DNA)` or
+ * `Some(Alphabet::Protein)` to force a specific alphabet.
+ */
+alphabet: Alphabet | null, 
+/**
+ * Maximum number of threads to use for parallel bootstrap and distance computation.
+ *
+ * Only effective when the `parallel` Cargo feature is enabled.
+ * When `None` (the default), Rayon uses all available hardware threads.
+ */
+num_threads: number | null, };
+
+/**
+ * Events fired by the NJ algorithm and passed to the `on_event` callback.
+ *
+ * Use `#[serde(tag = "type")]` so each variant serialises as a tagged object,
+ * e.g. `{ "type": "BootstrapProgress", "completed": 5, "total": 100 }`.
+ * This makes it easy to dispatch on `event["type"]` in Python and JavaScript.
+ */
+export type NJEvent = { "type": "MsaValidated", n_sequences: number, n_sites: number, } | { "type": "AlphabetDetected", alphabet: Alphabet, } | { "type": "ComputingDistances" } | { "type": "RunningNJ" } | { "type": "BootstrapStarted", total: number, } | { "type": "BootstrapProgress", completed: number, total: number, } | { "type": "AnnotatingBootstrap" } | { "type": "Log", level: LogLevel, message: string, };
 
 /**
  * A single sequence in a multiple sequence alignment.

@@ -5,6 +5,7 @@
 //! so they can be round-tripped through JSON (WASM), Python dicts (`serde-pyobject`),
 //! and TypeScript via the generated `lib_types.ts` type definitions.
 
+pub use crate::alphabet::Alphabet;
 pub use crate::models::SubstitutionModel;
 pub use crate::msa::MSA;
 use serde::{Deserialize, Serialize};
@@ -35,9 +36,10 @@ impl SequenceObject {
 /// Configuration for distance-only computation (no NJ, no bootstrap).
 ///
 /// Pass a `DistConfig` to [`crate::distance_matrix`] or [`crate::average_distance`].
-/// The alphabet (DNA vs. protein) is auto-detected from the sequences;
+/// The alphabet (DNA vs. protein) is auto-detected from the sequences unless
+/// [`alphabet`](DistConfig::alphabet) is explicitly set;
 /// [`substitution_model`](DistConfig::substitution_model) must be compatible with
-/// that alphabet or an error is returned.
+/// the alphabet or an error is returned.
 #[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug)]
 #[ts(export, export_to = "../../wasm/types/lib_types.ts")]
 pub struct DistConfig {
@@ -45,14 +47,26 @@ pub struct DistConfig {
     pub msa: Vec<SequenceObject>,
     /// Substitution model used to compute pairwise distances.
     pub substitution_model: SubstitutionModel,
+    /// Override automatic alphabet detection. When `None` (the default), the
+    /// alphabet is inferred from the sequences. Set to `Some(Alphabet::DNA)` or
+    /// `Some(Alphabet::Protein)` to force a specific alphabet.
+    #[serde(default)]
+    pub alphabet: Option<Alphabet>,
+    /// Maximum number of threads to use for parallel distance computation.
+    ///
+    /// Only effective when the `parallel` Cargo feature is enabled.
+    /// When `None` (the default), Rayon uses all available hardware threads.
+    #[serde(default)]
+    pub num_threads: Option<usize>,
 }
 
 /// Full configuration for a single Neighbor-Joining run.
 ///
 /// Pass an `NJConfig` to [`crate::nj`] to run the algorithm and receive a
 /// Newick string. The alphabet (DNA vs. protein) is auto-detected from the
-/// sequences; [`substitution_model`](NJConfig::substitution_model) must be
-/// compatible with that alphabet or an error is returned.
+/// sequences unless [`alphabet`](NJConfig::alphabet) is explicitly set;
+/// [`substitution_model`](NJConfig::substitution_model) must be compatible with
+/// the alphabet or an error is returned.
 #[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug)]
 #[ts(export, export_to = "../../wasm/types/lib_types.ts")]
 pub struct NJConfig {
@@ -64,4 +78,15 @@ pub struct NJConfig {
     pub n_bootstrap_samples: usize,
     /// Substitution model used to compute pairwise distances.
     pub substitution_model: SubstitutionModel,
+    /// Override automatic alphabet detection. When `None` (the default), the
+    /// alphabet is inferred from the sequences. Set to `Some(Alphabet::DNA)` or
+    /// `Some(Alphabet::Protein)` to force a specific alphabet.
+    #[serde(default)]
+    pub alphabet: Option<Alphabet>,
+    /// Maximum number of threads to use for parallel bootstrap and distance computation.
+    ///
+    /// Only effective when the `parallel` Cargo feature is enabled.
+    /// When `None` (the default), Rayon uses all available hardware threads.
+    #[serde(default)]
+    pub num_threads: Option<usize>,
 }

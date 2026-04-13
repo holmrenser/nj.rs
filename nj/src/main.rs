@@ -15,11 +15,14 @@
 //!   -b, --n-bootstrap-samples <N>    Number of bootstrap replicates [default: 100]
 //!   -m, --substitution-model <MODEL> Substitution model [default: p-diff]
 //!   -o, --output <FILE>              Write Newick output to file instead of stdout
+//!   -v, --verbose                    Print stage log messages to stderr
 //! ```
 
 #[cfg(feature = "cli")]
 mod cli {
-    use ::nj::config::{DistConfig, NJConfig, SequenceObject};
+    use ::nj::alphabet::Alphabet;
+    use ::nj::config::{DistConfig, NJConfig};
+    use ::nj::event::{LogLevel, NJEvent};
     use ::nj::models::SubstitutionModel;
     use clap::Parser;
     use nj::nj;
@@ -47,6 +50,10 @@ mod cli {
         #[arg(short = 'm', long, value_name = "MODEL", default_value = "p-diff")]
         pub substitution_model: SubstitutionModel,
 
+        /// Override alphabet auto-detection. Detected from sequences when omitted.
+        #[arg(short = 'a', long, value_name = "ALPHABET")]
+        pub alphabet: Option<Alphabet>,
+
         /// Output pairwise distance matrix as JSON instead of a Newick tree.
         #[arg(long, default_value_t = false)]
         pub distance_matrix: bool,
@@ -54,88 +61,15 @@ mod cli {
         /// Output the mean pairwise distance as a single number instead of a Newick tree.
         #[arg(long, default_value_t = false)]
         pub average_distance: bool,
-    }
 
-    /// Parses a FASTA-formatted string into a vector of [`SequenceObject`]s.
-    ///
-    /// - Whitespace at the start and end of each line is stripped.
-    /// - Multi-line sequences are concatenated.
-    /// - Empty lines are ignored.
-    /// - Returns `Err` if a header has no sequence, a sequence appears before
-    ///   any header, the file is empty, any sequence is empty, or sequences
-    ///   differ in length.
-    pub fn parse_fasta(input: &str) -> Result<Vec<SequenceObject>, String> {
-        let mut msa = Vec::<SequenceObject>::new();
-        let mut current_name: Option<String> = None;
-        let mut current_seq = String::new();
+        /// Number of threads to use for parallel computation (default: all available).
+        /// Only effective when built with the `parallel` feature.
+        #[arg(short = 't', long, value_name = "N")]
+        pub num_threads: Option<usize>,
 
-        for line in input.lines() {
-            // Trim whitespace
-            let trimmed = line.trim();
-            // Skip empty lines
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Header line
-            if let Some(fasta_header) = trimmed.strip_prefix('>') {
-                // Save previous sequence if present
-                if let Some(identifier) = current_name.replace(fasta_header.trim().to_string()) {
-                    if current_seq.is_empty() {
-                        return Err(format!(
-                            "Sequence with identifier '{}' has no sequence",
-                            identifier
-                        ));
-                    }
-                    msa.push(SequenceObject {
-                        identifier,
-                        sequence: current_seq,
-                    });
-                    // Reset current sequence
-                    current_seq = String::new();
-                }
-            // Sequence line
-            } else {
-                if current_name.is_none() {
-                    return Err("FASTA sequence encountered before any header".into());
-                }
-                // Append to current sequence
-                current_seq.push_str(trimmed);
-            }
-        }
-        // Push the last sequence if present.
-        if let Some(identifier) = current_name {
-            if current_seq.is_empty() {
-                return Err(format!(
-                    "Sequence with identifier '{}' has no sequence",
-                    identifier
-                ));
-            }
-            msa.push(SequenceObject {
-                identifier,
-                sequence: current_seq,
-            });
-        }
-        // Validate sequences
-        if msa.is_empty() {
-            return Err("input FASTA contains no sequences".into());
-        }
-        let expected_len = msa[0].len();
-        if expected_len == 0 {
-            return Err("input FASTA sequences are empty".into());
-        }
-        for (i, fs) in msa.iter().enumerate() {
-            if fs.sequence.len() != expected_len {
-                return Err(format!(
-                    "sequence {} ({}) has length {}, expected {}",
-                    i,
-                    fs.identifier,
-                    fs.sequence.len(),
-                    expected_len
-                ));
-            }
-        }
-
-        Ok(msa)
+        /// Print algorithm stage messages (alphabet detection, distance computation, etc.) to stderr.
+        #[arg(short = 'v', long, default_value_t = false)]
+        pub verbose: bool,
     }
 
     /// Reads the FASTA file from `args`, runs NJ, and writes the Newick
@@ -162,14 +96,16 @@ mod cli {
             }
         };
 
-        let msa = parse_fasta(&fasta)?;
+        let msa = ::nj::parse_fasta(&fasta).map_err(|e| e.to_string())?;
 
         if args.distance_matrix {
             let conf = DistConfig {
                 msa,
                 substitution_model: args.substitution_model,
+                alphabet: args.alphabet,
+                num_threads: args.num_threads,
             };
-            let result = ::nj::distance_matrix(conf)?;
+            let result = ::nj::distance_matrix(conf).map_err(|e| e.to_string())?;
             let json = serde_json::to_string_pretty(&result)
                 .map_err(|e| format!("JSON serialization failed: {e}"))?;
             if let Some(path) = args.output {
@@ -185,8 +121,10 @@ mod cli {
             let conf = DistConfig {
                 msa,
                 substitution_model: args.substitution_model,
+                alphabet: args.alphabet,
+                num_threads: args.num_threads,
             };
-            let avg = ::nj::average_distance(conf)?;
+            let avg = ::nj::average_distance(conf).map_err(|e| e.to_string())?;
             if let Some(path) = args.output {
                 fs::write(&path, format!("{avg}\n"))
                     .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
@@ -201,9 +139,11 @@ mod cli {
             msa,
             n_bootstrap_samples: n_bootstrap,
             substitution_model: args.substitution_model,
+            alphabet: args.alphabet,
+            num_threads: args.num_threads,
         };
 
-        let callback: Option<Box<dyn Fn(usize, usize)>> = if n_bootstrap > 0 {
+        let pb = if n_bootstrap > 0 {
             let pb = ProgressBar::new(n_bootstrap as u64);
             pb.set_style(
                 ProgressStyle::with_template(
@@ -211,17 +151,52 @@ mod cli {
                 )
                 .unwrap(),
             );
-            Some(Box::new(move |current, _total| {
-                pb.set_position(current as u64);
-                if current == _total {
-                    pb.finish_and_clear();
-                }
-            }))
+            Some(pb)
         } else {
             None
         };
+        let verbose = args.verbose;
+        let on_event: Box<dyn Fn(NJEvent)> = Box::new(move |event| match event {
+            NJEvent::BootstrapProgress { completed, total } => {
+                if let Some(ref pb) = pb {
+                    pb.set_position(completed as u64);
+                    if completed == total {
+                        pb.finish_and_clear();
+                    }
+                }
+            }
+            NJEvent::Log { level, message } => {
+                let tag = match level {
+                    LogLevel::Info => "info",
+                    LogLevel::Warning => "warning",
+                };
+                eprintln!("[{tag}] {message}");
+            }
+            stage_event => {
+                if verbose {
+                    let msg = match stage_event {
+                        NJEvent::MsaValidated { n_sequences, n_sites } => {
+                            format!("MSA validated: {n_sequences} sequences, {n_sites} sites")
+                        }
+                        NJEvent::AlphabetDetected { alphabet } => {
+                            format!("Detected alphabet: {alphabet:?}")
+                        }
+                        NJEvent::ComputingDistances => "Computing distance matrix".to_string(),
+                        NJEvent::RunningNJ => "Running Neighbor Joining".to_string(),
+                        NJEvent::BootstrapStarted { total } => {
+                            format!("Running {total} bootstrap replicates")
+                        }
+                        NJEvent::AnnotatingBootstrap => {
+                            "Annotating bootstrap support".to_string()
+                        }
+                        _ => return,
+                    };
+                    eprintln!("[info] {msg}");
+                }
+            }
+        });
 
-        let newick_tree = nj(nj_conf, callback)?;
+        let newick_tree = nj(nj_conf, Some(on_event)).map_err(|e| e.to_string())?;
 
         if let Some(path) = args.output {
             fs::write(&path, format!("{newick_tree}\n"))
@@ -275,8 +250,11 @@ mod main_tests {
             output: None,
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::PDiff,
+            alphabet: None,
             distance_matrix: false,
             average_distance: false,
+            num_threads: None,
+            verbose: false,
         }
     }
 
@@ -328,7 +306,8 @@ mod main_tests {
 
     #[test]
     fn test_run_sequence_before_header_is_error() {
-        let path = temp_fasta("ACGT\n>s\nAC\n");
+        // Sequence data before first header is a parse error.
+        let path = temp_fasta("ACGT\n>s\nACGT\n");
         assert!(run(base_args(path)).is_err());
     }
 

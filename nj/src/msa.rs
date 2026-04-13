@@ -138,7 +138,9 @@ impl<A: AlphabetEncoding> MSA<A> {
     /// `MSA::<Protein>`.
     pub fn into_dist<M>(&self) -> DistMat
     where
-        M: ModelCalculation<A>,
+        M: ModelCalculation<A> + Send + Sync,
+        A: Sync,
+        A::Symbol: Send + Sync,
     {
         DistMat::from_msa::<M, A>(self)
     }

@@ -2,10 +2,13 @@ VERSION:=$(toml get Cargo.toml workspace.package.version)
 
 .PHONY: all python wasm nj clean
 
-all: nj wasm python
+all: lib cli wasm python
 
-nj:
-	$(MAKE) -C nj
+lib:
+	$(MAKE) -C nj lib
+
+cli:
+	$(MAKE) -C nj cli
 
 wasm:
 	$(MAKE) -C wasm
