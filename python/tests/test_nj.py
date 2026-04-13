@@ -229,12 +229,14 @@ class TestBootstrap:
         assert isinstance(result, str)
         assert result.endswith(";")
 
-    def test_on_progress_called_correct_number_of_times(self):
-        calls = []
+    def test_on_event_called_for_bootstrap_progress(self):
+        progress_events = []
         nj(
             msa(("A", "ACGTACGT"), ("B", "ACGAACGA"), ("C", "AGGTCGGT"), ("D", "TGGTCGGT")),
             n_bootstrap_samples=5,
-            on_progress=lambda current, total: calls.append((current, total)),
+            on_event=lambda event: progress_events.append(event)
+            if event["type"] == "BootstrapProgress"
+            else None,
         )
-        assert len(calls) == 5
-        assert calls[-1] == (5, 5)
+        assert len(progress_events) == 5
+        assert progress_events[-1] == {"type": "BootstrapProgress", "completed": 5, "total": 5}

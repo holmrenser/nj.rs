@@ -35,15 +35,24 @@ pub trait ModelCalculation<A: AlphabetEncoding> {
 
     /// Converts the final accumulator to an evolutionary distance.
     ///
+    /// `aln_len` is the total number of alignment columns; `n_comparable` is the
+    /// number of columns where neither sequence has a gap (pairwise deletion).
+    /// Models should use `n_comparable` as the denominator so that gapped
+    /// positions are excluded from the distance calculation.
+    ///
     /// Returns [`f64::INFINITY`] when the model's formula is undefined for the
     /// observed substitution frequencies (e.g. saturation). The NJ algorithm
-    /// handles infinite distances gracefully.
-    fn finalize(acc: &Self::Acc, aln_len: usize) -> f64;
+    /// handles infinite distances gracefully. Returns `0.0` when `n_comparable`
+    /// is zero (no overlapping non-gap columns).
+    fn finalize(acc: &Self::Acc, aln_len: usize, n_comparable: usize) -> f64;
 }
 
 /// Computes the pairwise distance between two aligned sequences using model `M`.
 ///
-/// `s1` and `s2` must have equal length (i.e. already be aligned).
+/// `s1` and `s2` must have equal length (i.e. already be aligned). Columns
+/// where either sequence carries a gap are excluded from the comparable-site
+/// count (`n_comparable`) passed to [`ModelCalculation::finalize`], implementing
+/// pairwise deletion.
 #[inline(always)]
 pub fn pairwise_distance<M, A>(s1: &[A::Symbol], s2: &[A::Symbol]) -> f64
 where
@@ -52,12 +61,16 @@ where
 {
     let aln_len = s1.len();
     let mut acc = M::init();
+    let mut n_comparable: usize = 0;
 
     for k in 0..aln_len {
+        if !A::is_gap(s1[k]) && !A::is_gap(s2[k]) {
+            n_comparable += 1;
+        }
         acc = M::accumulate(&mut acc, s1[k], s2[k]);
     }
 
-    M::finalize(&acc, aln_len)
+    M::finalize(&acc, aln_len, n_comparable)
 }
 
 /// p-distance (proportion of differing sites).
@@ -83,8 +96,11 @@ impl ModelCalculation<DNA> for PDiff {
         *acc
     }
 
-    fn finalize(acc: &Self::Acc, aln_len: usize) -> f64 {
-        *acc as f64 / aln_len as f64
+    fn finalize(acc: &Self::Acc, _aln_len: usize, n_comparable: usize) -> f64 {
+        if n_comparable == 0 {
+            return 0.0;
+        }
+        *acc as f64 / n_comparable as f64
     }
 }
 
@@ -102,8 +118,11 @@ impl ModelCalculation<Protein> for PDiff {
         *acc
     }
 
-    fn finalize(acc: &Self::Acc, aln_len: usize) -> f64 {
-        *acc as f64 / aln_len as f64
+    fn finalize(acc: &Self::Acc, _aln_len: usize, n_comparable: usize) -> f64 {
+        if n_comparable == 0 {
+            return 0.0;
+        }
+        *acc as f64 / n_comparable as f64
     }
 }
 
@@ -130,8 +149,11 @@ impl ModelCalculation<DNA> for JukesCantor {
         *acc
     }
 
-    fn finalize(acc: &Self::Acc, aln_len: usize) -> f64 {
-        let p = *acc as f64 / aln_len as f64;
+    fn finalize(acc: &Self::Acc, _aln_len: usize, n_comparable: usize) -> f64 {
+        if n_comparable == 0 {
+            return 0.0;
+        }
+        let p = *acc as f64 / n_comparable as f64;
         if p >= 0.75 {
             f64::INFINITY // distance undefined
         } else {
@@ -170,10 +192,13 @@ impl ModelCalculation<DNA> for Kimura2P {
         *acc
     }
 
-    fn finalize(acc: &Self::Acc, aln_len: usize) -> f64 {
+    fn finalize(acc: &Self::Acc, _aln_len: usize, n_comparable: usize) -> f64 {
+        if n_comparable == 0 {
+            return 0.0;
+        }
         let (ti, tv) = *acc;
-        let p = ti as f64 / aln_len as f64;
-        let q = tv as f64 / aln_len as f64;
+        let p = ti as f64 / n_comparable as f64;
+        let q = tv as f64 / n_comparable as f64;
         let denom1 = 1.0 - 2.0 * p - q;
         let denom2 = 1.0 - 2.0 * q;
         if denom1 <= 0.0 || denom2 <= 0.0 {
@@ -206,8 +231,11 @@ impl ModelCalculation<Protein> for Poisson {
         *acc
     }
 
-    fn finalize(acc: &Self::Acc, aln_len: usize) -> f64 {
-        let p = *acc as f64 / aln_len as f64;
+    fn finalize(acc: &Self::Acc, _aln_len: usize, n_comparable: usize) -> f64 {
+        if n_comparable == 0 {
+            return 0.0;
+        }
+        let p = *acc as f64 / n_comparable as f64;
         if p >= 1.0 {
             f64::INFINITY // distance undefined
         } else {
@@ -261,11 +289,11 @@ mod tests {
     }
 
     #[test]
-    fn test_pdiff_dna_gaps_not_counted_as_differences() {
-        // pos 0: A vs T — difference; pos 1: Gap vs C — not counted; pos 2: same
-        // denominator is still full length (3), so 1/3
+    fn test_pdiff_dna_gapped_positions_excluded_from_denominator() {
+        // pos 0: A vs T — difference; pos 1: Gap vs C — not comparable (excluded);
+        // pos 2: G vs G — same. n_comparable=2, diffs=1, so 1/2.
         assert!(
-            (pairwise_distance::<PDiff, DNA>(&dna!("A-G"), &dna!("TCG")) - 1.0 / 3.0).abs() < 1e-12
+            (pairwise_distance::<PDiff, DNA>(&dna!("A-G"), &dna!("TCG")) - 1.0 / 2.0).abs() < 1e-12
         );
     }
 

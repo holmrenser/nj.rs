@@ -1,6 +1,6 @@
 //! Python bindings for the `nj` Neighbor-Joining library.
 //!
-//! Exposes a single function `nj(config, on_progress=None)` to Python. The
+//! Exposes a single function `nj(config, on_event=None)` to Python. The
 //! `config` argument must be a Python dict (or any dict-like object) that
 //! deserialises into an [`nj::NJConfig`] via `serde-pyobject`. Expected shape:
 //!
@@ -12,9 +12,13 @@
 //! }
 //! ```
 //!
-//! `on_progress` is an optional Python callable invoked as
-//! `on_progress(completed: int, total: int)` after each bootstrap replicate.
-//! It is never called when `n_bootstrap_samples` is 0.
+//! `on_event` is an optional Python callable invoked with a dict describing
+//! each algorithm event. The dict always has a `"type"` key identifying the
+//! event variant. Bootstrap progress events look like:
+//! `{"type": "BootstrapProgress", "completed": 5, "total": 100}`.
+//! Stage events include `"MsaValidated"`, `"AlphabetDetected"`,
+//! `"ComputingDistances"`, `"RunningNJ"`, `"BootstrapStarted"`,
+//! `"AnnotatingBootstrap"`, and `"Log"`.
 //!
 //! Example with tqdm:
 //!
@@ -22,9 +26,17 @@
 //! from tqdm import tqdm
 //! from nj_py import nj
 //!
-//! bar = tqdm(total=100)
-//! newick = nj(config, on_progress=lambda current, total: bar.update(1))
-//! bar.close()
+//! bar = None
+//! def on_event(event):
+//!     global bar
+//!     if event["type"] == "BootstrapStarted":
+//!         bar = tqdm(total=event["total"])
+//!     elif event["type"] == "BootstrapProgress":
+//!         bar.update(1)
+//!
+//! newick = nj(config, on_event=on_event)
+//! if bar:
+//!     bar.close()
 //! ```
 //!
 //! Returns a Newick string on success, or raises `ValueError` on invalid
@@ -32,7 +44,7 @@
 
 #[pyo3::pymodule]
 mod _nj_py {
-    use ::nj::{DistConfig, average_distance as lib_average_distance,
+    use ::nj::{DistConfig, NJEvent, average_distance as lib_average_distance,
                distance_matrix as lib_distance_matrix, nj as lib_nj};
     use pyo3::exceptions::PyValueError;
     use pyo3::prelude::*;
@@ -41,25 +53,27 @@ mod _nj_py {
     /// Run Neighbor-Joining and return a Newick string.
     ///
     /// `config` must be a dict matching the shape described in the module
-    /// documentation. `on_progress`, if provided, is called as
-    /// `on_progress(completed, total)` after each bootstrap replicate.
+    /// documentation. `on_event`, if provided, is called with a dict for each
+    /// algorithm event. See the module documentation for the dict shapes.
     /// Raises `ValueError` if the config is malformed or if the NJ algorithm
     /// fails (e.g. incompatible model for the detected alphabet).
     #[pyfunction]
-    #[pyo3(signature = (py_config, on_progress=None))]
-    fn nj(py_config: Bound<PyAny>, on_progress: Option<Py<PyAny>>) -> PyResult<String> {
+    #[pyo3(signature = (py_config, on_event=None))]
+    fn nj(py_config: Bound<PyAny>, on_event: Option<Py<PyAny>>) -> PyResult<String> {
         let config =
             from_pyobject(py_config).map_err(|e| PyValueError::new_err(e.to_string()))?;
 
-        let callback: Option<Box<dyn Fn(usize, usize)>> = on_progress.map(|cb| {
-            Box::new(move |current: usize, total: usize| {
+        let callback: Option<Box<dyn Fn(NJEvent)>> = on_event.map(|cb| {
+            Box::new(move |event: NJEvent| {
                 Python::attach(|py| {
-                    cb.call1(py, (current, total)).ok();
+                    if let Ok(obj) = to_pyobject(py, &event) {
+                        cb.call1(py, (obj,)).ok();
+                    }
                 });
-            }) as Box<dyn Fn(usize, usize)>
+            }) as Box<dyn Fn(NJEvent)>
         });
 
-        lib_nj(config, callback).map_err(|e| PyValueError::new_err(e))
+        lib_nj(config, callback).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Compute pairwise distances and return a dict `{"names": [...], "matrix": [[...]]}`.
@@ -72,7 +86,7 @@ mod _nj_py {
     fn distance_matrix(py: Python<'_>, py_config: Bound<PyAny>) -> PyResult<Py<PyAny>> {
         let config: DistConfig =
             from_pyobject(py_config).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let result = lib_distance_matrix(config).map_err(|e| PyValueError::new_err(e))?;
+        let result = lib_distance_matrix(config).map_err(|e| PyValueError::new_err(e.to_string()))?;
         to_pyobject(py, &result)
             .map(|b| b.unbind())
             .map_err(|e| PyValueError::new_err(e.to_string()))
@@ -88,6 +102,6 @@ mod _nj_py {
     fn average_distance(py_config: Bound<PyAny>) -> PyResult<f64> {
         let config: DistConfig =
             from_pyobject(py_config).map_err(|e| PyValueError::new_err(e.to_string()))?;
-        lib_average_distance(config).map_err(|e| PyValueError::new_err(e))
+        lib_average_distance(config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 }

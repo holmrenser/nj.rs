@@ -80,24 +80,49 @@ impl DistMat {
     /// Computes a pairwise distance matrix from an MSA using substitution model `M`.
     ///
     /// Iterates over all `n*(n-1)/2` sequence pairs and fills the lower triangle
-    /// using [`pairwise_distance`]. Prefer [`MSA::into_dist`] over calling this
-    /// directly.
+    /// using [`pairwise_distance`]. When the `parallel` feature is enabled, pairs
+    /// are computed in parallel on the Rayon thread pool. Prefer [`MSA::into_dist`]
+    /// over calling this directly.
+    ///
+    /// The `Send + Sync` bounds are required for the `parallel` feature and are
+    /// trivially satisfied by all built-in alphabet and model types.
     pub fn from_msa<M, A>(msa: &MSA<A>) -> DistMat
     where
-        M: ModelCalculation<A>,
-        A: AlphabetEncoding,
+        M: ModelCalculation<A> + Send + Sync,
+        A: AlphabetEncoding + Sync,
+        A::Symbol: Send + Sync,
     {
         let n = msa.n_sequences;
         let mut dist = DistMat::empty_with_names(msa.identifiers.clone());
 
-        for i in 0..n {
-            let s1 = &msa.sequences[i];
-            for j in 0..i {
-                let s2 = &msa.sequences[j];
-                let d = pairwise_distance::<M, A>(s1, s2);
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+            let pairs: Vec<(usize, usize, f64)> = (0..n)
+                .flat_map(|i| (0..i).map(move |j| (i, j)))
+                .collect::<Vec<_>>()
+                .into_par_iter()
+                .map(|(i, j)| {
+                    let d = pairwise_distance::<M, A>(&msa.sequences[i], &msa.sequences[j]);
+                    (i, j, d)
+                })
+                .collect();
+
+            for (i, j, d) in pairs {
                 dist.set(i, j, d);
             }
         }
+
+        #[cfg(not(feature = "parallel"))]
+        {
+            for i in 0..n {
+                for j in 0..i {
+                    dist.set(i, j, pairwise_distance::<M, A>(&msa.sequences[i], &msa.sequences[j]));
+                }
+            }
+        }
+
         dist
     }
 
@@ -210,12 +235,14 @@ mod tests {
     }
 
     #[test]
-    fn test_dist_from_msa_gap_positions_do_not_change_denominator() {
+    fn test_dist_from_msa_gap_positions_excluded_from_denominator() {
+        // AT- vs ACG: pos 2 is gap in first sequence → not comparable.
+        // n_comparable=2, diffs=1 (T vs C at pos 1), so 1/2.
         let seqs: Vec<String> = vec!["AT-".into(), "ACG".into()];
         let msa = MSA::<DNA>::from_unnamed_sequences(seqs).unwrap();
         let mat = msa.into_dist::<PDiff>();
 
-        assert!((mat.get(0, 1) - (1.0 / 3.0)).abs() < 1e-12);
+        assert!((mat.get(0, 1) - (1.0 / 2.0)).abs() < 1e-12);
     }
 
     #[test]

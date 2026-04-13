@@ -1,8 +1,8 @@
-import type { DistConfig, DistanceResult, NJConfig, SequenceObject } from "./types/lib_types";
+import type { DistConfig, DistanceResult, NJConfig, NJEvent, SequenceObject } from "./types/lib_types";
 
-export type { DistConfig, DistanceResult, NJConfig, SequenceObject };
+export type { DistConfig, DistanceResult, NJConfig, NJEvent, SequenceObject };
 
-export type NJProgressCallback = (current: number, total: number) => void;
+export type NJEventCallback = (event: NJEvent) => void;
 
 /**
  * Infers a Neighbor-Joining phylogenetic tree from a multiple sequence alignment.
@@ -15,15 +15,15 @@ export type NJProgressCallback = (current: number, total: number) => void;
  * @param config - Alignment and run settings. All sequences in `config.msa`
  *   must have the same non-zero length. Set `config.n_bootstrap_samples` to
  *   `0` to skip bootstrapping.
- * @param onProgress - Optional callback invoked as `(current, total)` after
- *   each bootstrap replicate. Not called when `config.n_bootstrap_samples`
- *   is `0`.
- * @returns A semicolon-terminated Newick string. Bootstrap support counts (if
- *   requested) appear as integer labels on internal nodes.
+ * @param onEvent - Optional callback invoked with a tagged event object at each
+ *   algorithm stage. Use `event.type` to distinguish events. Bootstrap progress
+ *   events have type `"BootstrapProgress"` with `completed` and `total` fields.
+ * @returns A semicolon-terminated Newick string. Bootstrap support values (if
+ *   requested) appear as integer percentage labels (0–100) on internal nodes.
  * @throws {Error} If the MSA is empty, sequences have unequal or zero length,
  *   or an incompatible model–alphabet combination is provided.
  */
-export function nj(config: NJConfig, onProgress?: NJProgressCallback): string;
+export function nj(config: NJConfig, onEvent?: NJEventCallback): string;
 
 /**
  * Computes pairwise distances and returns a full symmetric distance matrix.

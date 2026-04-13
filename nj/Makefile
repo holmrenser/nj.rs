@@ -1,5 +1,9 @@
-all:
+all: lib cli
+
+lib:
 	CARGO_TARGET_DIR=target cargo build --release
+
+cli:
 	CARGO_TARGET_DIR=target cargo build --release --features cli --bin nj
 
 test:

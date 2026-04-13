@@ -6,6 +6,8 @@
 //! symbol (`N` for DNA, `X` for protein). Unknown input bytes are silently
 //! mapped to the ambiguity symbol rather than panicking.
 
+use serde::{Deserialize, Serialize};
+
 /// Trait that defines a biological sequence alphabet and its byte encoding.
 ///
 /// Implementations map raw bytes (as they appear in a FASTA file) to typed
@@ -23,6 +25,9 @@ pub trait AlphabetEncoding {
 
     /// Total number of symbols in the alphabet (including gap and ambiguity).
     fn n_symbols() -> usize;
+
+    /// Returns `true` if `symbol` represents a gap (`-`).
+    fn is_gap(symbol: Self::Symbol) -> bool;
 }
 
 /// A single nucleotide in the DNA alphabet.
@@ -55,14 +60,25 @@ impl AlphabetEncoding for DNA {
             b'C' | b'c' => DnaSymbol::C,
             b'G' | b'g' => DnaSymbol::G,
             b'T' | b't' => DnaSymbol::T,
+            // U (uridine) is functionally equivalent to T in distance calculations.
+            b'U' | b'u' => DnaSymbol::T,
             b'N' | b'n' => DnaSymbol::N,
             b'-' => DnaSymbol::Gap,
+            // IUPAC ambiguity codes: R Y S W K M B D H V — treat as N.
+            b'R' | b'r' | b'Y' | b'y' | b'S' | b's' | b'W' | b'w' | b'K' | b'k'
+            | b'M' | b'm' | b'B' | b'b' | b'D' | b'd' | b'H' | b'h' | b'V' | b'v' => {
+                DnaSymbol::N
+            }
             _ => DnaSymbol::N, // Treat unknowns as N
         }
     }
 
     fn n_symbols() -> usize {
         6 // A, C, G, T, N, Gap
+    }
+
+    fn is_gap(symbol: DnaSymbol) -> bool {
+        symbol == DnaSymbol::Gap
     }
 }
 
@@ -137,15 +153,23 @@ impl AlphabetEncoding for Protein {
     fn n_symbols() -> usize {
         22 // 20 amino acids + X + Gap
     }
+
+    fn is_gap(symbol: ProteinSymbol) -> bool {
+        symbol == ProteinSymbol::Gap
+    }
 }
 
-/// Runtime alphabet discriminant used by the auto-detection heuristic.
+/// Runtime alphabet discriminant used by the auto-detection heuristic and
+/// the `alphabet` override field in [`crate::config::NJConfig`] /
+/// [`crate::config::DistConfig`].
 ///
 /// [`crate::detect_alphabet`] inspects the raw sequence bytes and returns
-/// `DNA` unless any character outside `A/C/G/T/U/N/-` is found, in which
-/// case it returns `Protein`. The variant is then used to select the
-/// appropriate typed code path.
-#[derive(Debug, PartialEq)]
+/// `DNA` unless any character outside the DNA set is found, in which case it
+/// returns `Protein`. The variant is then used to select the appropriate typed
+/// code path.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../wasm/types/lib_types.ts")]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum Alphabet {
     DNA,
     Protein,

@@ -21,7 +21,7 @@ def nj(
     *,
     substitution_model: SubstitutionModel = "PDiff",
     n_bootstrap_samples: int = 0,
-    on_progress: Callable[[int, int], None] | None = None,
+    on_event: Callable[[dict], None] | None = None,
 ) -> str:
     """Infer a Neighbor-Joining tree and return a Newick string.
 
@@ -33,9 +33,12 @@ def nj(
             auto-detected; passing an incompatible model raises ``ValueError``.
         n_bootstrap_samples: Number of bootstrap replicates used to annotate
             internal nodes with support values. ``0`` disables bootstrapping.
-        on_progress: Optional callable invoked as ``on_progress(completed, total)``
-            after each bootstrap replicate. Never called when
-            ``n_bootstrap_samples`` is 0.
+        on_event: Optional callable invoked with a dict for each algorithm event.
+            The dict always has a ``"type"`` key. Bootstrap progress events look
+            like ``{"type": "BootstrapProgress", "completed": 5, "total": 100}``.
+            Stage events include ``"MsaValidated"``, ``"AlphabetDetected"``,
+            ``"ComputingDistances"``, ``"RunningNJ"``, ``"BootstrapStarted"``,
+            ``"AnnotatingBootstrap"``, and ``"Log"``.
 
     Returns:
         Newick string, e.g. ``"(A:0.1,B:0.2);"``
@@ -55,13 +58,18 @@ def nj(
             {"identifier": "mouse", "sequence": "TCGTACGT"},
         ]
 
-        with tqdm(total=100) as bar:
-            tree = nj(
-                sequences,
-                substitution_model="JukesCantor",
-                n_bootstrap_samples=100,
-                on_progress=lambda current, total: bar.update(1),
-            )
+        bar = None
+        def on_event(event):
+            global bar
+            if event["type"] == "BootstrapStarted":
+                bar = tqdm(total=event["total"])
+            elif event["type"] == "BootstrapProgress":
+                bar.update(1)
+
+        tree = nj(sequences, substitution_model="JukesCantor",
+                  n_bootstrap_samples=100, on_event=on_event)
+        if bar:
+            bar.close()
     """
     return _nj(
         {
@@ -69,7 +77,7 @@ def nj(
             "substitution_model": substitution_model,
             "n_bootstrap_samples": n_bootstrap_samples,
         },
-        on_progress,
+        on_event,
     )
 
 

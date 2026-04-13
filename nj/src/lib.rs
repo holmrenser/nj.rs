@@ -48,6 +48,9 @@
 pub mod alphabet;
 pub mod config;
 pub mod distance_matrix;
+pub mod error;
+pub mod event;
+pub mod fasta;
 pub mod models;
 pub mod msa;
 pub mod nj;
@@ -61,6 +64,9 @@ use crate::config::SubstitutionModel;
 pub use crate::config::{DistConfig, MSA, NJConfig, SequenceObject};
 use crate::distance_matrix::DistMat;
 pub use crate::distance_matrix::DistanceResult;
+pub use crate::error::NJError;
+pub use crate::event::{LogLevel, NJEvent};
+pub use crate::fasta::parse_fasta;
 use crate::models::{JukesCantor, Kimura2P, ModelCalculation, PDiff, Poisson};
 use crate::tree::{NameOrSupport, TreeNode};
 
@@ -121,44 +127,167 @@ fn count_clades(
     Ok(())
 }
 
-/// Performs bootstrap sampling and counts clades across bootstrap trees.
+/// Builds a Rayon thread pool with `num_threads` workers.
 ///
-/// Calls `on_progress(completed, total)` after each replicate if provided.
-fn bootstrap_clade_counts<A: AlphabetEncoding, M: ModelCalculation<A>>(
+/// When `num_threads` is `None`, Rayon uses its default (one thread per logical CPU).
+/// Returns `Err` if the pool cannot be constructed.
+#[cfg(feature = "parallel")]
+pub(crate) fn build_thread_pool(num_threads: Option<usize>) -> Result<rayon::ThreadPool, String> {
+    let mut builder = rayon::ThreadPoolBuilder::new();
+    if let Some(n) = num_threads {
+        builder = builder.num_threads(n);
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
+/// Parallel bootstrap worker: runs all replicates on Rayon threads and sends
+/// per-replicate clade maps over an MPSC channel. The main thread (caller)
+/// merges results and fires `on_event` — keeping the callback on a single
+/// thread with no `Sync` requirement.
+///
+/// Uses `std::thread::scope` so `msa` and `idx_map` can be borrowed into the
+/// spawned thread without requiring `'static` lifetimes.
+#[cfg(feature = "parallel")]
+fn bootstrap_clade_counts_parallel<A, M>(
     msa: &MSA<A>,
     n_bootstrap_samples: usize,
-    on_progress: Option<&dyn Fn(usize, usize)>,
-) -> Result<Option<HashMap<Vec<u8>, usize>>, String> {
+    idx_map: &HashMap<String, usize>,
+    n_taxa: usize,
+    on_event: Option<&dyn Fn(NJEvent)>,
+    num_threads: Option<usize>,
+) -> Result<HashMap<Vec<u8>, usize>, String>
+where
+    A: AlphabetEncoding + Send + Sync,
+    A::Symbol: Send + Sync,
+    M: ModelCalculation<A> + Send + Sync,
+{
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+    use std::sync::mpsc;
+
+    let pool = build_thread_pool(num_threads)?;
+    let (tx, rx) = mpsc::channel::<Result<HashMap<Vec<u8>, usize>, String>>();
+    let mut counter: HashMap<Vec<u8>, usize> = HashMap::new();
+
+    std::thread::scope(|scope| -> Result<(), String> {
+        // Spawn the Rayon work onto a background OS thread so the main thread
+        // can consume from `rx` concurrently, giving real per-replicate progress.
+        // `pool.install` installs the thread pool as the active pool for the
+        // duration of the closure, bounding parallelism to `num_threads` workers.
+        scope.spawn(|| {
+            pool.install(|| {
+                (0..n_bootstrap_samples)
+                    .into_par_iter()
+                    .for_each_with(tx, |sender, _| {
+                        let result: Result<HashMap<Vec<u8>, usize>, String> = (|| {
+                            let tree = msa
+                                .bootstrap()?
+                                .into_dist::<M>()
+                                .neighbor_joining()
+                                .expect("NJ bootstrap iteration failed");
+                            let mut local = HashMap::new();
+                            count_clades(&tree, idx_map, n_taxa, &mut local)?;
+                            Ok(local)
+                        })();
+                        // Ignore send errors: only occurs if receiver was dropped,
+                        // which cannot happen while we are in the recv loop below.
+                        let _ = sender.send(result);
+                    });
+            });
+        });
+
+        // Main thread: receive results as they arrive, merge, and fire progress.
+        for completed in 1..=n_bootstrap_samples {
+            match rx.recv() {
+                Ok(Ok(local)) => {
+                    for (clade, count) in local {
+                        *counter.entry(clade).or_insert(0) += count;
+                    }
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(_) => return Err("bootstrap channel closed unexpectedly".into()),
+            }
+            if let Some(cb) = on_event {
+                cb(NJEvent::BootstrapProgress {
+                    completed,
+                    total: n_bootstrap_samples,
+                });
+            }
+        }
+        Ok(())
+    })?;
+
+    Ok(counter)
+}
+
+/// Performs bootstrap sampling and counts clades across bootstrap trees.
+///
+/// When the `parallel` feature is enabled, replicates run on the Rayon thread
+/// pool via [`bootstrap_clade_counts_parallel`]; the `on_event` callback is
+/// still called after each replicate from the main thread. Without the feature
+/// the loop is sequential and `on_event` fires in order.
+fn bootstrap_clade_counts<A, M>(
+    msa: &MSA<A>,
+    n_bootstrap_samples: usize,
+    on_event: Option<&dyn Fn(NJEvent)>,
+    num_threads: Option<usize>,
+) -> Result<Option<HashMap<Vec<u8>, usize>>, String>
+where
+    A: AlphabetEncoding + Send + Sync,
+    A::Symbol: Send + Sync,
+    M: ModelCalculation<A> + Send + Sync,
+{
     if n_bootstrap_samples == 0 {
         return Ok(None);
     }
-    let idx_map: HashMap<String, usize> = msa.to_index_map();
-    let mut counter = HashMap::new();
-    for i in 0..n_bootstrap_samples {
-        let tree = msa
-            .bootstrap()?
-            .into_dist::<M>()
-            .neighbor_joining()
-            .expect("NJ bootstrap iteration failed");
-        count_clades(&tree, &idx_map, msa.n_sequences, &mut counter)?;
-        if let Some(cb) = on_progress {
-            cb(i + 1, n_bootstrap_samples);
-        }
+    if let Some(cb) = on_event {
+        cb(NJEvent::BootstrapStarted {
+            total: n_bootstrap_samples,
+        });
     }
+    let idx_map: HashMap<String, usize> = msa.to_index_map();
+    let n_taxa = msa.n_sequences;
+
+    #[cfg(feature = "parallel")]
+    let counter = bootstrap_clade_counts_parallel::<A, M>(
+        msa, n_bootstrap_samples, &idx_map, n_taxa, on_event, num_threads,
+    )?;
+
+    #[cfg(not(feature = "parallel"))]
+    let counter = {
+        let _ = num_threads;
+        let mut c = HashMap::new();
+        for i in 0..n_bootstrap_samples {
+            let tree = msa
+                .bootstrap()?
+                .into_dist::<M>()
+                .neighbor_joining()
+                .expect("NJ bootstrap iteration failed");
+            count_clades(&tree, &idx_map, n_taxa, &mut c)?;
+            if let Some(cb) = on_event {
+                cb(NJEvent::BootstrapProgress {
+                    completed: i + 1,
+                    total: n_bootstrap_samples,
+                });
+            }
+        }
+        c
+    };
+
     Ok(Some(counter))
 }
 
 /// Annotates internal nodes with bootstrap support values from `counts`.
 ///
 /// For each internal node, computes its clade `BitVec`, looks up the count in
-/// `counts`, and assigns a [`NameOrSupport::Support`] label if a matching
-/// entry is found. Nodes whose clade was never observed in bootstrap replicates
-/// receive no label.
+/// `counts`, normalises it to a percentage (`count * 100 / n_bootstrap_samples`),
+/// and assigns a [`NameOrSupport::Support`] label if a matching entry is found.
+/// Nodes whose clade was never observed in bootstrap replicates receive no label.
 fn add_bootstrap_to_tree(
     node: &mut TreeNode,
     idx: &HashMap<String, usize>,
     n_taxa: usize,
     counts: &HashMap<Vec<u8>, usize>,
+    n_bootstrap_samples: usize,
 ) -> Result<(), String> {
     if node.children.is_some() {
         let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
@@ -167,35 +296,35 @@ fn add_bootstrap_to_tree(
         let n = bv.count_ones();
         if n > 1 && n < n_taxa {
             if let Some(c) = counts.get(&bv.as_raw_slice().to_vec()) {
-                node.label = Some(NameOrSupport::Support(*c));
+                let pct = c * 100 / n_bootstrap_samples;
+                node.label = Some(NameOrSupport::Support(pct));
             }
         }
 
         if let Some([l, r]) = &mut node.children {
-            add_bootstrap_to_tree(l, idx, n_taxa, counts)?;
-            add_bootstrap_to_tree(r, idx, n_taxa, counts)?;
+            add_bootstrap_to_tree(l, idx, n_taxa, counts, n_bootstrap_samples)?;
+            add_bootstrap_to_tree(r, idx, n_taxa, counts, n_bootstrap_samples)?;
         }
     }
     Ok(())
 }
 
 /// Validates that the MSA is non-empty and all sequences have equal length.
-fn validate_msa(msa: &[SequenceObject]) -> Result<(), String> {
+fn validate_msa(msa: &[SequenceObject]) -> Result<(), NJError> {
     if msa.is_empty() {
-        return Err("Input MSA is empty".into());
+        return Err(NJError::EmptyMsa);
     }
     let expected_len = msa[0].sequence.len();
     if expected_len == 0 {
-        return Err("Sequences must not be empty".into());
+        return Err(NJError::EmptySequence);
     }
     for s in msa {
         if s.sequence.len() != expected_len {
-            return Err(format!(
-                "All sequences must have the same length. Expected {}, got {} for '{}'",
-                expected_len,
-                s.sequence.len(),
-                s.identifier
-            ));
+            return Err(NJError::SequenceLengthMismatch {
+                expected: expected_len,
+                got: s.sequence.len(),
+                identifier: s.identifier.clone(),
+            });
         }
     }
     Ok(())
@@ -204,52 +333,66 @@ fn validate_msa(msa: &[SequenceObject]) -> Result<(), String> {
 /// Heuristically detects whether the MSA contains DNA or protein sequences.
 ///
 /// Returns [`Alphabet::DNA`] unless any sequence contains a byte that is not
-/// in `{A, C, G, T, U, N, -}` (case-insensitive), in which case
-/// [`Alphabet::Protein`] is returned. This covers all 20 standard amino acids
-/// since letters like `D`, `E`, `F`, `H`, `I`, `K`, `L`, `M`, `P`, `Q`,
-/// `R`, `S`, `V`, `W`, `Y` cannot appear in a DNA alignment.
-fn detect_alphabet(msa: &[SequenceObject]) -> Result<Alphabet, String> {
-    // Simple heuristic: if any character is > A,C,G,T,N, assume protein
+/// in the DNA character set (case-insensitive), in which case
+/// [`Alphabet::Protein`] is returned. The DNA set includes standard bases
+/// `{A, C, G, T}`, uridine `U` (RNA), `N` (unknown), gap `-`, and all 11
+/// IUPAC ambiguity codes `{R, Y, S, W, K, M, B, D, H, V}`.
+fn detect_alphabet(msa: &[SequenceObject]) -> Alphabet {
     let mut is_protein = false;
 
-    for seq in msa {
+    'outer: for seq in msa {
         for c in seq.sequence.bytes() {
             match c.to_ascii_uppercase() {
-                b'A' | b'C' | b'G' | b'T' | b'U' | b'N' | b'-' => { /* still possible DNA */ }
+                b'A' | b'C' | b'G' | b'T' | b'U' | b'N' | b'-'
+                | b'R' | b'Y' | b'S' | b'W' | b'K' | b'M'
+                | b'B' | b'D' | b'H' | b'V' => { /* still possible DNA */ }
                 _ => {
                     is_protein = true;
-                    break;
+                    break 'outer;
                 }
             }
         }
-        if is_protein {
-            break;
-        }
     }
 
-    Ok(if is_protein {
-        Alphabet::Protein
-    } else {
-        Alphabet::DNA
-    })
+    if is_protein { Alphabet::Protein } else { Alphabet::DNA }
 }
 
 /// Runs distance matrix computation with model `M` on alphabet `A`.
-fn run_distance_matrix<A, M>(msa: MSA<A>) -> Result<DistanceResult, String>
+fn run_distance_matrix<A, M>(msa: MSA<A>, num_threads: Option<usize>) -> Result<DistanceResult, String>
 where
-    A: AlphabetEncoding,
-    M: ModelCalculation<A>,
+    A: AlphabetEncoding + Send + Sync,
+    A::Symbol: Send + Sync,
+    M: ModelCalculation<A> + Send + Sync,
 {
-    Ok(msa.into_dist::<M>().into_result())
+    #[cfg(feature = "parallel")]
+    {
+        let pool = build_thread_pool(num_threads)?;
+        Ok(pool.install(|| msa.into_dist::<M>()).into_result())
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = num_threads;
+        Ok(msa.into_dist::<M>().into_result())
+    }
 }
 
 /// Runs average distance computation with model `M` on alphabet `A`.
-fn run_average_distance<A, M>(msa: MSA<A>) -> Result<f64, String>
+fn run_average_distance<A, M>(msa: MSA<A>, num_threads: Option<usize>) -> Result<f64, String>
 where
-    A: AlphabetEncoding,
-    M: ModelCalculation<A>,
+    A: AlphabetEncoding + Send + Sync,
+    A::Symbol: Send + Sync,
+    M: ModelCalculation<A> + Send + Sync,
 {
-    Ok(msa.into_dist::<M>().average())
+    #[cfg(feature = "parallel")]
+    {
+        let pool = build_thread_pool(num_threads)?;
+        Ok(pool.install(|| msa.into_dist::<M>()).average())
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = num_threads;
+        Ok(msa.into_dist::<M>().average())
+    }
 }
 
 /// Runs NJ with model `M` on alphabet `A` and returns a Newick string.
@@ -260,19 +403,48 @@ where
 fn run_nj<A, M>(
     msa: MSA<A>,
     n_bootstrap_samples: usize,
-    on_progress: Option<&dyn Fn(usize, usize)>,
+    on_event: Option<&dyn Fn(NJEvent)>,
+    num_threads: Option<usize>,
 ) -> Result<String, String>
 where
-    A: AlphabetEncoding,
-    M: ModelCalculation<A>,
+    A: AlphabetEncoding + Send + Sync,
+    A::Symbol: Send + Sync,
+    M: ModelCalculation<A> + Send + Sync,
 {
-    let clade_counts = bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples, on_progress)?;
+    let clade_counts =
+        bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples, on_event, num_threads)?;
 
-    let mut main_tree = msa.into_dist::<M>().neighbor_joining()?;
+    if let Some(cb) = on_event {
+        cb(NJEvent::ComputingDistances);
+    }
+
+    #[cfg(feature = "parallel")]
+    let dist = {
+        let pool = build_thread_pool(num_threads)?;
+        pool.install(|| msa.into_dist::<M>())
+    };
+    #[cfg(not(feature = "parallel"))]
+    let dist = msa.into_dist::<M>();
+
+    if let Some(cb) = on_event {
+        cb(NJEvent::RunningNJ);
+    }
+
+    let mut main_tree = dist.neighbor_joining()?;
+
     let newick = match clade_counts {
         Some(counts) => {
+            if let Some(cb) = on_event {
+                cb(NJEvent::AnnotatingBootstrap);
+            }
             let main_idx_map: HashMap<String, usize> = msa.to_index_map();
-            add_bootstrap_to_tree(&mut main_tree, &main_idx_map, msa.n_sequences, &counts)?;
+            add_bootstrap_to_tree(
+                &mut main_tree,
+                &main_idx_map,
+                msa.n_sequences,
+                &counts,
+                n_bootstrap_samples,
+            )?;
             main_tree.to_newick()
         }
         None => main_tree.to_newick(),
@@ -283,56 +455,75 @@ where
 /// Infers a phylogenetic tree from an aligned MSA and returns a Newick string.
 ///
 /// This is the single public entry point for the library. The alphabet is
-/// auto-detected from the sequences; `conf.substitution_model` must be
-/// compatible with the detected alphabet (see the module-level compatibility
+/// auto-detected from the sequences unless `conf.alphabet` is set; `conf.substitution_model`
+/// must be compatible with the alphabet (see the module-level compatibility
 /// table). Returns `Err` for an empty MSA, an incompatible model, or any
 /// internal NJ failure.
 ///
-/// `on_progress` is called as `(completed, total)` after each bootstrap
-/// replicate. It is never called when `n_bootstrap_samples` is 0. Pass `None`
-/// if progress reporting is not needed.
+/// `on_event` is called with an [`NJEvent`] at each stage of the algorithm.
+/// Bootstrap progress is reported via [`NJEvent::BootstrapProgress`] after
+/// each replicate. Pass `None` if event reporting is not needed.
 pub fn nj(
     conf: NJConfig,
-    on_progress: Option<Box<dyn Fn(usize, usize)>>,
-) -> Result<String, String> {
-    let cb = on_progress.as_deref();
+    on_event: Option<Box<dyn Fn(NJEvent)>>,
+) -> Result<String, NJError> {
+    let cb = on_event.as_deref();
+    let num_threads = conf.num_threads;
     validate_msa(&conf.msa)?;
-    let alphabet = detect_alphabet(&conf.msa)?;
+    let n_sites = conf.msa[0].sequence.len();
+    if let Some(cb) = cb {
+        cb(NJEvent::MsaValidated {
+            n_sequences: conf.msa.len(),
+            n_sites,
+        });
+    }
+    let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
+    if let Some(cb) = cb {
+        cb(NJEvent::AlphabetDetected {
+            alphabet: alphabet.clone(),
+        });
+    }
+    let model = conf.substitution_model;
     match alphabet {
         Alphabet::DNA => {
-            // build MSA specialized to DNA (pre-encodes using DNA::encode)
             let msa =
                 MSA::<DNA>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-
-            match conf.substitution_model {
+            match model {
                 SubstitutionModel::PDiff => {
-                    run_nj::<DNA, PDiff>(msa, conf.n_bootstrap_samples, cb)
+                    run_nj::<DNA, PDiff>(msa, conf.n_bootstrap_samples, cb, num_threads)
+                        .map_err(NJError::AlgorithmFailure)
                 }
                 SubstitutionModel::JukesCantor => {
-                    run_nj::<DNA, JukesCantor>(msa, conf.n_bootstrap_samples, cb)
+                    run_nj::<DNA, JukesCantor>(msa, conf.n_bootstrap_samples, cb, num_threads)
+                        .map_err(NJError::AlgorithmFailure)
                 }
                 SubstitutionModel::Kimura2P => {
-                    run_nj::<DNA, Kimura2P>(msa, conf.n_bootstrap_samples, cb)
+                    run_nj::<DNA, Kimura2P>(msa, conf.n_bootstrap_samples, cb, num_threads)
+                        .map_err(NJError::AlgorithmFailure)
                 }
-                SubstitutionModel::Poisson => {
-                    Err("Poisson is a protein model; cannot use with DNA".into())
-                }
+                SubstitutionModel::Poisson => Err(NJError::IncompatibleModel {
+                    model,
+                    alphabet: Alphabet::DNA,
+                }),
             }
         }
-
         Alphabet::Protein => {
             let msa =
                 MSA::<Protein>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-
-            match conf.substitution_model {
+            match model {
                 SubstitutionModel::Poisson => {
-                    run_nj::<Protein, Poisson>(msa, conf.n_bootstrap_samples, cb)
+                    run_nj::<Protein, Poisson>(msa, conf.n_bootstrap_samples, cb, num_threads)
+                        .map_err(NJError::AlgorithmFailure)
                 }
                 SubstitutionModel::PDiff => {
-                    run_nj::<Protein, PDiff>(msa, conf.n_bootstrap_samples, cb)
+                    run_nj::<Protein, PDiff>(msa, conf.n_bootstrap_samples, cb, num_threads)
+                        .map_err(NJError::AlgorithmFailure)
                 }
                 SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
-                    Err("Selected model is for DNA; cannot use with Protein".into())
+                    Err(NJError::IncompatibleModel {
+                        model,
+                        alphabet: Alphabet::Protein,
+                    })
                 }
             }
         }
@@ -341,34 +532,50 @@ pub fn nj(
 
 /// Computes pairwise distances from an aligned MSA and returns a [`DistanceResult`].
 ///
-/// The alphabet is auto-detected from the sequences; `conf.substitution_model`
-/// must be compatible with the detected alphabet (see the module-level
-/// compatibility table). Returns `Err` for an empty MSA, incompatible model,
-/// or mismatched sequence lengths. Does not run Neighbor-Joining or bootstrapping.
-pub fn distance_matrix(conf: DistConfig) -> Result<DistanceResult, String> {
+/// The alphabet is auto-detected from the sequences unless `conf.alphabet` is set;
+/// `conf.substitution_model` must be compatible with the alphabet (see the
+/// module-level compatibility table). Returns `Err` for an empty MSA, incompatible
+/// model, or mismatched sequence lengths. Does not run Neighbor-Joining or bootstrapping.
+pub fn distance_matrix(conf: DistConfig) -> Result<DistanceResult, NJError> {
+    let num_threads = conf.num_threads;
     validate_msa(&conf.msa)?;
-    let alphabet = detect_alphabet(&conf.msa)?;
+    let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
+    let model = conf.substitution_model;
     match alphabet {
         Alphabet::DNA => {
             let msa =
                 MSA::<DNA>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-            match conf.substitution_model {
-                SubstitutionModel::PDiff => run_distance_matrix::<DNA, PDiff>(msa),
-                SubstitutionModel::JukesCantor => run_distance_matrix::<DNA, JukesCantor>(msa),
-                SubstitutionModel::Kimura2P => run_distance_matrix::<DNA, Kimura2P>(msa),
-                SubstitutionModel::Poisson => {
-                    Err("Poisson is a protein model; cannot use with DNA".into())
+            match model {
+                SubstitutionModel::PDiff => {
+                    run_distance_matrix::<DNA, PDiff>(msa, num_threads).map_err(NJError::AlgorithmFailure)
                 }
+                SubstitutionModel::JukesCantor => {
+                    run_distance_matrix::<DNA, JukesCantor>(msa, num_threads).map_err(NJError::AlgorithmFailure)
+                }
+                SubstitutionModel::Kimura2P => {
+                    run_distance_matrix::<DNA, Kimura2P>(msa, num_threads).map_err(NJError::AlgorithmFailure)
+                }
+                SubstitutionModel::Poisson => Err(NJError::IncompatibleModel {
+                    model,
+                    alphabet: Alphabet::DNA,
+                }),
             }
         }
         Alphabet::Protein => {
             let msa =
                 MSA::<Protein>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-            match conf.substitution_model {
-                SubstitutionModel::Poisson => run_distance_matrix::<Protein, Poisson>(msa),
-                SubstitutionModel::PDiff => run_distance_matrix::<Protein, PDiff>(msa),
+            match model {
+                SubstitutionModel::Poisson => {
+                    run_distance_matrix::<Protein, Poisson>(msa, num_threads).map_err(NJError::AlgorithmFailure)
+                }
+                SubstitutionModel::PDiff => {
+                    run_distance_matrix::<Protein, PDiff>(msa, num_threads).map_err(NJError::AlgorithmFailure)
+                }
                 SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
-                    Err("Selected model is for DNA; cannot use with Protein".into())
+                    Err(NJError::IncompatibleModel {
+                        model,
+                        alphabet: Alphabet::Protein,
+                    })
                 }
             }
         }
@@ -380,30 +587,46 @@ pub fn distance_matrix(conf: DistConfig) -> Result<DistanceResult, String> {
 /// Same alphabet auto-detection and model–alphabet compatibility as [`nj`].
 /// Returns `0.0` for fewer than 2 taxa. Returns `Err` for an empty MSA,
 /// incompatible model, or mismatched sequence lengths.
-pub fn average_distance(conf: DistConfig) -> Result<f64, String> {
+pub fn average_distance(conf: DistConfig) -> Result<f64, NJError> {
+    let num_threads = conf.num_threads;
     validate_msa(&conf.msa)?;
-    let alphabet = detect_alphabet(&conf.msa)?;
+    let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
+    let model = conf.substitution_model;
     match alphabet {
         Alphabet::DNA => {
             let msa =
                 MSA::<DNA>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-            match conf.substitution_model {
-                SubstitutionModel::PDiff => run_average_distance::<DNA, PDiff>(msa),
-                SubstitutionModel::JukesCantor => run_average_distance::<DNA, JukesCantor>(msa),
-                SubstitutionModel::Kimura2P => run_average_distance::<DNA, Kimura2P>(msa),
-                SubstitutionModel::Poisson => {
-                    Err("Poisson is a protein model; cannot use with DNA".into())
+            match model {
+                SubstitutionModel::PDiff => {
+                    run_average_distance::<DNA, PDiff>(msa, num_threads).map_err(NJError::AlgorithmFailure)
                 }
+                SubstitutionModel::JukesCantor => {
+                    run_average_distance::<DNA, JukesCantor>(msa, num_threads).map_err(NJError::AlgorithmFailure)
+                }
+                SubstitutionModel::Kimura2P => {
+                    run_average_distance::<DNA, Kimura2P>(msa, num_threads).map_err(NJError::AlgorithmFailure)
+                }
+                SubstitutionModel::Poisson => Err(NJError::IncompatibleModel {
+                    model,
+                    alphabet: Alphabet::DNA,
+                }),
             }
         }
         Alphabet::Protein => {
             let msa =
                 MSA::<Protein>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-            match conf.substitution_model {
-                SubstitutionModel::Poisson => run_average_distance::<Protein, Poisson>(msa),
-                SubstitutionModel::PDiff => run_average_distance::<Protein, PDiff>(msa),
+            match model {
+                SubstitutionModel::Poisson => {
+                    run_average_distance::<Protein, Poisson>(msa, num_threads).map_err(NJError::AlgorithmFailure)
+                }
+                SubstitutionModel::PDiff => {
+                    run_average_distance::<Protein, PDiff>(msa, num_threads).map_err(NJError::AlgorithmFailure)
+                }
                 SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
-                    Err("Selected model is for DNA; cannot use with Protein".into())
+                    Err(NJError::IncompatibleModel {
+                        model,
+                        alphabet: Alphabet::Protein,
+                    })
                 }
             }
         }
@@ -418,6 +641,8 @@ mod tests {
 
     #[test]
     fn test_nj_wrapper_simple_tree() {
+        // ACGTCG vs ACG-GC: pos 3 is gapped (excluded), 2 diffs out of 5 comparable
+        // → distance = 0.4; two taxa → each branch = 0.2.
         let sequences = vec![
             SequenceObject {
                 identifier: "A".into(),
@@ -432,9 +657,11 @@ mod tests {
             msa: sequences,
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::PDiff,
+            alphabet: None,
+            num_threads: None,
         };
         let newick = nj(conf, None).expect("NJ failed");
-        assert_eq!(newick, "(A:0.167,B:0.167);");
+        assert_eq!(newick, "(A:0.200,B:0.200);");
     }
 
     #[test]
@@ -453,6 +680,8 @@ mod tests {
             msa: sequences,
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::PDiff,
+            alphabet: None,
+            num_threads: None,
         };
         let out = nj(conf, None).unwrap();
         assert!(out.ends_with(';'));
@@ -478,6 +707,8 @@ mod tests {
             msa: sequences,
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::PDiff,
+            alphabet: None,
+            num_threads: None,
         };
 
         let t1 = nj(conf.clone(), None).unwrap();
@@ -491,6 +722,8 @@ mod tests {
             msa: vec![],
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::PDiff,
+            alphabet: None,
+            num_threads: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -512,6 +745,8 @@ mod tests {
             msa: sequences,
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::Poisson, // protein model for DNA MSA
+            alphabet: None,
+            num_threads: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -533,6 +768,8 @@ mod tests {
             msa: sequences,
             n_bootstrap_samples: 0,
             substitution_model: SubstitutionModel::JukesCantor, // DNA model for protein MSA
+            alphabet: None,
+            num_threads: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -550,6 +787,8 @@ mod tests {
                 })
                 .collect(),
             substitution_model: model,
+            alphabet: None,
+            num_threads: None,
         }
     }
 
@@ -634,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_distance_matrix_empty_msa_errors() {
-        let conf = DistConfig { msa: vec![], substitution_model: SubstitutionModel::PDiff };
+        let conf = DistConfig { msa: vec![], substitution_model: SubstitutionModel::PDiff, alphabet: None, num_threads: None };
         assert!(distance_matrix(conf).is_err());
     }
 
@@ -686,7 +925,7 @@ mod tests {
 
     #[test]
     fn test_average_distance_empty_msa_errors() {
-        let conf = DistConfig { msa: vec![], substitution_model: SubstitutionModel::PDiff };
+        let conf = DistConfig { msa: vec![], substitution_model: SubstitutionModel::PDiff, alphabet: None, num_threads: None };
         assert!(average_distance(conf).is_err());
     }
 
@@ -708,8 +947,17 @@ mod tests {
                 sequence: "ACG-ACGT".into(),
             },
         ];
-        let alphabet = detect_alphabet(&msa).expect("detection failed");
-        assert_eq!(alphabet, Alphabet::DNA);
+        assert_eq!(detect_alphabet(&msa), Alphabet::DNA);
+    }
+
+    #[test]
+    fn test_detect_alphabet_dna_iupac() {
+        // IUPAC ambiguity codes and RNA U should be detected as DNA, not protein.
+        let msa = vec![SequenceObject {
+            identifier: "Seq0".into(),
+            sequence: "ACGTRYWSMKHBDVNU".into(),
+        }];
+        assert_eq!(detect_alphabet(&msa), Alphabet::DNA);
     }
 
     #[test]
@@ -724,7 +972,72 @@ mod tests {
                 sequence: "ACD-FGHIK".into(),
             },
         ];
-        let alphabet = detect_alphabet(&msa).expect("detection failed");
-        assert_eq!(alphabet, Alphabet::Protein);
+        assert_eq!(detect_alphabet(&msa), Alphabet::Protein);
+    }
+}
+
+#[cfg(all(test, feature = "parallel"))]
+mod parallel_tests {
+    use super::*;
+    use crate::models::SubstitutionModel;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn three_seq_dna() -> Vec<SequenceObject> {
+        vec![
+            SequenceObject { identifier: "A".into(), sequence: "ACGTACGT".into() },
+            SequenceObject { identifier: "B".into(), sequence: "ACGCACGT".into() },
+            SequenceObject { identifier: "C".into(), sequence: "ACGTACGC".into() },
+        ]
+    }
+
+    #[test]
+    fn test_parallel_bootstrap_returns_valid_newick() {
+        let conf = NJConfig {
+            msa: three_seq_dna(),
+            n_bootstrap_samples: 20,
+            substitution_model: SubstitutionModel::PDiff,
+            alphabet: None,
+            num_threads: None,
+        };
+        let newick = nj(conf, None).expect("parallel NJ failed");
+        assert!(newick.ends_with(';'));
+        assert!(newick.contains(':'));
+    }
+
+    #[test]
+    fn test_parallel_progress_fires_exactly_n_times() {
+        let n = 10_usize;
+        let count = Arc::new(AtomicUsize::new(0));
+        let count2 = count.clone();
+        let conf = NJConfig {
+            msa: three_seq_dna(),
+            n_bootstrap_samples: n,
+            substitution_model: SubstitutionModel::PDiff,
+            alphabet: None,
+            num_threads: None,
+        };
+        let cb: Option<Box<dyn Fn(usize, usize)>> =
+            Some(Box::new(move |_, _| { count2.fetch_add(1, Ordering::SeqCst); }));
+        nj(conf, cb).unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), n);
+    }
+
+    #[test]
+    fn test_parallel_progress_last_call_is_total() {
+        let n = 8_usize;
+        let last = Arc::new(AtomicUsize::new(0));
+        let last2 = last.clone();
+        let conf = NJConfig {
+            msa: three_seq_dna(),
+            n_bootstrap_samples: n,
+            substitution_model: SubstitutionModel::PDiff,
+            alphabet: None,
+            num_threads: None,
+        };
+        let cb: Option<Box<dyn Fn(usize, usize)>> =
+            Some(Box::new(move |completed, _| { last2.store(completed, Ordering::SeqCst); }));
+        nj(conf, cb).unwrap();
+        assert_eq!(last.load(Ordering::SeqCst), n);
     }
 }
