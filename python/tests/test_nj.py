@@ -9,28 +9,30 @@ def msa(*pairs):
 
 
 class TestBasic:
-    def test_returns_string(self):
+    def test_returns_dict_with_newick(self):
         result = nj(msa(("A", "ACGT"), ("B", "ACGA")))
-        assert isinstance(result, str)
+        assert isinstance(result, dict)
+        assert "newick" in result
+        assert isinstance(result["newick"], str)
 
     def test_newick_format(self):
         result = nj(msa(("A", "ACGT"), ("B", "ACGA")))
-        assert result.startswith("(")
-        assert result.endswith(";")
+        assert result["newick"].startswith("(")
+        assert result["newick"].endswith(";")
 
     def test_two_identical_taxa_zero_distance(self):
         result = nj(msa(("A", "ACGT"), ("B", "ACGT")))
-        assert result == "(A:0.000,B:0.000);"
+        assert result["newick"] == "(A:0.000,B:0.000);"
 
     def test_three_taxa_contains_all_leaves(self):
         result = nj(msa(("Sp1", "ACGT"), ("Sp2", "ACGA"), ("Sp3", "AGGT")))
-        assert "Sp1" in result
-        assert "Sp2" in result
-        assert "Sp3" in result
+        assert "Sp1" in result["newick"]
+        assert "Sp2" in result["newick"]
+        assert "Sp3" in result["newick"]
 
     def test_deterministic(self):
         sequences = msa(("A", "ACGTCG"), ("B", "ACG-GC"), ("C", "ACGCGT"))
-        assert nj(sequences) == nj(sequences)
+        assert nj(sequences)["newick"] == nj(sequences)["newick"]
 
 
 class TestSubstitutionModels:
@@ -39,28 +41,28 @@ class TestSubstitutionModels:
             msa(("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")),
             substitution_model="JukesCantor",
         )
-        assert result.endswith(";")
+        assert result["newick"].endswith(";")
 
     def test_kimura2p_dna(self):
         result = nj(
             msa(("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")),
             substitution_model="Kimura2P",
         )
-        assert result.endswith(";")
+        assert result["newick"].endswith(";")
 
     def test_pdiff_protein(self):
         result = nj(
             msa(("A", "ACDEFGH"), ("B", "ACDEFGK"), ("C", "ACDLFGH")),
             substitution_model="PDiff",
         )
-        assert result.endswith(";")
+        assert result["newick"].endswith(";")
 
     def test_poisson_protein(self):
         result = nj(
             msa(("A", "ACDEFGH"), ("B", "ACDEFGK"), ("C", "ACDLFGH")),
             substitution_model="Poisson",
         )
-        assert result.endswith(";")
+        assert result["newick"].endswith(";")
 
 
 class TestErrors:
@@ -84,28 +86,28 @@ class TestErrors:
 class TestMixedCase:
     def test_lowercase_dna_detected_as_dna(self):
         result = nj(msa(("A", "acgt"), ("B", "acga")))
-        assert result.endswith(";")
+        assert result["newick"].endswith(";")
 
     def test_mixedcase_dna(self):
         result = nj(msa(("A", "AcGt"), ("B", "aCgA")))
-        assert result.endswith(";")
+        assert result["newick"].endswith(";")
 
     def test_lowercase_matches_uppercase(self):
         upper = nj(msa(("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")))
         lower = nj(msa(("A", "acgt"), ("B", "acga"), ("C", "aggt")))
-        assert upper == lower
+        assert upper["newick"] == lower["newick"]
 
 
 class TestSpecialNames:
     def test_sequence_name_with_spaces(self):
         result = nj(msa(("Seq A", "ACGT"), ("Seq B", "ACGA")))
-        assert "Seq A" in result
-        assert "Seq B" in result
+        assert "Seq A" in result["newick"]
+        assert "Seq B" in result["newick"]
 
     def test_sequence_name_with_special_chars(self):
         result = nj(msa(("Sp|1.1", "ACGT"), ("Sp|2.1", "ACGA")))
-        assert "Sp|1.1" in result
-        assert "Sp|2.1" in result
+        assert "Sp|1.1" in result["newick"]
+        assert "Sp|2.1" in result["newick"]
 
 
 class TestDistanceMatrix:
@@ -219,15 +221,15 @@ class TestBootstrap:
             msa(("A", "ACGTACGT"), ("B", "ACGAACGA"), ("C", "AGGTCGGT"), ("D", "TGGTCGGT")),
             n_bootstrap_samples=0,
         )
-        assert result.endswith(";")
+        assert result["newick"].endswith(";")
 
     def test_bootstrap_nonzero_returns_valid_newick(self):
         result = nj(
             msa(("A", "ACGTACGT"), ("B", "ACGAACGA"), ("C", "AGGTCGGT"), ("D", "TGGTCGGT")),
             n_bootstrap_samples=10,
         )
-        assert isinstance(result, str)
-        assert result.endswith(";")
+        assert isinstance(result["newick"], str)
+        assert result["newick"].endswith(";")
 
     def test_on_event_called_for_bootstrap_progress(self):
         progress_events = []
@@ -240,3 +242,28 @@ class TestBootstrap:
         )
         assert len(progress_events) == 5
         assert progress_events[-1] == {"type": "BootstrapProgress", "completed": 5, "total": 5}
+
+
+class TestReturnOptions:
+    def test_return_distance_matrix(self):
+        result = nj(
+            msa(("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")),
+            return_distance_matrix=True,
+        )
+        assert "newick" in result
+        assert "distance_matrix" in result
+        assert result["distance_matrix"]["names"] == ["A", "B", "C"]
+
+    def test_return_average_distance(self):
+        result = nj(
+            msa(("A", "ACGT"), ("B", "ACGA"), ("C", "AGGT")),
+            return_average_distance=True,
+        )
+        assert "newick" in result
+        assert "average_distance" in result
+        assert isinstance(result["average_distance"], float)
+
+    def test_no_extra_keys_by_default(self):
+        result = nj(msa(("A", "ACGT"), ("B", "ACGA")))
+        assert "distance_matrix" not in result
+        assert "average_distance" not in result

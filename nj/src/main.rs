@@ -21,7 +21,7 @@
 #[cfg(feature = "cli")]
 mod cli {
     use ::nj::alphabet::Alphabet;
-    use ::nj::config::{DistConfig, NJConfig};
+    use ::nj::config::NJConfig;
     use ::nj::event::{LogLevel, NJEvent};
     use ::nj::models::SubstitutionModel;
     use clap::Parser;
@@ -38,7 +38,7 @@ mod cli {
         #[arg(value_name = "FASTA")]
         pub input: Option<PathBuf>,
 
-        /// Write Newick output to this file instead of stdout.
+        /// Write output to this file instead of stdout.
         #[arg(short, long, value_name = "FILE")]
         pub output: Option<PathBuf>,
 
@@ -54,11 +54,11 @@ mod cli {
         #[arg(short = 'a', long, value_name = "ALPHABET")]
         pub alphabet: Option<Alphabet>,
 
-        /// Output pairwise distance matrix as JSON instead of a Newick tree.
+        /// Include the pairwise distance matrix in the output (switches output to JSON).
         #[arg(long, default_value_t = false)]
         pub distance_matrix: bool,
 
-        /// Output the mean pairwise distance as a single number instead of a Newick tree.
+        /// Include the mean pairwise distance in the output (switches output to JSON).
         #[arg(long, default_value_t = false)]
         pub average_distance: bool,
 
@@ -72,17 +72,17 @@ mod cli {
         pub verbose: bool,
     }
 
-    /// Reads the FASTA file from `args`, runs NJ, and writes the Newick
-    /// output to stdout or a file.
+    /// Reads the FASTA file from `args`, runs NJ, and writes output to stdout or a file.
+    ///
+    /// When neither `--distance-matrix` nor `--average-distance` is set, output is a
+    /// plain Newick string. When either flag is set, output is a JSON object whose
+    /// `newick` field is always present, and `distance_matrix` / `average_distance`
+    /// fields appear when the corresponding flags are set. Both flags may be combined.
     ///
     /// Argument parsing is handled by the caller; pass [`Args::parse()`] for
     /// production use or a manually constructed [`Args`] in tests.
     pub fn run(args: Args) -> Result<(), String> {
         use indicatif::{ProgressBar, ProgressStyle};
-
-        if args.distance_matrix && args.average_distance {
-            return Err("--distance-matrix and --average-distance are mutually exclusive".into());
-        }
 
         let fasta = match &args.input {
             Some(path) => fs::read_to_string(path)
@@ -97,43 +97,6 @@ mod cli {
         };
 
         let msa = ::nj::parse_fasta(&fasta).map_err(|e| e.to_string())?;
-
-        if args.distance_matrix {
-            let conf = DistConfig {
-                msa,
-                substitution_model: args.substitution_model,
-                alphabet: args.alphabet,
-                num_threads: args.num_threads,
-            };
-            let result = ::nj::distance_matrix(conf).map_err(|e| e.to_string())?;
-            let json = serde_json::to_string_pretty(&result)
-                .map_err(|e| format!("JSON serialization failed: {e}"))?;
-            if let Some(path) = args.output {
-                fs::write(&path, format!("{json}\n"))
-                    .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-            } else {
-                println!("{json}");
-            }
-            return Ok(());
-        }
-
-        if args.average_distance {
-            let conf = DistConfig {
-                msa,
-                substitution_model: args.substitution_model,
-                alphabet: args.alphabet,
-                num_threads: args.num_threads,
-            };
-            let avg = ::nj::average_distance(conf).map_err(|e| e.to_string())?;
-            if let Some(path) = args.output {
-                fs::write(&path, format!("{avg}\n"))
-                    .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-            } else {
-                println!("{avg}");
-            }
-            return Ok(());
-        }
-
         let n_bootstrap = args.n_bootstrap_samples;
         let nj_conf = NJConfig {
             msa,
@@ -141,6 +104,8 @@ mod cli {
             substitution_model: args.substitution_model,
             alphabet: args.alphabet,
             num_threads: args.num_threads,
+            return_distance_matrix: args.distance_matrix,
+            return_average_distance: args.average_distance,
         };
 
         let pb = if n_bootstrap > 0 {
@@ -175,7 +140,10 @@ mod cli {
             stage_event => {
                 if verbose {
                     let msg = match stage_event {
-                        NJEvent::MsaValidated { n_sequences, n_sites } => {
+                        NJEvent::MsaValidated {
+                            n_sequences,
+                            n_sites,
+                        } => {
                             format!("MSA validated: {n_sequences} sequences, {n_sites} sites")
                         }
                         NJEvent::AlphabetDetected { alphabet } => {
@@ -186,9 +154,7 @@ mod cli {
                         NJEvent::BootstrapStarted { total } => {
                             format!("Running {total} bootstrap replicates")
                         }
-                        NJEvent::AnnotatingBootstrap => {
-                            "Annotating bootstrap support".to_string()
-                        }
+                        NJEvent::AnnotatingBootstrap => "Annotating bootstrap support".to_string(),
                         _ => return,
                     };
                     eprintln!("[info] {msg}");
@@ -196,13 +162,20 @@ mod cli {
             }
         });
 
-        let newick_tree = nj(nj_conf, Some(on_event)).map_err(|e| e.to_string())?;
+        let result = nj(nj_conf, Some(on_event)).map_err(|e| e.to_string())?;
+
+        let output = if args.distance_matrix || args.average_distance {
+            serde_json::to_string_pretty(&result)
+                .map_err(|e| format!("JSON serialization failed: {e}"))?
+        } else {
+            result.newick
+        };
 
         if let Some(path) = args.output {
-            fs::write(&path, format!("{newick_tree}\n"))
+            fs::write(&path, format!("{output}\n"))
                 .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
         } else {
-            println!("{newick_tree}");
+            println!("{output}");
         }
         Ok(())
     }
@@ -224,7 +197,7 @@ fn main() -> Result<(), String> {
 #[cfg(test)]
 #[cfg(feature = "cli")]
 mod main_tests {
-    use super::cli::{run, Args};
+    use super::cli::{Args, run};
     use ::nj::models::SubstitutionModel;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -256,6 +229,16 @@ mod main_tests {
             num_threads: None,
             verbose: false,
         }
+    }
+
+    #[test]
+    fn test_run_all_outputs_succeeds() {
+        let args = Args {
+            distance_matrix: true,
+            average_distance: true,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(args).is_ok());
     }
 
     #[test]
@@ -321,18 +304,6 @@ mod main_tests {
     fn test_run_inconsistent_lengths_is_error() {
         let path = temp_fasta(">s1\nACGT\n>s2\nAC\n");
         assert!(run(base_args(path)).is_err());
-    }
-
-    // --- Conflicting output flags ---
-
-    #[test]
-    fn test_run_conflicting_output_flags_is_error() {
-        let args = Args {
-            distance_matrix: true,
-            average_distance: true,
-            ..base_args(fixture("simple_dna.fasta"))
-        };
-        assert!(run(args).is_err());
     }
 
     // --- Model–alphabet incompatibility ---

@@ -70,8 +70,8 @@ export type LogLevel = "Info" | "Warning";
 /**
  * Full configuration for a single Neighbor-Joining run.
  *
- * Pass an `NJConfig` to [`crate::nj`] to run the algorithm and receive a
- * Newick string. The alphabet (DNA vs. protein) is auto-detected from the
+ * Pass an `NJConfig` to [`crate::nj`] to run the algorithm and receive an
+ * [`NJResult`]. The alphabet (DNA vs. protein) is auto-detected from the
  * sequences unless [`alphabet`](NJConfig::alphabet) is explicitly set;
  * [`substitution_model`](NJConfig::substitution_model) must be compatible with
  * the alphabet or an error is returned.
@@ -103,7 +103,19 @@ alphabet: Alphabet | null,
  * Only effective when the `parallel` Cargo feature is enabled.
  * When `None` (the default), Rayon uses all available hardware threads.
  */
-num_threads: number | null, };
+num_threads: number | null, 
+/**
+ * When `true`, the full pairwise distance matrix is included in the
+ * returned [`NJResult`] as [`NJResult::distance_matrix`].
+ * Defaults to `false`.
+ */
+return_distance_matrix: boolean, 
+/**
+ * When `true`, the mean pairwise distance is included in the returned
+ * [`NJResult`] as [`NJResult::average_distance`].
+ * Defaults to `false`.
+ */
+return_average_distance: boolean, };
 
 /**
  * Events fired by the NJ algorithm and passed to the `on_event` callback.
@@ -113,6 +125,29 @@ num_threads: number | null, };
  * This makes it easy to dispatch on `event["type"]` in Python and JavaScript.
  */
 export type NJEvent = { "type": "MsaValidated", n_sequences: number, n_sites: number, } | { "type": "AlphabetDetected", alphabet: Alphabet, } | { "type": "ComputingDistances" } | { "type": "RunningNJ" } | { "type": "BootstrapStarted", total: number, } | { "type": "BootstrapProgress", completed: number, total: number, } | { "type": "AnnotatingBootstrap" } | { "type": "Log", level: LogLevel, message: string, };
+
+/**
+ * Combined result returned by [`crate::nj`].
+ *
+ * Always contains the Newick tree string. Optionally includes the full
+ * pairwise distance matrix and/or the mean pairwise distance, controlled by
+ * [`NJConfig::include_distance_matrix`] and [`NJConfig::include_average_distance`].
+ */
+export type NJResult = { 
+/**
+ * Newick-format phylogenetic tree string.
+ */
+newick: string, 
+/**
+ * Full symmetric pairwise distance matrix, present when
+ * [`NJConfig::include_distance_matrix`] is `true`.
+ */
+distance_matrix: DistanceResult | null, 
+/**
+ * Mean of all unique pairwise distances, present when
+ * [`NJConfig::include_average_distance`] is `true`.
+ */
+average_distance: number | null, };
 
 /**
  * A single sequence in a multiple sequence alignment.

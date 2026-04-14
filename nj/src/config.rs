@@ -6,6 +6,7 @@
 //! and TypeScript via the generated `lib_types.ts` type definitions.
 
 pub use crate::alphabet::Alphabet;
+pub use crate::distance_matrix::DistanceResult;
 pub use crate::models::SubstitutionModel;
 pub use crate::msa::MSA;
 use serde::{Deserialize, Serialize};
@@ -62,8 +63,8 @@ pub struct DistConfig {
 
 /// Full configuration for a single Neighbor-Joining run.
 ///
-/// Pass an `NJConfig` to [`crate::nj`] to run the algorithm and receive a
-/// Newick string. The alphabet (DNA vs. protein) is auto-detected from the
+/// Pass an `NJConfig` to [`crate::nj`] to run the algorithm and receive an
+/// [`NJResult`]. The alphabet (DNA vs. protein) is auto-detected from the
 /// sequences unless [`alphabet`](NJConfig::alphabet) is explicitly set;
 /// [`substitution_model`](NJConfig::substitution_model) must be compatible with
 /// the alphabet or an error is returned.
@@ -89,4 +90,34 @@ pub struct NJConfig {
     /// When `None` (the default), Rayon uses all available hardware threads.
     #[serde(default)]
     pub num_threads: Option<usize>,
+    /// When `true`, the full pairwise distance matrix is included in the
+    /// returned [`NJResult`] as [`NJResult::distance_matrix`].
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub return_distance_matrix: bool,
+    /// When `true`, the mean pairwise distance is included in the returned
+    /// [`NJResult`] as [`NJResult::average_distance`].
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub return_average_distance: bool,
+}
+
+/// Combined result returned by [`crate::nj`].
+///
+/// Always contains the Newick tree string. Optionally includes the full
+/// pairwise distance matrix and/or the mean pairwise distance, controlled by
+/// [`NJConfig::include_distance_matrix`] and [`NJConfig::include_average_distance`].
+#[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq)]
+#[ts(export, export_to = "../../wasm/types/lib_types.ts")]
+pub struct NJResult {
+    /// Newick-format phylogenetic tree string.
+    pub newick: String,
+    /// Full symmetric pairwise distance matrix, present when
+    /// [`NJConfig::include_distance_matrix`] is `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_matrix: Option<DistanceResult>,
+    /// Mean of all unique pairwise distances, present when
+    /// [`NJConfig::include_average_distance`] is `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub average_distance: Option<f64>,
 }

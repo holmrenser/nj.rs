@@ -10,8 +10,16 @@
 //!   msa: [{ identifier: 'SeqA', sequence: 'ACGT' }, ...],
 //!   n_bootstrap_samples: 100,
 //!   substitution_model: 'PDiff',  // 'JukesCantor', 'Kimura2P', or 'Poisson'
+//!   // optional: include extra fields in the result object
+//!   include_distance_matrix: true,
+//!   include_average_distance: true,
 //! }
 //! ```
+//!
+//! Returns a JS object with a `newick` string always present. When
+//! `include_distance_matrix` is `true`, the object also has a `distance_matrix`
+//! field (`{ names, matrix }`). When `include_average_distance` is `true`, it
+//! also has an `average_distance` number. Both flags may be combined.
 //!
 //! `onEvent` is an optional JS function called with a tagged event object for
 //! each algorithm stage. The object always has a `type` field identifying the
@@ -21,14 +29,15 @@
 //! ```js
 //! import { nj } from '@holmrenser/nj';
 //!
-//! const newick = nj(config, (event) => {
+//! const result = nj(config, (event) => {
 //!   if (event.type === 'BootstrapProgress') {
 //!     progressBar.value = event.completed / event.total * 100;
 //!   }
 //! });
+//! console.log(result.newick);
 //! ```
 //!
-//! Returns a Newick string on success, or throws a JS error string on failure.
+//! Throws a JS error string on failure.
 
 use js_sys::Function;
 use nj::{DistConfig, NJConfig, NJEvent, average_distance as lib_average_distance,
@@ -36,17 +45,19 @@ use nj::{DistConfig, NJConfig, NJEvent, average_distance as lib_average_distance
 use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::prelude::*;
 
-/// Run Neighbor-Joining and return a Newick string.
+/// Run Neighbor-Joining and return a result object.
 ///
 /// Deserialises `config_json` from a JS object into [`NJConfig`], runs the
-/// NJ algorithm, and returns the Newick string. `on_event`, if provided,
-/// is called with a tagged event object at each algorithm stage. See the
-/// module documentation for the event object shapes.
-/// Returns a `JsValue` error string if deserialisation fails or if the NJ
-/// algorithm fails (e.g. incompatible model for the detected alphabet, or
-/// empty MSA).
+/// NJ algorithm, and returns the result as a JS object. The returned object
+/// always has a `newick` string. It also has `distance_matrix` when
+/// `include_distance_matrix` is `true`, and `average_distance` when
+/// `include_average_distance` is `true`. `on_event`, if provided, is called
+/// with a tagged event object at each algorithm stage. See the module
+/// documentation for the event object shapes.
+/// Throws a JS error string if deserialisation fails or if the NJ algorithm
+/// fails (e.g. incompatible model for the detected alphabet, or empty MSA).
 #[wasm_bindgen]
-pub fn nj(config_json: JsValue, on_event: Option<Function>) -> Result<String, JsValue> {
+pub fn nj(config_json: JsValue, on_event: Option<Function>) -> Result<JsValue, JsValue> {
     let config: NJConfig = from_value(config_json)
         .map_err(|e| JsValue::from_str(&format!("Invalid NJConfig: {}", e)))?;
 
@@ -59,7 +70,8 @@ pub fn nj(config_json: JsValue, on_event: Option<Function>) -> Result<String, Js
         }) as Box<dyn Fn(NJEvent)>
     });
 
-    lib_nj(config, callback).map_err(|e| JsValue::from_str(&e.to_string()))
+    let result = lib_nj(config, callback).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    to_value(&result).map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
 }
 
 /// Compute pairwise distances and return a `{ names, matrix }` JS object.

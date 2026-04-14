@@ -135,6 +135,17 @@ impl DistMat {
         DistanceResult { names: self.names, matrix }
     }
 
+    /// Borrows `self` to produce a [`DistanceResult`] without consuming the matrix.
+    ///
+    /// Useful when the distance matrix is needed both as output and for running NJ.
+    pub fn to_result(&self) -> DistanceResult {
+        let n = self.dim();
+        let matrix = (0..n)
+            .map(|i| (0..n).map(|j| self.get(i, j)).collect())
+            .collect();
+        DistanceResult { names: self.names.clone(), matrix }
+    }
+
     /// Returns the mean of all `n*(n-1)/2` unique pairwise distances.
     ///
     /// Returns `0.0` for matrices with fewer than 2 taxa (no pairs exist).
@@ -159,7 +170,7 @@ impl DistMat {
 ///
 /// Expands the internal lower-triangular storage to a full symmetric n×n matrix
 /// for ease of consumption in JSON, Python, and TypeScript.
-#[derive(Clone, Debug, ts_rs::TS, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, ts_rs::TS, Serialize, Deserialize)]
 #[ts(export, export_to = "../../wasm/types/lib_types.ts")]
 pub struct DistanceResult {
     /// Sequence/taxa names, one per row/column.

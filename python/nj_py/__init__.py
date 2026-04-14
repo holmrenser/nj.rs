@@ -1,19 +1,82 @@
 from __future__ import annotations
 
-from typing import Callable, Literal, TypedDict
+from typing import Callable, Literal, NotRequired, Required, TypedDict
 
 from nj_py._nj_py import average_distance as _average_distance
 from nj_py._nj_py import distance_matrix as _distance_matrix
 from nj_py._nj_py import nj as _nj
 
 SubstitutionModel = Literal["PDiff", "JukesCantor", "Kimura2P", "Poisson"]
+Alphabet = Literal["DNA", "Protein"]
+LogLevel = Literal["Info", "Warning"]
+
 
 class SequenceObject(TypedDict):
     identifier: str
     sequence: str
+
+
 class DistanceResult(TypedDict):
     names: list[str]
     matrix: list[list[float]]
+
+
+class NJResult(TypedDict):
+    newick: Required[str]
+    distance_matrix: NotRequired[DistanceResult]
+    average_distance: NotRequired[float]
+
+
+class MsaValidatedEvent(TypedDict):
+    type: Literal["MsaValidated"]
+    n_sequences: int
+    n_sites: int
+
+
+class AlphabetDetectedEvent(TypedDict):
+    type: Literal["AlphabetDetected"]
+    alphabet: Alphabet
+
+
+class ComputingDistancesEvent(TypedDict):
+    type: Literal["ComputingDistances"]
+
+
+class RunningNJEvent(TypedDict):
+    type: Literal["RunningNJ"]
+
+
+class BootstrapStartedEvent(TypedDict):
+    type: Literal["BootstrapStarted"]
+    total: int
+
+
+class BootstrapProgressEvent(TypedDict):
+    type: Literal["BootstrapProgress"]
+    completed: int
+    total: int
+
+
+class AnnotatingBootstrapEvent(TypedDict):
+    type: Literal["AnnotatingBootstrap"]
+
+
+class LogEvent(TypedDict):
+    type: Literal["Log"]
+    level: LogLevel
+    message: str
+
+
+NJEvent = (
+    MsaValidatedEvent
+    | AlphabetDetectedEvent
+    | ComputingDistancesEvent
+    | RunningNJEvent
+    | BootstrapStartedEvent
+    | BootstrapProgressEvent
+    | AnnotatingBootstrapEvent
+    | LogEvent
+)
 
 
 def nj(
@@ -21,8 +84,10 @@ def nj(
     *,
     substitution_model: SubstitutionModel = "PDiff",
     n_bootstrap_samples: int = 0,
-    on_event: Callable[[dict], None] | None = None,
-) -> str:
+    return_distance_matrix: bool = False,
+    return_average_distance: bool = False,
+    on_event: Callable[[NJEvent], None] | None = None,
+) -> NJResult:
     """Infer a Neighbor-Joining tree and return a Newick string.
 
     Args:
@@ -58,24 +123,25 @@ def nj(
             {"identifier": "mouse", "sequence": "TCGTACGT"},
         ]
 
-        bar = None
-        def on_event(event):
-            global bar
-            if event["type"] == "BootstrapStarted":
-                bar = tqdm(total=event["total"])
-            elif event["type"] == "BootstrapProgress":
-                bar.update(1)
+        with tqdm() as bar:
+            def on_event(event):
+                if event["type"] == "BootstrapStarted":
+                    bar.reset(total=event["total"])
+                elif event["type"] == "BootstrapProgress":
+                    bar.update(1)
 
-        tree = nj(sequences, substitution_model="JukesCantor",
-                  n_bootstrap_samples=100, on_event=on_event)
-        if bar:
-            bar.close()
+            result = nj(sequences, substitution_model="JukesCantor",
+                        n_bootstrap_samples=100, on_event=on_event)
+
+        print(result["newick"])
     """
     return _nj(
         {
             "msa": msa,
             "substitution_model": substitution_model,
             "n_bootstrap_samples": n_bootstrap_samples,
+            "return_distance_matrix": return_distance_matrix,
+            "return_average_distance": return_average_distance,
         },
         on_event,
     )
@@ -149,6 +215,18 @@ __all__ = [
     "distance_matrix",
     "average_distance",
     "SubstitutionModel",
+    "Alphabet",
+    "LogLevel",
     "SequenceObject",
     "DistanceResult",
+    "NJResult",
+    "NJEvent",
+    "MsaValidatedEvent",
+    "AlphabetDetectedEvent",
+    "ComputingDistancesEvent",
+    "RunningNJEvent",
+    "BootstrapStartedEvent",
+    "BootstrapProgressEvent",
+    "AnnotatingBootstrapEvent",
+    "LogEvent",
 ]
