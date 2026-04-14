@@ -24,28 +24,28 @@ test("wasm module loads and exposes nj export", async () => {
 test("two identical taxa produce zero-distance newick", async () => {
   const wasm = await loadWasm();
   const config = makeConfig([["A", "ACGT"], ["B", "ACGT"]]);
-  const newick = wasm.nj(config);
-  assert.equal(newick, "(A:0.000,B:0.000);");
+  const result = wasm.nj(config);
+  assert.equal(result.newick, "(A:0.000,B:0.000);");
 });
 
 test("two divergent taxa produce correct branch lengths", async () => {
   const wasm = await loadWasm();
   // 1 difference over 4 positions = 0.25 each side
   const config = makeConfig([["A", "ACGT"], ["B", "ACGT"]]);
-  const newick = wasm.nj(config);
-  assert.ok(newick.endsWith(";"), "newick must end with semicolon");
-  assert.ok(newick.startsWith("("), "newick must start with parenthesis");
+  const result = wasm.nj(config);
+  assert.ok(result.newick.endsWith(";"), "newick must end with semicolon");
+  assert.ok(result.newick.startsWith("("), "newick must start with parenthesis");
 });
 
 test("three taxa newick contains all leaf names", async () => {
   const wasm = await loadWasm();
   const config = makeConfig([["Sp1", "ACGT"], ["Sp2", "ACGA"], ["Sp3", "AGGT"]]);
-  const newick = wasm.nj(config);
-  assert.ok(newick.includes("Sp1"), "missing Sp1");
-  assert.ok(newick.includes("Sp2"), "missing Sp2");
-  assert.ok(newick.includes("Sp3"), "missing Sp3");
-  assert.ok(newick.startsWith("("));
-  assert.ok(newick.endsWith(";"));
+  const result = wasm.nj(config);
+  assert.ok(result.newick.includes("Sp1"), "missing Sp1");
+  assert.ok(result.newick.includes("Sp2"), "missing Sp2");
+  assert.ok(result.newick.includes("Sp3"), "missing Sp3");
+  assert.ok(result.newick.startsWith("("));
+  assert.ok(result.newick.endsWith(";"));
 });
 
 test("output is deterministic across calls", async () => {
@@ -53,7 +53,7 @@ test("output is deterministic across calls", async () => {
   const config = makeConfig([["A", "ACGTCG"], ["B", "ACG-GC"], ["C", "ACGCGT"]]);
   const r1 = wasm.nj(config);
   const r2 = wasm.nj(config);
-  assert.equal(r1, r2);
+  assert.equal(r1.newick, r2.newick);
 });
 
 // --- substitution models ---
@@ -61,33 +61,33 @@ test("output is deterministic across calls", async () => {
 test("JukesCantor model runs on DNA", async () => {
   const wasm = await loadWasm();
   const config = makeConfig([["A", "ACGT"], ["B", "ACGA"], ["C", "AGGT"]], "JukesCantor");
-  const newick = wasm.nj(config);
-  assert.ok(typeof newick === "string");
-  assert.ok(newick.endsWith(";"));
+  const result = wasm.nj(config);
+  assert.ok(typeof result.newick === "string");
+  assert.ok(result.newick.endsWith(";"));
 });
 
 test("Kimura2P model runs on DNA", async () => {
   const wasm = await loadWasm();
   const config = makeConfig([["A", "ACGT"], ["B", "ACGA"], ["C", "AGGT"]], "Kimura2P");
-  const newick = wasm.nj(config);
-  assert.ok(typeof newick === "string");
-  assert.ok(newick.endsWith(";"));
+  const result = wasm.nj(config);
+  assert.ok(typeof result.newick === "string");
+  assert.ok(result.newick.endsWith(";"));
 });
 
 test("Poisson model runs on protein sequences", async () => {
   const wasm = await loadWasm();
   const config = makeConfig([["A", "ACDEFGH"], ["B", "ACDEFGK"], ["C", "ACDLFGH"]], "Poisson");
-  const newick = wasm.nj(config);
-  assert.ok(typeof newick === "string");
-  assert.ok(newick.endsWith(";"));
+  const result = wasm.nj(config);
+  assert.ok(typeof result.newick === "string");
+  assert.ok(result.newick.endsWith(";"));
 });
 
 test("PDiff model runs on protein sequences", async () => {
   const wasm = await loadWasm();
   const config = makeConfig([["A", "ACDEFGH"], ["B", "ACDEFGK"], ["C", "ACDLFGH"]], "PDiff");
-  const newick = wasm.nj(config);
-  assert.ok(typeof newick === "string");
-  assert.ok(newick.endsWith(";"));
+  const result = wasm.nj(config);
+  assert.ok(typeof result.newick === "string");
+  assert.ok(result.newick.endsWith(";"));
 });
 
 // --- error handling ---
@@ -258,7 +258,7 @@ test("bootstrap with n>0 returns valid newick", async () => {
     "PDiff",
     10,
   );
-  const newick = wasm.nj(config);
-  assert.ok(typeof newick === "string");
-  assert.ok(newick.endsWith(";"));
+  const result = wasm.nj(config);
+  assert.ok(typeof result.newick === "string");
+  assert.ok(result.newick.endsWith(";"));
 });

@@ -44,8 +44,8 @@ describe("nj_js web bundle — basic functionality", () => {
       ["A", "ACGT"],
       ["B", "ACGT"],
     ]);
-    const newick = wasm.nj(config);
-    expect(newick).to.equal("(A:0.000,B:0.000);");
+    const result = wasm.nj(config);
+    expect(result.newick).to.equal("(A:0.000,B:0.000);");
   });
 
   it("three taxa newick contains all leaf names", async () => {
@@ -55,12 +55,12 @@ describe("nj_js web bundle — basic functionality", () => {
       ["Sp2", "ACGA"],
       ["Sp3", "AGGT"],
     ]);
-    const newick = wasm.nj(config);
-    expect(newick).to.include("Sp1");
-    expect(newick).to.include("Sp2");
-    expect(newick).to.include("Sp3");
-    expect(newick).to.match(/^\(/);
-    expect(newick).to.match(/;$/);
+    const result = wasm.nj(config);
+    expect(result.newick).to.include("Sp1");
+    expect(result.newick).to.include("Sp2");
+    expect(result.newick).to.include("Sp3");
+    expect(result.newick).to.match(/^\(/);
+    expect(result.newick).to.match(/;$/);
   });
 
   it("output is deterministic across calls", async () => {
@@ -70,7 +70,7 @@ describe("nj_js web bundle — basic functionality", () => {
       ["B", "ACG-GC"],
       ["C", "ACGCGT"],
     ]);
-    expect(wasm.nj(config)).to.equal(wasm.nj(config));
+    expect(wasm.nj(config).newick).to.equal(wasm.nj(config).newick);
   });
 });
 
@@ -85,8 +85,8 @@ describe("nj_js web bundle — substitution models", () => {
       ],
       "JukesCantor",
     );
-    const newick = wasm.nj(config);
-    expect(newick).to.be.a("string").and.match(/;$/);
+    const result = wasm.nj(config);
+    expect(result.newick).to.be.a("string").and.match(/;$/);
   });
 
   it("Kimura2P model runs on DNA", async () => {
@@ -99,8 +99,8 @@ describe("nj_js web bundle — substitution models", () => {
       ],
       "Kimura2P",
     );
-    const newick = wasm.nj(config);
-    expect(newick).to.be.a("string").and.match(/;$/);
+    const result = wasm.nj(config);
+    expect(result.newick).to.be.a("string").and.match(/;$/);
   });
 
   it("Poisson model runs on protein sequences", async () => {
@@ -113,8 +113,8 @@ describe("nj_js web bundle — substitution models", () => {
       ],
       "Poisson",
     );
-    const newick = wasm.nj(config);
-    expect(newick).to.be.a("string").and.match(/;$/);
+    const result = wasm.nj(config);
+    expect(result.newick).to.be.a("string").and.match(/;$/);
   });
 
   it("PDiff model runs on protein sequences", async () => {
@@ -127,8 +127,8 @@ describe("nj_js web bundle — substitution models", () => {
       ],
       "PDiff",
     );
-    const newick = wasm.nj(config);
-    expect(newick).to.be.a("string").and.match(/;$/);
+    const result = wasm.nj(config);
+    expect(result.newick).to.be.a("string").and.match(/;$/);
   });
 });
 
@@ -308,7 +308,7 @@ describe("nj_js web bundle — bootstrap", () => {
       "PDiff",
       10,
     );
-    const newick = wasm.nj(config);
-    expect(newick).to.be.a("string").and.match(/;$/);
+    const result = wasm.nj(config);
+    expect(result.newick).to.be.a("string").and.match(/;$/);
   });
 });
