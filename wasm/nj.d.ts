@@ -1,6 +1,6 @@
-import type { DistConfig, DistanceResult, NJConfig, NJEvent, SequenceObject } from "./types/lib_types";
+import type { DistConfig, DistanceResult, NJConfig, NJEvent, NJResult, SequenceObject } from "./types/lib_types";
 
-export type { DistConfig, DistanceResult, NJConfig, NJEvent, SequenceObject };
+export type { DistConfig, DistanceResult, NJConfig, NJEvent, NJResult, SequenceObject };
 
 export type NJEventCallback = (event: NJEvent) => void;
 
@@ -18,12 +18,16 @@ export type NJEventCallback = (event: NJEvent) => void;
  * @param onEvent - Optional callback invoked with a tagged event object at each
  *   algorithm stage. Use `event.type` to distinguish events. Bootstrap progress
  *   events have type `"BootstrapProgress"` with `completed` and `total` fields.
- * @returns A semicolon-terminated Newick string. Bootstrap support values (if
- *   requested) appear as integer percentage labels (0–100) on internal nodes.
+ * @returns An `NJResult` object. `result.newick` is always present as a
+ *   semicolon-terminated Newick string. Bootstrap support values (if requested)
+ *   appear as integer percentage labels (0–100) on internal nodes.
+ *   `result.distance_matrix` and `result.average_distance` are present when
+ *   the corresponding `return_distance_matrix` / `return_average_distance`
+ *   flags are set in `config`.
  * @throws {Error} If the MSA is empty, sequences have unequal or zero length,
  *   or an incompatible model–alphabet combination is provided.
  */
-export function nj(config: NJConfig, onEvent?: NJEventCallback): string;
+export function nj(config: NJConfig, onEvent?: NJEventCallback): NJResult;
 
 /**
  * Computes pairwise distances and returns a full symmetric distance matrix.
