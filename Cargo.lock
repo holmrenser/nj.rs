@@ -282,7 +282,7 @@ checksum = "6e3d189da485332e96ba8a5ef646a311871abd7915bf06ac848a9117f19cf6e4"
 
 [[package]]
 name = "nj"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "bitvec",
  "clap",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "nj_js"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "getrandom",
  "js-sys",
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "nj_py"
-version = "0.0.19"
+version = "0.0.20"
 dependencies = [
  "nj",
  "pyo3",

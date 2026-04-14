@@ -1,6 +1,6 @@
 {
   "name": "@holmrenser/nj",
-  "version": "0.0.19",
+  "version": "0.0.20",
   "description": "Neighbor-Joining phylogenetic tree inference. Auto-detects DNA/protein, supports multiple substitution models and bootstrap.",
   "license": "MIT",
   "keywords": [
