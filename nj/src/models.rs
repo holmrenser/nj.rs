@@ -255,6 +255,7 @@ impl ModelCalculation<Protein> for Poisson {
 ///
 /// Model–alphabet compatibility is enforced at runtime in [`crate::nj`].
 #[derive(Clone, Debug, ts_rs::TS, Serialize, Deserialize)]
+#[ts(export, export_to = "../../wasm/types/lib_types.ts")]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum SubstitutionModel {
     /// p-distance: raw proportion of differing sites. No multiple-hit correction.
