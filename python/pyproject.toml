@@ -1,6 +1,6 @@
 [project]
 name = "nj_py"
-version = "0.0.21"
+version = "0.0.22"
 requires-python = ">=3.10"
 readme = "README.md"
 description = "Neighbor-Joining phylogenetic tree inference. Auto-detects DNA/protein, supports multiple substitution models and bootstrap."
