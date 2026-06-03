@@ -19,6 +19,14 @@ path = "src/lib.rs"
 name = "nj"
 path = "src/main.rs"
 
+[[bench]]
+name = "nj_bench"
+harness = false
+
+[dev-dependencies]
+criterion = "0.5"
+proptest = "1"
+
 [dependencies]
 bitvec = "1.0.1"
 getrandom = "0.2"

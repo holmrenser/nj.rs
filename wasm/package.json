@@ -15,6 +15,13 @@
   "type": "module",
   "main": "./pkg-node/nj_js.js",
   "module": "./pkg-web/nj_js.js",
+  "exports": {
+    ".": {
+      "types": "./nj.d.ts",
+      "import": "./pkg-web/nj_js.js",
+      "require": "./pkg-node/nj_js.js"
+    }
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/holmrenser/nj.rs"

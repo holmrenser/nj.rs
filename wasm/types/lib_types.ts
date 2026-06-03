@@ -130,7 +130,7 @@ export type NJEvent = { "type": "MsaValidated", n_sequences: number, n_sites: nu
  *
  * Always contains the Newick tree string. Optionally includes the full
  * pairwise distance matrix and/or the mean pairwise distance, controlled by
- * [`NJConfig::include_distance_matrix`] and [`NJConfig::include_average_distance`].
+ * [`NJConfig::return_distance_matrix`] and [`NJConfig::return_average_distance`].
  */
 export type NJResult = { 
 /**

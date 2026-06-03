@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: All package manifests agree
+        run: bash scripts/check-versions.sh
       - name: Check tag matches workspace version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
@@ -57,19 +59,16 @@ jobs:
       - run: cp README.md python/README.md
       - uses: actions/setup-python@v5
         with:
-          # One Python is enough to *find* an interpreter, but for wheels you
-          # generally want to build multiple; see args below.
           python-version: "3.12"
       - uses: PyO3/maturin-action@v1
         with:
           command: build
-          # Explicitly provide interpreters so maturin doesn't have to discover them.
+          # The crate is built with pyo3's `abi3-py310` feature, so a single
+          # stable-ABI wheel per platform covers CPython 3.10+ — no per-minor
+          # interpreter list needed.
           args: >
             --release
             --out dist
-            -i python3.10
-            -i python3.11
-            -i python3.12
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           working-directory: python
@@ -157,7 +156,7 @@ jobs:
           workspaces: wasm -> wasm/target
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "22"
           registry-url: https://registry.npmjs.org
       - run: cp README.md wasm/README.md
       - run: npm ci

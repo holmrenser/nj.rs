@@ -40,10 +40,26 @@
 //! Throws a JS error string on failure.
 
 use js_sys::Function;
-use nj::{DistConfig, NJConfig, NJEvent, average_distance as lib_average_distance,
+use nj::{DistConfig, NJConfig, NJError, NJEvent, average_distance as lib_average_distance,
          distance_matrix as lib_distance_matrix, nj as lib_nj};
 use serde_wasm_bindgen::{from_value, to_value};
 use wasm_bindgen::prelude::*;
+
+/// Converts a library [`NJError`] into a JavaScript `Error` whose `name` is the
+/// stable [`NJError::code`] and whose `message` is the human-readable text, so
+/// JS callers can branch on `err.name` instead of string-matching the message.
+fn nj_error_to_js(e: NJError) -> JsValue {
+    let err = js_sys::Error::new(&e.to_string());
+    err.set_name(e.code());
+    err.into()
+}
+
+/// Builds a JavaScript `Error` from a serde (de)serialisation failure.
+fn config_error_to_js(name: &str, e: impl core::fmt::Display) -> JsValue {
+    let err = js_sys::Error::new(&e.to_string());
+    err.set_name(name);
+    err.into()
+}
 
 /// Run Neighbor-Joining and return a result object.
 ///
@@ -58,20 +74,27 @@ use wasm_bindgen::prelude::*;
 /// fails (e.g. incompatible model for the detected alphabet, or empty MSA).
 #[wasm_bindgen]
 pub fn nj(config_json: JsValue, on_event: Option<Function>) -> Result<JsValue, JsValue> {
-    let config: NJConfig = from_value(config_json)
-        .map_err(|e| JsValue::from_str(&format!("Invalid NJConfig: {}", e)))?;
+    let config: NJConfig =
+        from_value(config_json).map_err(|e| config_error_to_js("InvalidNJConfig", e))?;
 
     let callback: Option<Box<dyn Fn(NJEvent)>> = on_event.map(|f| {
-        Box::new(move |event: NJEvent| {
-            if let Ok(js_val) = to_value(&event) {
+        Box::new(move |event: NJEvent| match to_value(&event) {
+            Ok(js_val) => {
                 let args = js_sys::Array::of1(&js_val);
-                f.apply(&JsValue::NULL, &args).ok();
+                // Surface a throwing user callback to the console instead of
+                // silently dropping it (the event API cannot propagate it).
+                if let Err(err) = f.apply(&JsValue::NULL, &args) {
+                    web_sys::console::error_1(&err);
+                }
             }
+            Err(e) => web_sys::console::error_1(&JsValue::from_str(&format!(
+                "nj: failed to serialize event for callback: {e}"
+            ))),
         }) as Box<dyn Fn(NJEvent)>
     });
 
-    let result = lib_nj(config, callback).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    to_value(&result).map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
+    let result = lib_nj(config, callback).map_err(nj_error_to_js)?;
+    to_value(&result).map_err(|e| config_error_to_js("SerializationError", e))
 }
 
 /// Compute pairwise distances and return a `{ names, matrix }` JS object.
@@ -81,10 +104,10 @@ pub fn nj(config_json: JsValue, on_event: Option<Function>) -> Result<JsValue, J
 /// Throws a JS error string if the config is invalid or the model is incompatible.
 #[wasm_bindgen]
 pub fn distance_matrix(config_json: JsValue) -> Result<JsValue, JsValue> {
-    let config: DistConfig = from_value(config_json)
-        .map_err(|e| JsValue::from_str(&format!("Invalid DistConfig: {}", e)))?;
-    let result = lib_distance_matrix(config).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    to_value(&result).map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
+    let config: DistConfig =
+        from_value(config_json).map_err(|e| config_error_to_js("InvalidDistConfig", e))?;
+    let result = lib_distance_matrix(config).map_err(nj_error_to_js)?;
+    to_value(&result).map_err(|e| config_error_to_js("SerializationError", e))
 }
 
 /// Compute the mean pairwise distance and return it as a JS number.
@@ -94,7 +117,7 @@ pub fn distance_matrix(config_json: JsValue) -> Result<JsValue, JsValue> {
 /// Throws a JS error string if the config is invalid or the model is incompatible.
 #[wasm_bindgen]
 pub fn average_distance(config_json: JsValue) -> Result<f64, JsValue> {
-    let config: DistConfig = from_value(config_json)
-        .map_err(|e| JsValue::from_str(&format!("Invalid DistConfig: {}", e)))?;
-    lib_average_distance(config).map_err(|e| JsValue::from_str(&e.to_string()))
+    let config: DistConfig =
+        from_value(config_json).map_err(|e| config_error_to_js("InvalidDistConfig", e))?;
+    lib_average_distance(config).map_err(nj_error_to_js)
 }

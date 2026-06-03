@@ -9,6 +9,10 @@ cli:
 test:
 	CARGO_TARGET_DIR=target cargo test
 	CARGO_TARGET_DIR=target cargo test --features cli
+	CARGO_TARGET_DIR=target cargo test --features parallel
+
+bench:
+	CARGO_TARGET_DIR=target cargo bench
 
 clean:
 	CARGO_TARGET_DIR=target cargo clean

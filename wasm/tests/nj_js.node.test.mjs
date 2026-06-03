@@ -56,6 +56,29 @@ test("output is deterministic across calls", async () => {
   assert.equal(r1.newick, r2.newick);
 });
 
+test("lowercase protein matches uppercase", async () => {
+  const wasm = await loadWasm();
+  const upper = wasm.nj(makeConfig([["A", "ACDEFGH"], ["B", "ACDEFGK"], ["C", "ACDQFGH"]], "Poisson"));
+  const lower = wasm.nj(makeConfig([["A", "acdefgh"], ["B", "acdefgk"], ["C", "acdqfgh"]], "Poisson"));
+  assert.equal(upper.newick, lower.newick);
+});
+
+test("name with spaces is quoted in newick", async () => {
+  const wasm = await loadWasm();
+  const result = wasm.nj(makeConfig([["Seq A", "ACGT"], ["Seq B", "ACGA"]]));
+  assert.ok(result.newick.includes("'Seq A'"), `expected quoted label, got ${result.newick}`);
+});
+
+test("duplicate identifiers throw with typed name", async () => {
+  const wasm = await loadWasm();
+  try {
+    wasm.nj(makeConfig([["A", "ACGT"], ["A", "ACGA"]]));
+    assert.fail("expected duplicate identifiers to throw");
+  } catch (err) {
+    assert.equal(err.name, "DuplicateIdentifier", `got ${err.name}: ${err.message}`);
+  }
+});
+
 // --- substitution models ---
 
 test("JukesCantor model runs on DNA", async () => {

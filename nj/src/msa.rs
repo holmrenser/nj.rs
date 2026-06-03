@@ -90,6 +90,22 @@ impl<A: AlphabetEncoding> MSA<A> {
         Ok(())
     }
 
+    /// Fallibly builds an MSA from an iterator of `(identifier, sequence)` pairs.
+    ///
+    /// Unlike the [`FromIterator`] impl (which panics on ragged input for
+    /// ergonomic use in tests), this returns `Err` if any sequence has a
+    /// different length than the first, reusing [`push`](MSA::push)'s validation.
+    pub fn try_from_pairs<I>(iter: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
+        let mut msa = MSA::new();
+        for (id, seq) in iter {
+            msa.push(id, seq)?;
+        }
+        Ok(msa)
+    }
+
     /// Creates an MSA from raw sequences, assigning `Seq0`, `Seq1`, … as identifiers.
     pub fn from_unnamed_sequences(sequences: Vec<String>) -> Result<Self, String> {
         let mut msa = MSA::new();
@@ -228,6 +244,29 @@ mod tests {
         assert_eq!(id1, "seq1");
         let (id2, _) = iter.next().unwrap();
         assert_eq!(id2, "seq2");
+    }
+
+    #[test]
+    fn test_msa_try_from_pairs_ok() {
+        let data = vec![
+            ("seq1".to_string(), "ACGT".to_string()),
+            ("seq2".to_string(), "AGGT".to_string()),
+        ];
+        let msa = MSA::<DNA>::try_from_pairs(data).unwrap();
+        assert_eq!(msa.len(), 2);
+        assert_eq!(msa.n_characters, 4);
+    }
+
+    #[test]
+    fn test_msa_try_from_pairs_rejects_ragged() {
+        let data = vec![
+            ("seq1".to_string(), "ACGT".to_string()),
+            ("seq2".to_string(), "AGG".to_string()),
+        ];
+        match MSA::<DNA>::try_from_pairs(data) {
+            Err(e) => assert!(e.contains("same length"), "got {e}"),
+            Ok(_) => panic!("expected ragged input to be rejected"),
+        }
     }
 
     #[test]

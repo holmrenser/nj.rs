@@ -57,7 +57,7 @@ pub mod nj;
 pub mod tree;
 
 use bitvec::prelude::{BitVec, Lsb0, bitvec};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::alphabet::{Alphabet, AlphabetEncoding, DNA, Protein};
 use crate::config::SubstitutionModel;
@@ -83,7 +83,9 @@ fn bitset_of(
     match &node.children {
         None => match &node.label {
             Some(NameOrSupport::Name(name)) => {
-                let i = idx[name];
+                let i = *idx
+                    .get(name)
+                    .ok_or_else(|| format!("leaf '{name}' not found in index map"))?;
                 out.set(i, true);
                 Ok(())
             }
@@ -140,6 +142,29 @@ pub(crate) fn build_thread_pool(num_threads: Option<usize>) -> Result<rayon::Thr
     builder.build().map_err(|e| e.to_string())
 }
 
+/// Runs a single bootstrap replicate end-to-end: resample alignment columns,
+/// compute the distance matrix with model `M`, run Neighbor-Joining, and tally
+/// the replicate's clades into a fresh counter.
+///
+/// Shared by the sequential and parallel bootstrap paths. Every fallible step is
+/// propagated via `?` so a failed replicate becomes a returned `Err` rather than
+/// a panic (which would otherwise poison a Rayon worker thread).
+fn run_one_replicate<A, M>(
+    msa: &MSA<A>,
+    idx_map: &HashMap<String, usize>,
+    n_taxa: usize,
+) -> Result<HashMap<Vec<u8>, usize>, String>
+where
+    A: AlphabetEncoding + Send + Sync,
+    A::Symbol: Send + Sync,
+    M: ModelCalculation<A> + Send + Sync,
+{
+    let tree = msa.bootstrap()?.into_dist::<M>().neighbor_joining()?;
+    let mut local = HashMap::new();
+    count_clades(&tree, idx_map, n_taxa, &mut local)?;
+    Ok(local)
+}
+
 /// Parallel bootstrap worker: runs all replicates on Rayon threads and sends
 /// per-replicate clade maps over an MPSC channel. The main thread (caller)
 /// merges results and fires `on_event` — keeping the callback on a single
@@ -178,17 +203,7 @@ where
                 (0..n_bootstrap_samples)
                     .into_par_iter()
                     .for_each_with(tx, |sender, _| {
-                        let result: Result<HashMap<Vec<u8>, usize>, String> = (|| {
-                            let tree = msa
-                                .bootstrap()?
-                                .into_dist::<M>()
-                                .neighbor_joining()
-                                .expect("NJ bootstrap iteration failed");
-                            let mut local = HashMap::new();
-                            count_clades(&tree, idx_map, n_taxa, &mut local)?;
-                            Ok(local)
-                        })(
-                        );
+                        let result = run_one_replicate::<A, M>(msa, idx_map, n_taxa);
                         // Ignore send errors: only occurs if receiver was dropped,
                         // which cannot happen while we are in the recv loop below.
                         let _ = sender.send(result);
@@ -263,12 +278,10 @@ where
         let _ = num_threads;
         let mut c = HashMap::new();
         for i in 0..n_bootstrap_samples {
-            let tree = msa
-                .bootstrap()?
-                .into_dist::<M>()
-                .neighbor_joining()
-                .expect("NJ bootstrap iteration failed");
-            count_clades(&tree, &idx_map, n_taxa, &mut c)?;
+            let local = run_one_replicate::<A, M>(msa, &idx_map, n_taxa)?;
+            for (clade, count) in local {
+                *c.entry(clade).or_insert(0) += count;
+            }
             if let Some(cb) = on_event {
                 cb(NJEvent::BootstrapProgress {
                     completed: i + 1,
@@ -315,7 +328,8 @@ fn add_bootstrap_to_tree(
     Ok(())
 }
 
-/// Validates that the MSA is non-empty and all sequences have equal length.
+/// Validates that the MSA is non-empty, all sequences have equal length, and
+/// all identifiers are unique.
 fn validate_msa(msa: &[SequenceObject]) -> Result<(), NJError> {
     if msa.is_empty() {
         return Err(NJError::EmptyMsa);
@@ -324,11 +338,17 @@ fn validate_msa(msa: &[SequenceObject]) -> Result<(), NJError> {
     if expected_len == 0 {
         return Err(NJError::EmptySequence);
     }
+    let mut seen: HashSet<&str> = HashSet::with_capacity(msa.len());
     for s in msa {
         if s.sequence.len() != expected_len {
             return Err(NJError::SequenceLengthMismatch {
                 expected: expected_len,
                 got: s.sequence.len(),
+                identifier: s.identifier.clone(),
+            });
+        }
+        if !seen.insert(s.identifier.as_str()) {
+            return Err(NJError::DuplicateIdentifier {
                 identifier: s.identifier.clone(),
             });
         }
@@ -484,17 +504,94 @@ where
     })
 }
 
+/// Emits a `Warning`-level [`NJEvent::Log`] for any sequence consisting entirely
+/// of gap characters. Such sequences have no comparable sites, so every pairwise
+/// distance involving them is `0.0` ([`crate::models`]); surfacing a warning makes
+/// that otherwise-silent behaviour observable. No-op when `on_event` is `None`.
+fn warn_degenerate_sequences(msa: &[SequenceObject], on_event: Option<&dyn Fn(NJEvent)>) {
+    let Some(cb) = on_event else { return };
+    for s in msa {
+        if !s.sequence.is_empty() && s.sequence.bytes().all(|b| b == b'-') {
+            cb(NJEvent::Log {
+                level: LogLevel::Warning,
+                message: format!(
+                    "Sequence '{}' contains only gaps; its pairwise distances will be 0.0",
+                    s.identifier
+                ),
+            });
+        }
+    }
+}
+
+/// Dispatches to a generic runner based on the runtime alphabet and substitution
+/// model, enforcing the model–alphabet compatibility table in a single place.
+///
+/// `$pairs` is consumed to build the typed [`MSA`]; `$run` is the generic runner
+/// (`run_nj`, `run_distance_matrix`, `run_average_distance`) and its trailing
+/// arguments follow the `msa` it receives. Each runner returns `Result<_, String>`,
+/// mapped here to [`NJError::AlgorithmFailure`]; unsupported (alphabet, model)
+/// pairs yield [`NJError::IncompatibleModel`].
+macro_rules! dispatch_run {
+    ($alphabet:expr, $model:expr, $pairs:expr, $run:ident ( $($arg:expr),* $(,)? )) => {{
+        let alphabet = $alphabet;
+        let model = $model;
+        match alphabet {
+            Alphabet::DNA => {
+                let msa = MSA::<DNA>::try_from_pairs($pairs).map_err(NJError::AlgorithmFailure)?;
+                match model {
+                    SubstitutionModel::PDiff => {
+                        $run::<DNA, PDiff>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
+                    }
+                    SubstitutionModel::JukesCantor => {
+                        $run::<DNA, JukesCantor>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
+                    }
+                    SubstitutionModel::Kimura2P => {
+                        $run::<DNA, Kimura2P>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
+                    }
+                    SubstitutionModel::Poisson => Err(NJError::IncompatibleModel {
+                        model,
+                        alphabet: Alphabet::DNA,
+                    }),
+                }
+            }
+            Alphabet::Protein => {
+                let msa =
+                    MSA::<Protein>::try_from_pairs($pairs).map_err(NJError::AlgorithmFailure)?;
+                match model {
+                    SubstitutionModel::Poisson => {
+                        $run::<Protein, Poisson>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
+                    }
+                    SubstitutionModel::PDiff => {
+                        $run::<Protein, PDiff>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
+                    }
+                    SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
+                        Err(NJError::IncompatibleModel {
+                            model,
+                            alphabet: Alphabet::Protein,
+                        })
+                    }
+                }
+            }
+        }
+    }};
+}
+
 /// Infers a phylogenetic tree from an aligned MSA and returns an [`NJResult`].
 ///
 /// This is the single public entry point for the library. The alphabet is
 /// auto-detected from the sequences unless `conf.alphabet` is set; `conf.substitution_model`
 /// must be compatible with the alphabet (see the module-level compatibility
-/// table). Returns `Err` for an empty MSA, an incompatible model, or any
-/// internal NJ failure.
+/// table). Returns `Err` for an empty MSA, duplicate identifiers, an
+/// incompatible model, or any internal NJ failure.
 ///
-/// Set [`NJConfig::include_distance_matrix`] and/or
-/// [`NJConfig::include_average_distance`] to `true` to include those values in
+/// Set [`NJConfig::return_distance_matrix`] and/or
+/// [`NJConfig::return_average_distance`] to `true` to include those values in
 /// the returned [`NJResult`] alongside the Newick tree.
+///
+/// **Degenerate inputs.** A single-sequence MSA produces a lone-leaf "tree".
+/// Sequences consisting entirely of gaps have no comparable sites, so their
+/// pairwise distances are `0.0` (see [`crate::models`]); a `Warning`-level
+/// [`NJEvent::Log`] is emitted for each such sequence so the behaviour is not silent.
 ///
 /// `on_event` is called with an [`NJEvent`] at each stage of the algorithm.
 /// Bootstrap progress is reported via [`NJEvent::BootstrapProgress`] after
@@ -504,6 +601,7 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
     let num_threads = conf.num_threads;
     let include_distance_matrix = conf.return_distance_matrix;
     let include_average_distance = conf.return_average_distance;
+    let n_bootstrap_samples = conf.n_bootstrap_samples;
     validate_msa(&conf.msa)?;
     let n_sites = conf.msa[0].sequence.len();
     if let Some(cb) = cb {
@@ -512,6 +610,7 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
             n_sites,
         });
     }
+    warn_degenerate_sequences(&conf.msa, cb);
     let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
     if let Some(cb) = cb {
         cb(NJEvent::AlphabetDetected {
@@ -519,75 +618,19 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
         });
     }
     let model = conf.substitution_model;
-    match alphabet {
-        Alphabet::DNA => {
-            let msa =
-                MSA::<DNA>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-            match model {
-                SubstitutionModel::PDiff => run_nj::<DNA, PDiff>(
-                    msa,
-                    conf.n_bootstrap_samples,
-                    cb,
-                    num_threads,
-                    include_distance_matrix,
-                    include_average_distance,
-                )
-                .map_err(NJError::AlgorithmFailure),
-                SubstitutionModel::JukesCantor => run_nj::<DNA, JukesCantor>(
-                    msa,
-                    conf.n_bootstrap_samples,
-                    cb,
-                    num_threads,
-                    include_distance_matrix,
-                    include_average_distance,
-                )
-                .map_err(NJError::AlgorithmFailure),
-                SubstitutionModel::Kimura2P => run_nj::<DNA, Kimura2P>(
-                    msa,
-                    conf.n_bootstrap_samples,
-                    cb,
-                    num_threads,
-                    include_distance_matrix,
-                    include_average_distance,
-                )
-                .map_err(NJError::AlgorithmFailure),
-                SubstitutionModel::Poisson => Err(NJError::IncompatibleModel {
-                    model,
-                    alphabet: Alphabet::DNA,
-                }),
-            }
-        }
-        Alphabet::Protein => {
-            let msa =
-                MSA::<Protein>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-            match model {
-                SubstitutionModel::Poisson => run_nj::<Protein, Poisson>(
-                    msa,
-                    conf.n_bootstrap_samples,
-                    cb,
-                    num_threads,
-                    include_distance_matrix,
-                    include_average_distance,
-                )
-                .map_err(NJError::AlgorithmFailure),
-                SubstitutionModel::PDiff => run_nj::<Protein, PDiff>(
-                    msa,
-                    conf.n_bootstrap_samples,
-                    cb,
-                    num_threads,
-                    include_distance_matrix,
-                    include_average_distance,
-                )
-                .map_err(NJError::AlgorithmFailure),
-                SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
-                    Err(NJError::IncompatibleModel {
-                        model,
-                        alphabet: Alphabet::Protein,
-                    })
-                }
-            }
-        }
-    }
+    let pairs = conf.msa.into_iter().map(|s| (s.identifier, s.sequence));
+    dispatch_run!(
+        alphabet,
+        model,
+        pairs,
+        run_nj(
+            n_bootstrap_samples,
+            cb,
+            num_threads,
+            include_distance_matrix,
+            include_average_distance,
+        )
+    )
 }
 
 /// Computes pairwise distances from an aligned MSA and returns a [`DistanceResult`].
@@ -601,46 +644,8 @@ pub fn distance_matrix(conf: DistConfig) -> Result<DistanceResult, NJError> {
     validate_msa(&conf.msa)?;
     let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
     let model = conf.substitution_model;
-    match alphabet {
-        Alphabet::DNA => {
-            let msa =
-                MSA::<DNA>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-            match model {
-                SubstitutionModel::PDiff => run_distance_matrix::<DNA, PDiff>(msa, num_threads)
-                    .map_err(NJError::AlgorithmFailure),
-                SubstitutionModel::JukesCantor => {
-                    run_distance_matrix::<DNA, JukesCantor>(msa, num_threads)
-                        .map_err(NJError::AlgorithmFailure)
-                }
-                SubstitutionModel::Kimura2P => {
-                    run_distance_matrix::<DNA, Kimura2P>(msa, num_threads)
-                        .map_err(NJError::AlgorithmFailure)
-                }
-                SubstitutionModel::Poisson => Err(NJError::IncompatibleModel {
-                    model,
-                    alphabet: Alphabet::DNA,
-                }),
-            }
-        }
-        Alphabet::Protein => {
-            let msa =
-                MSA::<Protein>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-            match model {
-                SubstitutionModel::Poisson => {
-                    run_distance_matrix::<Protein, Poisson>(msa, num_threads)
-                        .map_err(NJError::AlgorithmFailure)
-                }
-                SubstitutionModel::PDiff => run_distance_matrix::<Protein, PDiff>(msa, num_threads)
-                    .map_err(NJError::AlgorithmFailure),
-                SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
-                    Err(NJError::IncompatibleModel {
-                        model,
-                        alphabet: Alphabet::Protein,
-                    })
-                }
-            }
-        }
-    }
+    let pairs = conf.msa.into_iter().map(|s| (s.identifier, s.sequence));
+    dispatch_run!(alphabet, model, pairs, run_distance_matrix(num_threads))
 }
 
 /// Computes the mean of all `n*(n-1)/2` unique pairwise distances.
@@ -653,48 +658,8 @@ pub fn average_distance(conf: DistConfig) -> Result<f64, NJError> {
     validate_msa(&conf.msa)?;
     let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
     let model = conf.substitution_model;
-    match alphabet {
-        Alphabet::DNA => {
-            let msa =
-                MSA::<DNA>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-            match model {
-                SubstitutionModel::PDiff => run_average_distance::<DNA, PDiff>(msa, num_threads)
-                    .map_err(NJError::AlgorithmFailure),
-                SubstitutionModel::JukesCantor => {
-                    run_average_distance::<DNA, JukesCantor>(msa, num_threads)
-                        .map_err(NJError::AlgorithmFailure)
-                }
-                SubstitutionModel::Kimura2P => {
-                    run_average_distance::<DNA, Kimura2P>(msa, num_threads)
-                        .map_err(NJError::AlgorithmFailure)
-                }
-                SubstitutionModel::Poisson => Err(NJError::IncompatibleModel {
-                    model,
-                    alphabet: Alphabet::DNA,
-                }),
-            }
-        }
-        Alphabet::Protein => {
-            let msa =
-                MSA::<Protein>::from_iter(conf.msa.into_iter().map(|s| (s.identifier, s.sequence)));
-            match model {
-                SubstitutionModel::Poisson => {
-                    run_average_distance::<Protein, Poisson>(msa, num_threads)
-                        .map_err(NJError::AlgorithmFailure)
-                }
-                SubstitutionModel::PDiff => {
-                    run_average_distance::<Protein, PDiff>(msa, num_threads)
-                        .map_err(NJError::AlgorithmFailure)
-                }
-                SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
-                    Err(NJError::IncompatibleModel {
-                        model,
-                        alphabet: Alphabet::Protein,
-                    })
-                }
-            }
-        }
-    }
+    let pairs = conf.msa.into_iter().map(|s| (s.identifier, s.sequence));
+    dispatch_run!(alphabet, model, pairs, run_average_distance(num_threads))
 }
 
 #[cfg(test)]
@@ -868,6 +833,69 @@ mod tests {
         };
         let result = nj(conf, None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_nj_rejects_duplicate_identifiers() {
+        let result = nj(nj_conf(&[("A", "ACGT"), ("A", "ACGA")], false, false), None);
+        assert!(matches!(result, Err(NJError::DuplicateIdentifier { .. })));
+    }
+
+    #[test]
+    fn test_distance_matrix_rejects_duplicate_identifiers() {
+        let conf = dist_conf(&[("A", "ACGT"), ("A", "ACGA")], SubstitutionModel::PDiff);
+        assert!(matches!(
+            distance_matrix(conf),
+            Err(NJError::DuplicateIdentifier { .. })
+        ));
+    }
+
+    #[test]
+    fn test_lowercase_protein_nj_is_non_degenerate() {
+        // Lowercase protein residues must encode like uppercase, so the two
+        // distinct sequences yield a positive branch length rather than 0.
+        let conf = NJConfig {
+            msa: vec![
+                SequenceObject {
+                    identifier: "P0".into(),
+                    sequence: "acdefghikl".into(),
+                },
+                SequenceObject {
+                    identifier: "P1".into(),
+                    sequence: "acdefgwxyl".into(),
+                },
+            ],
+            n_bootstrap_samples: 0,
+            substitution_model: SubstitutionModel::PDiff,
+            alphabet: Some(Alphabet::Protein),
+            num_threads: None,
+            return_distance_matrix: true,
+            return_average_distance: false,
+        };
+        let result = nj(conf, None).expect("NJ on lowercase protein should succeed");
+        let dm = result.distance_matrix.unwrap();
+        assert!(dm.matrix[0][1] > 0.0, "expected non-zero distance, got {dm:?}");
+    }
+
+    #[test]
+    fn test_all_gap_sequence_emits_warning() {
+        use std::sync::{Arc, Mutex};
+        let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&warnings);
+        let cb: Box<dyn Fn(NJEvent)> = Box::new(move |event| {
+            if let NJEvent::Log {
+                level: LogLevel::Warning,
+                message,
+            } = event
+            {
+                sink.lock().unwrap().push(message);
+            }
+        });
+        let conf = nj_conf(&[("A", "----"), ("B", "ACGA")], false, false);
+        let _ = nj(conf, Some(cb)).unwrap();
+        let collected = warnings.lock().unwrap();
+        assert_eq!(collected.len(), 1, "expected exactly one all-gap warning");
+        assert!(collected[0].contains("only gaps"), "got {:?}", collected[0]);
     }
 
     // --- NJResult optional fields ---

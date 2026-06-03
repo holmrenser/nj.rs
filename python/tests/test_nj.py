@@ -98,16 +98,42 @@ class TestMixedCase:
         assert upper["newick"] == lower["newick"]
 
 
+class TestProteinCase:
+    def test_lowercase_protein_matches_uppercase(self):
+        upper = nj(
+            msa(("A", "ACDEFGH"), ("B", "ACDEFGK"), ("C", "ACDQFGH")),
+            substitution_model="Poisson",
+        )
+        lower = nj(
+            msa(("A", "acdefgh"), ("B", "acdefgk"), ("C", "acdqfgh")),
+            substitution_model="Poisson",
+        )
+        assert upper["newick"] == lower["newick"]
+
+    def test_lowercase_protein_non_degenerate(self):
+        # Distinct lowercase protein sequences must not collapse to distance 0.
+        result = distance_matrix(
+            msa(("A", "acdefgh"), ("B", "acdefgk")), substitution_model="Poisson"
+        )
+        assert result["matrix"][0][1] > 0.0
+
+
 class TestSpecialNames:
     def test_sequence_name_with_spaces(self):
         result = nj(msa(("Seq A", "ACGT"), ("Seq B", "ACGA")))
-        assert "Seq A" in result["newick"]
-        assert "Seq B" in result["newick"]
+        # Names with whitespace are single-quoted per the Newick grammar.
+        assert "'Seq A'" in result["newick"]
+        assert "'Seq B'" in result["newick"]
 
     def test_sequence_name_with_special_chars(self):
+        # The pipe character is not reserved in Newick, so it stays unquoted.
         result = nj(msa(("Sp|1.1", "ACGT"), ("Sp|2.1", "ACGA")))
         assert "Sp|1.1" in result["newick"]
         assert "Sp|2.1" in result["newick"]
+
+    def test_duplicate_identifiers_raise(self):
+        with pytest.raises(ValueError, match="[Dd]uplicate"):
+            nj(msa(("A", "ACGT"), ("A", "ACGA")))
 
 
 class TestDistanceMatrix:

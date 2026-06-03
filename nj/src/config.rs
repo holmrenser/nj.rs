@@ -106,7 +106,7 @@ pub struct NJConfig {
 ///
 /// Always contains the Newick tree string. Optionally includes the full
 /// pairwise distance matrix and/or the mean pairwise distance, controlled by
-/// [`NJConfig::include_distance_matrix`] and [`NJConfig::include_average_distance`].
+/// [`NJConfig::return_distance_matrix`] and [`NJConfig::return_average_distance`].
 #[derive(Serialize, Deserialize, ts_rs::TS, Clone, Debug, PartialEq)]
 #[ts(export, export_to = "../../wasm/types/lib_types.ts")]
 pub struct NJResult {

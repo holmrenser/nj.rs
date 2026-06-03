@@ -8,6 +8,13 @@ on:
   workflow_call:
 
 jobs:
+  versions:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/check-versions.sh
+
   rust:
     name: Rust tests (${{ matrix.rust }})
     runs-on: ubuntu-latest

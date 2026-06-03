@@ -85,8 +85,8 @@ impl AlphabetEncoding for DNA {
 /// A single amino acid in the protein alphabet.
 ///
 /// Covers the 20 standard amino acids plus `X` (unknown/ambiguous) and `Gap`
-/// (the `-` alignment character). Any byte that does not match a known amino
-/// acid letter is mapped to `X`.
+/// (the `-` alignment character). Encoding is case-insensitive; any byte that
+/// does not match a known amino acid letter is mapped to `X`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProteinSymbol {
     A,
@@ -123,7 +123,10 @@ impl AlphabetEncoding for Protein {
     type Symbol = ProteinSymbol;
 
     fn encode(symbol: u8) -> Self::Symbol {
-        match symbol {
+        // Match on the uppercased byte so lowercase residues encode identically
+        // (consistent with `DNA::encode` and `detect_alphabet`, which both
+        // normalise case). The gap character `-` is unaffected by uppercasing.
+        match symbol.to_ascii_uppercase() {
             b'A' => ProteinSymbol::A,
             b'R' => ProteinSymbol::R,
             b'N' => ProteinSymbol::N,
@@ -242,6 +245,18 @@ mod tests {
         assert_eq!(Protein::encode(b'Z'), ProteinSymbol::X); // Unknown
     }
 
+    #[test]
+    fn test_protein_encoding_lowercase() {
+        // Lowercase residues must encode identically to uppercase (consistent
+        // with DNA). Regression test for silent data loss where lowercase
+        // protein sequences were previously all mapped to X.
+        assert_eq!(Protein::encode(b'a'), ProteinSymbol::A);
+        assert_eq!(Protein::encode(b'k'), ProteinSymbol::K);
+        assert_eq!(Protein::encode(b'y'), ProteinSymbol::Y);
+        assert_eq!(Protein::encode(b'w'), ProteinSymbol::W);
+        assert_eq!(Protein::encode(b'x'), ProteinSymbol::X);
+    }
+
     // --- dna! macro ---
 
     #[test]
@@ -298,6 +313,19 @@ mod tests {
     #[test]
     fn test_protein_macro_gap_and_unknown() {
         assert_eq!(protein!("-Z"), vec![ProteinSymbol::Gap, ProteinSymbol::X]);
+    }
+
+    #[test]
+    fn test_protein_macro_lowercase() {
+        assert_eq!(
+            protein!("arnd"),
+            vec![
+                ProteinSymbol::A,
+                ProteinSymbol::R,
+                ProteinSymbol::N,
+                ProteinSymbol::D
+            ]
+        );
     }
 
     #[test]

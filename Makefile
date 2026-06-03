@@ -1,6 +1,6 @@
 VERSION:=$(toml get Cargo.toml workspace.package.version)
 
-.PHONY: all python wasm nj clean
+.PHONY: all python wasm nj bench clean
 
 all: lib cli wasm python
 
@@ -20,6 +20,9 @@ test:
 	$(MAKE) -C nj test
 	$(MAKE) -C wasm test
 	$(MAKE) -C python test
+
+bench:
+	$(MAKE) -C nj bench
 
 bump-%:
 	./release.sh $*

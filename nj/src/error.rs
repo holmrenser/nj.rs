@@ -17,6 +17,9 @@ pub enum NJError {
         got: usize,
         identifier: String,
     },
+    /// Two or more sequences share the same identifier. Duplicate names would
+    /// corrupt bootstrap clade counting (clades are keyed by name → index).
+    DuplicateIdentifier { identifier: String },
     /// The substitution model is incompatible with the detected or specified alphabet.
     IncompatibleModel {
         model: SubstitutionModel,
@@ -30,6 +33,26 @@ pub enum NJError {
     ParseError(String),
 }
 
+impl NJError {
+    /// Returns a stable, machine-readable code identifying the error variant.
+    ///
+    /// Intended for language bindings that want to expose the error kind
+    /// programmatically (e.g. as a JavaScript `Error.name`) rather than relying
+    /// on the human-readable [`Display`](std::fmt::Display) message.
+    pub fn code(&self) -> &'static str {
+        match self {
+            NJError::EmptyMsa => "EmptyMsa",
+            NJError::EmptySequence => "EmptySequence",
+            NJError::SequenceLengthMismatch { .. } => "SequenceLengthMismatch",
+            NJError::DuplicateIdentifier { .. } => "DuplicateIdentifier",
+            NJError::IncompatibleModel { .. } => "IncompatibleModel",
+            NJError::AlgorithmFailure(_) => "AlgorithmFailure",
+            NJError::RngError(_) => "RngError",
+            NJError::ParseError(_) => "ParseError",
+        }
+    }
+}
+
 impl fmt::Display for NJError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -39,6 +62,9 @@ impl fmt::Display for NJError {
                 f,
                 "All sequences must have the same length. Expected {expected}, got {got} for '{identifier}'"
             ),
+            NJError::DuplicateIdentifier { identifier } => {
+                write!(f, "Duplicate sequence identifier: '{identifier}'")
+            }
             NJError::IncompatibleModel { model, alphabet } => write!(
                 f,
                 "Substitution model {model:?} is incompatible with {alphabet:?} alphabet"

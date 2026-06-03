@@ -22,5 +22,10 @@ VERSION=$(toml get Cargo.toml workspace.package.version | tr -d '"')
 toml set python/pyproject.toml project.version "$VERSION" | sponge python/pyproject.toml
 jq --arg v "$VERSION" '.version = $v' wasm/package.json | sponge wasm/package.json
 
-git commit --amend -am "Release v$VERSION"
+# Sanity-check that all three package manifests now agree before tagging.
+bash scripts/check-versions.sh
+
+# Create a fresh release commit (never --amend: that would rewrite the previous,
+# possibly already-pushed, commit).
+git commit -am "Release v$VERSION"
 git tag "v$VERSION"

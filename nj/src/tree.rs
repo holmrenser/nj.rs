@@ -46,6 +46,24 @@ pub enum NameOrSupport {
     Support(usize),
 }
 
+/// Escapes a node label for safe inclusion in a Newick string.
+///
+/// Per the Newick grammar, a label containing whitespace or any of the reserved
+/// characters `()[]{}',:;` must be single-quoted, with embedded single quotes
+/// doubled. Labels free of those characters are returned unchanged. (Underscores
+/// are intentionally left unquoted, following the common convention where an
+/// unquoted `_` is rendered as a space by Newick readers.)
+fn escape_newick_label(name: &str) -> String {
+    let needs_quoting = name
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | '\'' | ',' | ':' | ';'));
+    if needs_quoting {
+        format!("'{}'", name.replace('\'', "''"))
+    } else {
+        name.to_string()
+    }
+}
+
 impl Display for TreeNode {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{}", self.to_newick())
@@ -112,7 +130,7 @@ impl TreeNode {
 
                 let label_str = match self.label {
                     Some(NameOrSupport::Support(s)) => format!("{}", s),
-                    Some(NameOrSupport::Name(ref n)) => n.clone(),
+                    Some(NameOrSupport::Name(ref n)) => escape_newick_label(n),
                     None => "".to_string(),
                 };
 
@@ -120,7 +138,7 @@ impl TreeNode {
             }
             None => match self.label {
                 Some(NameOrSupport::Support(s)) => format!("{}", s),
-                Some(NameOrSupport::Name(ref n)) => n.clone(),
+                Some(NameOrSupport::Name(ref n)) => escape_newick_label(n),
                 None => "".to_string(),
             },
         }
@@ -213,5 +231,37 @@ mod tests {
         let right = TreeNode::leaf(1, "B".into(), Some(0.0));
         let root = TreeNode::internal(2, Some([Box::new(left), Box::new(right)]), Some(0.0), None);
         assert_eq!(root.to_newick(), "(A:0.000,B:0.000);");
+    }
+
+    #[test]
+    fn test_escape_newick_label_plain_unchanged() {
+        // Plain identifiers (incl. underscores) are emitted verbatim.
+        assert_eq!(escape_newick_label("SeqA"), "SeqA");
+        assert_eq!(escape_newick_label("seq_1"), "seq_1");
+    }
+
+    #[test]
+    fn test_escape_newick_label_quotes_reserved_chars() {
+        assert_eq!(escape_newick_label("H. sapiens"), "'H. sapiens'");
+        assert_eq!(escape_newick_label("a(b)"), "'a(b)'");
+        assert_eq!(escape_newick_label("x:1"), "'x:1'");
+        assert_eq!(escape_newick_label("p|q,r"), "'p|q,r'");
+    }
+
+    #[test]
+    fn test_escape_newick_label_doubles_internal_quote() {
+        // An embedded single quote forces quoting and is doubled.
+        assert_eq!(escape_newick_label("5' end"), "'5'' end'");
+    }
+
+    #[test]
+    fn test_leaf_with_spaces_is_quoted_in_newick() {
+        let left = TreeNode::leaf(0, "H. sapiens".into(), Some(0.1));
+        let right = TreeNode::leaf(1, "M. musculus".into(), Some(0.2));
+        let root = TreeNode::internal(2, Some([Box::new(left), Box::new(right)]), Some(0.0), None);
+        assert_eq!(
+            root.to_newick(),
+            "('H. sapiens':0.100,'M. musculus':0.200);"
+        );
     }
 }

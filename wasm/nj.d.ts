@@ -24,8 +24,11 @@ export type NJEventCallback = (event: NJEvent) => void;
  *   `result.distance_matrix` and `result.average_distance` are present when
  *   the corresponding `return_distance_matrix` / `return_average_distance`
  *   flags are set in `config`.
- * @throws {Error} If the MSA is empty, sequences have unequal or zero length,
- *   or an incompatible model–alphabet combination is provided.
+ * @throws {Error} On invalid input. The thrown `Error.name` is a stable code
+ *   identifying the cause: `"EmptyMsa"`, `"EmptySequence"`,
+ *   `"SequenceLengthMismatch"`, `"DuplicateIdentifier"`, `"IncompatibleModel"`,
+ *   or `"InvalidNJConfig"` (malformed config object). Branch on `err.name`
+ *   rather than matching `err.message`.
  */
 export function nj(config: NJConfig, onEvent?: NJEventCallback): NJResult;
 
