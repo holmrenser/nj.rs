@@ -58,8 +58,15 @@ optional = true
 # default build only builds the library
 default = []
 
-# feature to build CLI
-cli = ["clap", "indicatif", "serde_json"]
+# feature to build CLI. Implies `parallel` so the shipped binary
+# (`cargo install nj --features cli`) is multi-threaded by default; the bare
+# library stays lightweight and Rayon-free unless `parallel` is requested.
+cli = ["clap", "indicatif", "serde_json", "parallel"]
 
 # feature to enable parallel bootstrap and distance matrix computation via Rayon
 parallel = ["rayon"]
+
+# feature to enable the explicit core::simd distance kernel. Requires a nightly
+# toolchain (uses the unstable `portable_simd` feature). Without it, the kernel
+# uses the branchless scalar path, which the compiler still autovectorizes.
+simd = []

@@ -1,2 +1,5 @@
 [target.wasm32-unknown-unknown]
-rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+# `+simd128` lets LLVM autovectorize to WebAssembly SIMD (128-bit) instructions.
+# Baseline-supported in all current browsers and Node >= 16. Without this flag the
+# wasm build emits zero vector ops regardless of source-level SIMD.
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"', '-C', 'target-feature=+simd128']

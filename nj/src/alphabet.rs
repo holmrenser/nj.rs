@@ -18,7 +18,14 @@ use serde::{Deserialize, Serialize};
 /// [`crate::msa::MSA`] can be parameterised over any alphabet without
 /// duplicating logic.
 pub trait AlphabetEncoding {
+    /// Encoded symbol type. Implementors must be `#[repr(u8)]` (size 1, align 1)
+    /// so that a `&[Self::Symbol]` can be reinterpreted as `&[u8]` by
+    /// [`as_bytes`](AlphabetEncoding::as_bytes) for the byte-level distance kernel.
     type Symbol: Copy;
+
+    /// Byte value of the gap symbol (`Self::Symbol::Gap as u8`). Used by the
+    /// branchless / SIMD distance kernel for gap detection without enum matching.
+    const GAP_BYTE: u8;
 
     /// Encodes a byte into the corresponding symbol in the alphabet.
     fn encode(symbol: u8) -> Self::Symbol;
@@ -28,6 +35,18 @@ pub trait AlphabetEncoding {
 
     /// Returns `true` if `symbol` represents a gap (`-`).
     fn is_gap(symbol: Self::Symbol) -> bool;
+
+    /// Reinterprets an encoded sequence as a raw byte slice.
+    ///
+    /// The default implementation relies on the trait invariant that
+    /// `Self::Symbol` is `#[repr(u8)]`, so a slice of symbols has the exact same
+    /// layout as a `&[u8]` of equal length. All built-in alphabets uphold this.
+    fn as_bytes(seq: &[Self::Symbol]) -> &[u8] {
+        debug_assert_eq!(core::mem::size_of::<Self::Symbol>(), 1);
+        // SAFETY: `Self::Symbol` is `#[repr(u8)]` (1 byte, align 1), so the slice
+        // has identical layout to `&[u8]` of the same length.
+        unsafe { core::slice::from_raw_parts(seq.as_ptr() as *const u8, seq.len()) }
+    }
 }
 
 /// A single nucleotide in the DNA alphabet.
@@ -36,13 +55,14 @@ pub trait AlphabetEncoding {
 /// character in aligned sequences. Any byte not matching `A/C/G/T/N/-`
 /// (case-insensitive) is mapped to `N`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum DnaSymbol {
-    A,
-    C,
-    G,
-    T,
-    N,
-    Gap,
+    A = 0,
+    C = 1,
+    G = 2,
+    T = 3,
+    N = 4,
+    Gap = 5,
 }
 
 /// Marker struct for the DNA alphabet.
@@ -53,6 +73,8 @@ pub struct DNA;
 
 impl AlphabetEncoding for DNA {
     type Symbol = DnaSymbol;
+
+    const GAP_BYTE: u8 = DnaSymbol::Gap as u8;
 
     fn encode(symbol: u8) -> Self::Symbol {
         match symbol {
@@ -88,29 +110,30 @@ impl AlphabetEncoding for DNA {
 /// (the `-` alignment character). Encoding is case-insensitive; any byte that
 /// does not match a known amino acid letter is mapped to `X`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum ProteinSymbol {
-    A,
-    R,
-    N,
-    D,
-    C,
-    Q,
-    E,
-    G,
-    H,
-    I,
-    L,
-    K,
-    M,
-    F,
-    P,
-    S,
-    T,
-    W,
-    Y,
-    V,
-    X,
-    Gap,
+    A = 0,
+    R = 1,
+    N = 2,
+    D = 3,
+    C = 4,
+    Q = 5,
+    E = 6,
+    G = 7,
+    H = 8,
+    I = 9,
+    L = 10,
+    K = 11,
+    M = 12,
+    F = 13,
+    P = 14,
+    S = 15,
+    T = 16,
+    W = 17,
+    Y = 18,
+    V = 19,
+    X = 20,
+    Gap = 21,
 }
 
 /// Marker struct for the protein alphabet.
@@ -121,6 +144,8 @@ pub struct Protein;
 
 impl AlphabetEncoding for Protein {
     type Symbol = ProteinSymbol;
+
+    const GAP_BYTE: u8 = ProteinSymbol::Gap as u8;
 
     fn encode(symbol: u8) -> Self::Symbol {
         // Match on the uppercased byte so lowercase residues encode identically

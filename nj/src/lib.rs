@@ -1,3 +1,7 @@
+// The explicit `core::simd` distance kernel needs the nightly `portable_simd`
+// feature. Gated on the `simd` Cargo feature so default (stable) builds are
+// unaffected — the kernel falls back to the autovectorizable scalar path.
+#![cfg_attr(feature = "simd", feature(portable_simd))]
 //! Neighbor-Joining phylogenetic tree inference library.
 //!
 //! # Data flow
@@ -313,11 +317,12 @@ fn add_bootstrap_to_tree(
         bitset_of(node, idx, &mut bv)?;
 
         let n = bv.count_ones();
-        if n > 1 && n < n_taxa {
-            if let Some(c) = counts.get(&bv.as_raw_slice().to_vec()) {
-                let pct = c * 100 / n_bootstrap_samples;
-                node.label = Some(NameOrSupport::Support(pct));
-            }
+        if n > 1
+            && n < n_taxa
+            && let Some(c) = counts.get(&bv.as_raw_slice().to_vec())
+        {
+            let pct = c * 100 / n_bootstrap_samples;
+            node.label = Some(NameOrSupport::Support(pct));
         }
 
         if let Some([l, r]) = &mut node.children {

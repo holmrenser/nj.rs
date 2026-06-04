@@ -73,6 +73,17 @@ fn bench_distance_matrix(c: &mut Criterion) {
     group.finish();
 }
 
+/// Wide-alignment regime (large L, modest n) where the O(n²·L) distance kernel
+/// dominates — the case explicit/auto SIMD on the kernel targets.
+fn bench_distance_matrix_wide(c: &mut Criterion) {
+    let mut group = c.benchmark_group("distance_matrix_wide");
+    let msa = synthetic_dna(100, 5000);
+    group.bench_with_input(BenchmarkId::from_parameter(100), &msa, |b, msa| {
+        b.iter(|| distance_matrix(black_box(dist_config(msa.clone()))).unwrap());
+    });
+    group.finish();
+}
+
 fn bench_nj(c: &mut Criterion) {
     let mut group = c.benchmark_group("nj");
     for &n in &[25usize, 100, 250] {
@@ -95,5 +106,11 @@ fn bench_bootstrap(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_distance_matrix, bench_nj, bench_bootstrap);
+criterion_group!(
+    benches,
+    bench_distance_matrix,
+    bench_distance_matrix_wide,
+    bench_nj,
+    bench_bootstrap
+);
 criterion_main!(benches);

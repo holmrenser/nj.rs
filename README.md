@@ -20,6 +20,10 @@ cargo install nj --features cli
 
 nj sequences.fasta
 nj --substitution-model kimura2-p --n-bootstrap-samples 100 sequences.fasta > tree.nwk
+
+# Bootstrap and distance computation run in parallel by default (the `cli`
+# feature enables threading). Cap the worker count with -t/--num-threads:
+nj -t 4 --n-bootstrap-samples 1000 sequences.fasta > tree.nwk
 ```
 
 A progress bar is shown on stderr when bootstrapping.

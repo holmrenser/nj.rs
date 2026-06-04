@@ -62,8 +62,9 @@ mod cli {
         #[arg(long, default_value_t = false)]
         pub average_distance: bool,
 
-        /// Number of threads to use for parallel computation (default: all available).
-        /// Only effective when built with the `parallel` feature.
+        /// Number of threads for parallel bootstrap and distance computation
+        /// (default: all available cores). The CLI is always built with
+        /// threading enabled, so this flag is always effective.
         #[arg(short = 't', long, value_name = "N")]
         pub num_threads: Option<usize>,
 

@@ -32,6 +32,11 @@ impl SequenceObject {
     pub fn len(&self) -> usize {
         self.sequence.len()
     }
+
+    /// Returns `true` if the sequence is empty.
+    pub fn is_empty(&self) -> bool {
+        self.sequence.is_empty()
+    }
 }
 
 /// Configuration for distance-only computation (no NJ, no bootstrap).

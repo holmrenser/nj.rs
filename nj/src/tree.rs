@@ -95,10 +95,7 @@ impl TreeNode {
             identifier,
             children: Some(children.unwrap()),
             len,
-            label: match support {
-                Some(s) => Some(NameOrSupport::Support(s)),
-                None => None,
-            },
+            label: support.map(NameOrSupport::Support),
         }
     }
 

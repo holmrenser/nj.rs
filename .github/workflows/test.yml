@@ -32,6 +32,25 @@ jobs:
       - run: make test
         working-directory: nj
 
+  simd-nightly:
+    name: SIMD kernel (nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The published PyPI wheels enable `nj/simd` (the explicit core::simd
+      # `portable_simd` kernel). This job guards that path against bit-rot and
+      # confirms it stays bit-identical to the scalar kernel (same unit/proptest/
+      # golden assertions). Pinned to match the wheel build in release.yml — bump
+      # both together.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-06-02
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-simd
+      - run: cargo test --features simd
+        working-directory: nj
+
   wasm:
     name: WASM tests
     runs-on: ubuntu-latest

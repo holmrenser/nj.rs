@@ -260,7 +260,7 @@ mod tests {
     fn test_dist_from_msa_no_overlap() {
         // no non-gap mismatches are counted, so the distance remains 0.0
         let seqs = vec![("X".into(), "A--".into()), ("Y".into(), "--A".into())];
-        let msa = MSA::<DNA>::from_iter(seqs.into_iter());
+        let msa = MSA::<DNA>::from_iter(seqs);
         let mat = msa.into_dist::<PDiff>();
         assert_eq!(mat.names, vec!["X", "Y"]);
         assert!((mat.get(0, 1) - 0.0).abs() < 1e-12);
@@ -329,7 +329,7 @@ mod tests {
         // ensure non-negative branch lengths in the produced tree (clamping is applied in implementation)
         fn check_nonneg(node: &TreeNode) {
             match &node.children {
-                None => return,
+                None => (),
                 Some(children) => {
                     assert!(children[0].len.unwrap() >= -1e-12, "left_len negative");
                     assert!(children[1].len.unwrap() >= -1e-12, "right_len negative");

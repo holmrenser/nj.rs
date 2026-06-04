@@ -1,76 +1,112 @@
 //! Substitution models for computing pairwise evolutionary distances.
 //!
-//! All models implement [`ModelCalculation`] via a three-phase accumulator
-//! pattern over aligned column pairs: [`init`](ModelCalculation::init) → per-column
-//! [`accumulate`](ModelCalculation::accumulate) → [`finalize`](ModelCalculation::finalize).
-//! Gap positions are skipped during accumulation, but the full alignment length
-//! is always used as the denominator in the final distance formula.
+//! Each model implements [`ModelCalculation::distance`], mapping a pair of
+//! aligned, pre-encoded sequences of equal length to an evolutionary distance.
+//! Columns where either sequence has a gap are excluded (pairwise deletion); the
+//! number of comparable (non-gap) columns is the denominator in every formula.
+//!
+//! The count-based models (`PDiff`, `JukesCantor`, `Poisson`) share a single
+//! branchless byte kernel ([`diff_and_comparable`]) that the compiler
+//! autovectorizes; with the `simd` Cargo feature it dispatches to an explicit
+//! [`core::simd`] kernel. `Kimura2P` must classify each mismatch as a transition
+//! or transversion and keeps its own scalar pass.
 
 use serde::{Deserialize, Serialize};
 
 use crate::alphabet::{AlphabetEncoding, DNA, DnaSymbol, Protein, ProteinSymbol};
 
-/// Trait for substitution model calculations over a given alphabet.
+/// Trait for substitution-model distance calculations over a given alphabet.
 ///
-/// Implementations follow a three-phase accumulator pattern so the distance
-/// computation is a single linear pass over aligned columns:
-///
-/// 1. [`init`](ModelCalculation::init) — create a zeroed accumulator
-/// 2. [`accumulate`](ModelCalculation::accumulate) — update the accumulator for one aligned column
-/// 3. [`finalize`](ModelCalculation::finalize) — convert the accumulator to a distance
-///
-/// Gap positions (`DnaSymbol::Gap` / `ProteinSymbol::Gap`) are ignored in all
-/// implementations: a column where either sequence has a gap is not counted as
-/// a difference, but the full alignment length is still used as the denominator.
+/// A model maps two aligned, pre-encoded sequences of equal length to an
+/// evolutionary distance. Columns where either sequence has a gap are excluded
+/// from the comparable-site count (pairwise deletion). Implementations return
+/// [`f64::INFINITY`] when the model's formula is undefined for the observed
+/// divergence (saturation) — the NJ algorithm handles infinite distances
+/// gracefully — and `0.0` when there are no comparable (non-gap) columns.
 pub trait ModelCalculation<A: AlphabetEncoding> {
-    /// Accumulator type — e.g. `usize` for simple difference counts, or
-    /// `(usize, usize)` for models that track multiple substitution classes.
-    type Acc;
-
-    /// Returns a zeroed accumulator.
-    fn init() -> Self::Acc;
-
-    /// Updates `acc` for one aligned column `(a, b)` and returns the updated value.
-    fn accumulate(acc: &mut Self::Acc, a: A::Symbol, b: A::Symbol) -> Self::Acc;
-
-    /// Converts the final accumulator to an evolutionary distance.
-    ///
-    /// `aln_len` is the total number of alignment columns; `n_comparable` is the
-    /// number of columns where neither sequence has a gap (pairwise deletion).
-    /// Models should use `n_comparable` as the denominator so that gapped
-    /// positions are excluded from the distance calculation.
-    ///
-    /// Returns [`f64::INFINITY`] when the model's formula is undefined for the
-    /// observed substitution frequencies (e.g. saturation). The NJ algorithm
-    /// handles infinite distances gracefully. Returns `0.0` when `n_comparable`
-    /// is zero (no overlapping non-gap columns).
-    fn finalize(acc: &Self::Acc, aln_len: usize, n_comparable: usize) -> f64;
+    /// Computes the pairwise distance between two aligned sequences.
+    fn distance(s1: &[A::Symbol], s2: &[A::Symbol]) -> f64;
 }
 
 /// Computes the pairwise distance between two aligned sequences using model `M`.
 ///
-/// `s1` and `s2` must have equal length (i.e. already be aligned). Columns
-/// where either sequence carries a gap are excluded from the comparable-site
-/// count (`n_comparable`) passed to [`ModelCalculation::finalize`], implementing
-/// pairwise deletion.
+/// `s1` and `s2` must have equal length (i.e. already be aligned). Thin wrapper
+/// over [`ModelCalculation::distance`]; retained as the stable call site used by
+/// [`crate::distance_matrix`].
 #[inline(always)]
 pub fn pairwise_distance<M, A>(s1: &[A::Symbol], s2: &[A::Symbol]) -> f64
 where
     M: ModelCalculation<A>,
     A: AlphabetEncoding,
 {
-    let aln_len = s1.len();
-    let mut acc = M::init();
-    let mut n_comparable: usize = 0;
+    M::distance(s1, s2)
+}
 
-    for k in 0..aln_len {
-        if !A::is_gap(s1[k]) && !A::is_gap(s2[k]) {
-            n_comparable += 1;
-        }
-        acc = M::accumulate(&mut acc, s1[k], s2[k]);
+/// Counts `(n_diff, n_comparable)` over two equal-length encoded sequences.
+///
+/// `n_comparable` is the number of columns where neither symbol is a gap
+/// (pairwise deletion); `n_diff` is the number of those comparable columns where
+/// the two symbols differ. Shared by every count-based model — they differ only
+/// in how [`ModelCalculation::distance`] maps these two counts to a distance.
+#[inline]
+fn diff_and_comparable<A: AlphabetEncoding>(s1: &[A::Symbol], s2: &[A::Symbol]) -> (usize, usize) {
+    count_diff_comparable(A::as_bytes(s1), A::as_bytes(s2), A::GAP_BYTE)
+}
+
+/// Branchless scalar kernel: counts `(n_diff, n_comparable)` over raw bytes.
+///
+/// Written without data-dependent branches (boolean masks accumulated as `0`/`1`)
+/// so the compiler can autovectorize the two reductions. Also used for the
+/// SIMD path's sub-`N` remainder.
+#[inline]
+fn count_diff_comparable_scalar(a: &[u8], b: &[u8], gap: u8) -> (usize, usize) {
+    let mut n_comparable = 0usize;
+    let mut n_diff = 0usize;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        let comparable = (x != gap) & (y != gap);
+        let diff = comparable & (x != y);
+        n_comparable += comparable as usize;
+        n_diff += diff as usize;
+    }
+    (n_diff, n_comparable)
+}
+
+/// SIMD kernel (`simd` feature; nightly [`core::simd`]): same contract as
+/// [`count_diff_comparable_scalar`], processing `N` bytes per step. Counts set
+/// lanes per chunk via the mask bitmask, so the per-chunk popcounts never
+/// overflow regardless of sequence length.
+#[cfg(feature = "simd")]
+#[inline]
+fn count_diff_comparable(a: &[u8], b: &[u8], gap: u8) -> (usize, usize) {
+    use core::simd::{Simd, cmp::SimdPartialEq};
+
+    const N: usize = 32;
+    type V = Simd<u8, N>;
+
+    let gapv = V::splat(gap);
+    let mut n_comparable = 0usize;
+    let mut n_diff = 0usize;
+
+    let mut ca = a.chunks_exact(N);
+    let mut cb = b.chunks_exact(N);
+    for (ka, kb) in ca.by_ref().zip(cb.by_ref()) {
+        let va = V::from_slice(ka);
+        let vb = V::from_slice(kb);
+        let comparable = va.simd_ne(gapv) & vb.simd_ne(gapv);
+        let diff = comparable & va.simd_ne(vb);
+        n_comparable += comparable.to_bitmask().count_ones() as usize;
+        n_diff += diff.to_bitmask().count_ones() as usize;
     }
 
-    M::finalize(&acc, aln_len, n_comparable)
+    let (rd, rc) = count_diff_comparable_scalar(ca.remainder(), cb.remainder(), gap);
+    (n_diff + rd, n_comparable + rc)
+}
+
+/// Scalar fallback used when the `simd` feature is disabled (stable toolchains).
+#[cfg(not(feature = "simd"))]
+#[inline]
+fn count_diff_comparable(a: &[u8], b: &[u8], gap: u8) -> (usize, usize) {
+    count_diff_comparable_scalar(a, b, gap)
 }
 
 /// p-distance (proportion of differing sites).
@@ -83,46 +119,22 @@ where
 pub struct PDiff;
 
 impl ModelCalculation<DNA> for PDiff {
-    type Acc = usize; // count of differences
-
-    fn init() -> Self::Acc {
-        0
-    }
-
-    fn accumulate(acc: &mut Self::Acc, a: DnaSymbol, b: DnaSymbol) -> Self::Acc {
-        if a != b && a != DnaSymbol::Gap && b != DnaSymbol::Gap {
-            *acc += 1;
-        }
-        *acc
-    }
-
-    fn finalize(acc: &Self::Acc, _aln_len: usize, n_comparable: usize) -> f64 {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol]) -> f64 {
+        let (n_diff, n_comparable) = diff_and_comparable::<DNA>(s1, s2);
         if n_comparable == 0 {
             return 0.0;
         }
-        *acc as f64 / n_comparable as f64
+        n_diff as f64 / n_comparable as f64
     }
 }
 
 impl ModelCalculation<Protein> for PDiff {
-    type Acc = usize; // count of differences
-
-    fn init() -> Self::Acc {
-        0
-    }
-
-    fn accumulate(acc: &mut Self::Acc, a: ProteinSymbol, b: ProteinSymbol) -> Self::Acc {
-        if a != b && a != ProteinSymbol::Gap && b != ProteinSymbol::Gap {
-            *acc += 1;
-        }
-        *acc
-    }
-
-    fn finalize(acc: &Self::Acc, _aln_len: usize, n_comparable: usize) -> f64 {
+    fn distance(s1: &[ProteinSymbol], s2: &[ProteinSymbol]) -> f64 {
+        let (n_diff, n_comparable) = diff_and_comparable::<Protein>(s1, s2);
         if n_comparable == 0 {
             return 0.0;
         }
-        *acc as f64 / n_comparable as f64
+        n_diff as f64 / n_comparable as f64
     }
 }
 
@@ -136,24 +148,12 @@ impl ModelCalculation<Protein> for PDiff {
 pub struct JukesCantor;
 
 impl ModelCalculation<DNA> for JukesCantor {
-    type Acc = usize; // count of differences
-
-    fn init() -> Self::Acc {
-        0
-    }
-
-    fn accumulate(acc: &mut Self::Acc, a: DnaSymbol, b: DnaSymbol) -> Self::Acc {
-        if a != b && a != DnaSymbol::Gap && b != DnaSymbol::Gap {
-            *acc += 1;
-        }
-        *acc
-    }
-
-    fn finalize(acc: &Self::Acc, _aln_len: usize, n_comparable: usize) -> f64 {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol]) -> f64 {
+        let (n_diff, n_comparable) = diff_and_comparable::<DNA>(s1, s2);
         if n_comparable == 0 {
             return 0.0;
         }
-        let p = *acc as f64 / n_comparable as f64;
+        let p = n_diff as f64 / n_comparable as f64;
         if p >= 0.75 {
             f64::INFINITY // distance undefined
         } else {
@@ -173,30 +173,30 @@ impl ModelCalculation<DNA> for JukesCantor {
 pub struct Kimura2P;
 
 impl ModelCalculation<DNA> for Kimura2P {
-    type Acc = (usize, usize); // (transitions, transversions)
-
-    fn init() -> Self::Acc {
-        (0, 0)
-    }
-
-    fn accumulate(acc: &mut Self::Acc, a: DnaSymbol, b: DnaSymbol) -> Self::Acc {
-        if a != b && a != DnaSymbol::Gap && b != DnaSymbol::Gap {
-            match (a, b) {
-                (DnaSymbol::A, DnaSymbol::G)
-                | (DnaSymbol::G, DnaSymbol::A)
-                | (DnaSymbol::C, DnaSymbol::T)
-                | (DnaSymbol::T, DnaSymbol::C) => acc.0 += 1, // transition
-                _ => acc.1 += 1, // transversion
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol]) -> f64 {
+        // Kimura2P classifies each mismatch as a transition (A↔G, C↔T) or a
+        // transversion, so it keeps its own scalar pass rather than the shared
+        // count kernel. Gap columns are excluded (pairwise deletion).
+        let mut n_comparable = 0usize;
+        let mut ti = 0usize;
+        let mut tv = 0usize;
+        for (&a, &b) in s1.iter().zip(s2.iter()) {
+            if a != DnaSymbol::Gap && b != DnaSymbol::Gap {
+                n_comparable += 1;
+                if a != b {
+                    match (a, b) {
+                        (DnaSymbol::A, DnaSymbol::G)
+                        | (DnaSymbol::G, DnaSymbol::A)
+                        | (DnaSymbol::C, DnaSymbol::T)
+                        | (DnaSymbol::T, DnaSymbol::C) => ti += 1, // transition
+                        _ => tv += 1,                              // transversion
+                    }
+                }
             }
         }
-        *acc
-    }
-
-    fn finalize(acc: &Self::Acc, _aln_len: usize, n_comparable: usize) -> f64 {
         if n_comparable == 0 {
             return 0.0;
         }
-        let (ti, tv) = *acc;
         let p = ti as f64 / n_comparable as f64;
         let q = tv as f64 / n_comparable as f64;
         let denom1 = 1.0 - 2.0 * p - q;
@@ -218,24 +218,12 @@ impl ModelCalculation<DNA> for Kimura2P {
 pub struct Poisson;
 
 impl ModelCalculation<Protein> for Poisson {
-    type Acc = usize; // count of differences
-
-    fn init() -> Self::Acc {
-        0
-    }
-
-    fn accumulate(acc: &mut Self::Acc, a: ProteinSymbol, b: ProteinSymbol) -> Self::Acc {
-        if a != b && a != ProteinSymbol::Gap && b != ProteinSymbol::Gap {
-            *acc += 1;
-        }
-        *acc
-    }
-
-    fn finalize(acc: &Self::Acc, _aln_len: usize, n_comparable: usize) -> f64 {
+    fn distance(s1: &[ProteinSymbol], s2: &[ProteinSymbol]) -> f64 {
+        let (n_diff, n_comparable) = diff_and_comparable::<Protein>(s1, s2);
         if n_comparable == 0 {
             return 0.0;
         }
-        let p = *acc as f64 / n_comparable as f64;
+        let p = n_diff as f64 / n_comparable as f64;
         if p >= 1.0 {
             f64::INFINITY // distance undefined
         } else {

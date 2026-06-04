@@ -33,6 +33,12 @@ pub struct MSA<A: AlphabetEncoding> {
     pub n_characters: usize,
 }
 
+impl<A: AlphabetEncoding> Default for MSA<A> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<A: AlphabetEncoding> MSA<A> {
     /// Creates a new, empty MSA.
     pub fn new() -> Self {
@@ -167,7 +173,7 @@ impl<A: AlphabetEncoding> IntoIterator for MSA<A> {
     type IntoIter = std::iter::Zip<std::vec::IntoIter<String>, std::vec::IntoIter<Vec<A::Symbol>>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.identifiers.into_iter().zip(self.sequences.into_iter())
+        self.identifiers.into_iter().zip(self.sequences)
     }
 }
 
