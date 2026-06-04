@@ -89,7 +89,7 @@ FASTA input / SequenceObject list
 
 ### Substitution models (`models.rs`)
 
-Models implement `ModelCalculation<A: AlphabetEncoding>`. DNA-only: `PDiff`, `JukesCantor`, `Kimura2P`. Protein-only: `Poisson`. `PDiff` works for both alphabets. Model–alphabet compatibility is enforced at runtime inside `nj()`.
+Models implement `ModelCalculation<A: AlphabetEncoding>`. DNA-only: `JukesCantor`, `Kimura2P`, `TajimaNei`, `Tamura`. Protein-only: `Poisson`, `KimuraProtein`. `PDiff` works for both alphabets. Model–alphabet compatibility is enforced at runtime inside `nj()` (the `dispatch_run!` macro in `lib.rs`).
 
 ### Bootstrap support
 

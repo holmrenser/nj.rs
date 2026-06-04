@@ -8,6 +8,15 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 
 ## [Unreleased]
 
+### Added
+- Three substitution models: `TajimaNei` (Tajima-Nei 1984, DNA — corrects
+  Jukes-Cantor for unequal base frequencies), `Tamura` (Tamura 1992, DNA —
+  Kimura two-parameter with a GC-content correction), and `KimuraProtein`
+  (Kimura 1983, protein — empirical correction to the Poisson distance). All are
+  closed-form and reduce to the model they extend under the appropriate
+  conditions (Tajima-Nei → Jukes-Cantor at equal frequencies, Tamura →
+  Kimura-2P at GC = 0.5). Exposed across the CLI, Python, and WASM bindings.
+
 ## [0.0.23] - 2026-06-04
 
 ### Fixed

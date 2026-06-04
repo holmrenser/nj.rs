@@ -46,7 +46,10 @@
 //! | `PDiff` | ✓ | ✓ |
 //! | `JukesCantor` | ✓ | — |
 //! | `Kimura2P` | ✓ | — |
+//! | `TajimaNei` | ✓ | — |
+//! | `Tamura` | ✓ | — |
 //! | `Poisson` | — | ✓ |
+//! | `KimuraProtein` | — | ✓ |
 //!
 //! Providing an incompatible model returns an `Err` from [`nj`].
 pub mod alphabet;
@@ -71,7 +74,9 @@ pub use crate::distance_matrix::DistanceResult;
 pub use crate::error::NJError;
 pub use crate::event::{LogLevel, NJEvent};
 pub use crate::fasta::parse_fasta;
-use crate::models::{JukesCantor, Kimura2P, ModelCalculation, PDiff, Poisson};
+use crate::models::{
+    JukesCantor, Kimura2P, KimuraProtein, ModelCalculation, PDiff, Poisson, TajimaNei, Tamura,
+};
 use crate::tree::{NameOrSupport, TreeNode};
 
 /// Fills `out` with the leaf indices of all taxa in the subtree rooted at `node`.
@@ -553,10 +558,18 @@ macro_rules! dispatch_run {
                     SubstitutionModel::Kimura2P => {
                         $run::<DNA, Kimura2P>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
                     }
-                    SubstitutionModel::Poisson => Err(NJError::IncompatibleModel {
-                        model,
-                        alphabet: Alphabet::DNA,
-                    }),
+                    SubstitutionModel::TajimaNei => {
+                        $run::<DNA, TajimaNei>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
+                    }
+                    SubstitutionModel::Tamura => {
+                        $run::<DNA, Tamura>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
+                    }
+                    SubstitutionModel::Poisson | SubstitutionModel::KimuraProtein => {
+                        Err(NJError::IncompatibleModel {
+                            model,
+                            alphabet: Alphabet::DNA,
+                        })
+                    }
                 }
             }
             Alphabet::Protein => {
@@ -566,15 +579,20 @@ macro_rules! dispatch_run {
                     SubstitutionModel::Poisson => {
                         $run::<Protein, Poisson>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
                     }
+                    SubstitutionModel::KimuraProtein => {
+                        $run::<Protein, KimuraProtein>(msa, $($arg),*)
+                            .map_err(NJError::AlgorithmFailure)
+                    }
                     SubstitutionModel::PDiff => {
                         $run::<Protein, PDiff>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
                     }
-                    SubstitutionModel::JukesCantor | SubstitutionModel::Kimura2P => {
-                        Err(NJError::IncompatibleModel {
-                            model,
-                            alphabet: Alphabet::Protein,
-                        })
-                    }
+                    SubstitutionModel::JukesCantor
+                    | SubstitutionModel::Kimura2P
+                    | SubstitutionModel::TajimaNei
+                    | SubstitutionModel::Tamura => Err(NJError::IncompatibleModel {
+                        model,
+                        alphabet: Alphabet::Protein,
+                    }),
                 }
             }
         }

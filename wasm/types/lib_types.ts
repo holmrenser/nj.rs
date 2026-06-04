@@ -175,8 +175,11 @@ sequence: string, };
  * | `PDiff` | DNA, Protein | `p` |
  * | `JukesCantor` | DNA only | `-0.75 · ln(1 - 4p/3)` |
  * | `Kimura2P` | DNA only | `-0.5 · ln(1-2p-q) - 0.25 · ln(1-2q)` |
+ * | `TajimaNei` | DNA only | `-b · ln(1 - p/b)` |
+ * | `Tamura` | DNA only | `-h · ln(1 - P/h - Q) - 0.5(1-h)·ln(1-2Q)` |
  * | `Poisson` | Protein only | `-ln(1 - p)` |
+ * | `KimuraProtein` | Protein only | `-ln(1 - p - 0.2 p²)` |
  *
  * Model–alphabet compatibility is enforced at runtime in [`crate::nj`].
  */
-export type SubstitutionModel = "PDiff" | "JukesCantor" | "Kimura2P" | "Poisson";
+export type SubstitutionModel = "PDiff" | "JukesCantor" | "Kimura2P" | "TajimaNei" | "Tamura" | "Poisson" | "KimuraProtein";

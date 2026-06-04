@@ -7,7 +7,7 @@ opt-level = 3
 lto = true
 
 [workspace.package]
-version = "0.0.23"
+version = "0.0.24"
 edition = "2024"
 authors = ["Rens Holmer"]
 license = "MIT"

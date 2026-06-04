@@ -5,11 +5,12 @@
 //! Columns where either sequence has a gap are excluded (pairwise deletion); the
 //! number of comparable (non-gap) columns is the denominator in every formula.
 //!
-//! The count-based models (`PDiff`, `JukesCantor`, `Poisson`) share a single
-//! branchless byte kernel ([`diff_and_comparable`]) that the compiler
-//! autovectorizes; with the `simd` Cargo feature it dispatches to an explicit
-//! [`core::simd`] kernel. `Kimura2P` must classify each mismatch as a transition
-//! or transversion and keeps its own scalar pass.
+//! The count-based models (`PDiff`, `JukesCantor`, `Poisson`, `KimuraProtein`)
+//! share a single branchless byte kernel ([`diff_and_comparable`]) that the
+//! compiler autovectorizes; with the `simd` Cargo feature it dispatches to an
+//! explicit [`core::simd`] kernel. `Kimura2P`, `TajimaNei`, and `Tamura` need
+//! per-mismatch classification (transition vs. transversion) or base-composition
+//! tallies, so they keep their own scalar passes.
 
 use serde::{Deserialize, Serialize};
 
@@ -232,6 +233,166 @@ impl ModelCalculation<Protein> for Poisson {
     }
 }
 
+/// Kimura (1983) protein distance.
+///
+/// `d = -ln(1 - p - 0.2 · p²)`
+///
+/// An empirical correction to the [`Poisson`] distance: the extra `0.2 · p²`
+/// term is Kimura's fit to PAM-based distances, giving a better approximation of
+/// amino acid divergence at moderate `p` while staying a fast closed form
+/// (e.g. ClustalW uses it). Returns [`f64::INFINITY`] once the log argument is
+/// non-positive (`p ≳ 0.8541`, the model's saturation point).
+pub struct KimuraProtein;
+
+impl ModelCalculation<Protein> for KimuraProtein {
+    fn distance(s1: &[ProteinSymbol], s2: &[ProteinSymbol]) -> f64 {
+        let (n_diff, n_comparable) = diff_and_comparable::<Protein>(s1, s2);
+        if n_comparable == 0 {
+            return 0.0;
+        }
+        let p = n_diff as f64 / n_comparable as f64;
+        let arg = 1.0 - p - 0.2 * p * p;
+        if arg <= 0.0 {
+            f64::INFINITY // distance undefined (saturation)
+        } else {
+            -arg.ln()
+        }
+    }
+}
+
+/// Tajima-Nei (1984) distance for DNA.
+///
+/// `d = -b · ln(1 - p/b)`,  `b = ½ · (1 - Σ gᵢ² + p²/h)`
+///
+/// Generalises [`JukesCantor`] to unequal base frequencies: `gᵢ` are the base
+/// frequencies and `h = Σ_{i<j} xᵢⱼ² / (2 gᵢ gⱼ)` aggregates the per-pair
+/// difference frequencies `xᵢⱼ`, all estimated from the two sequences. Reduces
+/// exactly to Jukes-Cantor when base frequencies are equal and substitutions are
+/// uniform. Like the other DNA models, `N` is treated as a distinct comparable
+/// state. Returns [`f64::INFINITY`] at saturation (`p ≥ b`).
+pub struct TajimaNei;
+
+impl ModelCalculation<DNA> for TajimaNei {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol]) -> f64 {
+        // Tajima-Nei needs per-base frequencies and per-pair difference
+        // frequencies, so it keeps its own scalar pass over the five non-gap DNA
+        // states (A, C, G, T, N). Gap columns are excluded (pairwise deletion).
+        const K: usize = 5; // A, C, G, T, N (Gap excluded)
+        let mut base_count = [0.0f64; K]; // base occurrences over both sequences
+        let mut pair_count = [[0.0f64; K]; K]; // unordered counts of differing pairs
+        let mut n_comparable = 0usize;
+        let mut n_diff = 0usize;
+        for (&a, &b) in s1.iter().zip(s2.iter()) {
+            if a == DnaSymbol::Gap || b == DnaSymbol::Gap {
+                continue;
+            }
+            n_comparable += 1;
+            let (i, j) = (a as usize, b as usize);
+            base_count[i] += 1.0;
+            base_count[j] += 1.0;
+            if a != b {
+                n_diff += 1;
+                let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+                pair_count[lo][hi] += 1.0;
+            }
+        }
+        if n_comparable == 0 {
+            return 0.0;
+        }
+        let n = n_comparable as f64;
+        let p = n_diff as f64 / n;
+        if p == 0.0 {
+            return 0.0;
+        }
+        // Base frequencies g_i (total base observations = 2 · n_comparable).
+        let mut g = [0.0f64; K];
+        let mut sum_g2 = 0.0;
+        for k in 0..K {
+            g[k] = base_count[k] / (2.0 * n);
+            sum_g2 += g[k] * g[k];
+        }
+        // h = Σ_{i<j} x_ij² / (2 g_i g_j); pairs touching a zero-frequency base
+        // have x_ij = 0 and are skipped to avoid 0/0.
+        let mut h = 0.0;
+        for i in 0..K {
+            for j in (i + 1)..K {
+                let x_ij = pair_count[i][j] / n;
+                if x_ij > 0.0 && g[i] > 0.0 && g[j] > 0.0 {
+                    h += (x_ij * x_ij) / (2.0 * g[i] * g[j]);
+                }
+            }
+        }
+        if h <= 0.0 {
+            return f64::INFINITY;
+        }
+        let b = 0.5 * (1.0 - sum_g2 + (p * p) / h);
+        let arg = 1.0 - p / b;
+        if b <= 0.0 || arg <= 0.0 {
+            f64::INFINITY // distance undefined (saturation)
+        } else {
+            -b * arg.ln()
+        }
+    }
+}
+
+/// Tamura (1992) three-parameter distance for DNA.
+///
+/// `d = -h · ln(1 - P/h - Q) - ½ · (1 - h) · ln(1 - 2Q)`,  `h = 2θ(1-θ)`
+///
+/// Extends [`Kimura2P`] with a correction for GC-content bias: `P` and `Q` are
+/// the transition and transversion proportions and `θ` is the GC content,
+/// estimated from both sequences. Reduces exactly to Kimura two-parameter when
+/// `θ = 0.5`. Transition/transversion classification matches [`Kimura2P`]; `N`
+/// contributes to neither GC content nor transitions. Returns [`f64::INFINITY`]
+/// when either logarithm argument is non-positive (saturation or degenerate GC).
+pub struct Tamura;
+
+impl ModelCalculation<DNA> for Tamura {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol]) -> f64 {
+        // Like Kimura2P, classifies each mismatch as transition or transversion;
+        // additionally tallies G/C bases for the GC-content correction. Gap
+        // columns are excluded (pairwise deletion).
+        let mut n_comparable = 0usize;
+        let mut ti = 0usize;
+        let mut tv = 0usize;
+        let mut gc = 0usize; // G/C occurrences over both sequences
+        for (&a, &b) in s1.iter().zip(s2.iter()) {
+            if a != DnaSymbol::Gap && b != DnaSymbol::Gap {
+                n_comparable += 1;
+                for x in [a, b] {
+                    if x == DnaSymbol::G || x == DnaSymbol::C {
+                        gc += 1;
+                    }
+                }
+                if a != b {
+                    match (a, b) {
+                        (DnaSymbol::A, DnaSymbol::G)
+                        | (DnaSymbol::G, DnaSymbol::A)
+                        | (DnaSymbol::C, DnaSymbol::T)
+                        | (DnaSymbol::T, DnaSymbol::C) => ti += 1, // transition
+                        _ => tv += 1,                              // transversion
+                    }
+                }
+            }
+        }
+        if n_comparable == 0 || ti + tv == 0 {
+            return 0.0; // no comparable sites, or all comparable sites identical
+        }
+        let n = n_comparable as f64;
+        let big_p = ti as f64 / n;
+        let big_q = tv as f64 / n;
+        let theta = gc as f64 / (2.0 * n); // GC content over both sequences
+        let h = 2.0 * theta * (1.0 - theta);
+        let arg1 = 1.0 - big_p / h - big_q;
+        let arg2 = 1.0 - 2.0 * big_q;
+        if h <= 0.0 || arg1 <= 0.0 || arg2 <= 0.0 {
+            f64::INFINITY // distance undefined (saturation or degenerate GC)
+        } else {
+            -h * arg1.ln() - 0.5 * (1.0 - h) * arg2.ln()
+        }
+    }
+}
+
 /// Available substitution models.
 ///
 /// | Variant | Alphabet | Formula |
@@ -239,7 +400,10 @@ impl ModelCalculation<Protein> for Poisson {
 /// | `PDiff` | DNA, Protein | `p` |
 /// | `JukesCantor` | DNA only | `-0.75 · ln(1 - 4p/3)` |
 /// | `Kimura2P` | DNA only | `-0.5 · ln(1-2p-q) - 0.25 · ln(1-2q)` |
+/// | `TajimaNei` | DNA only | `-b · ln(1 - p/b)` |
+/// | `Tamura` | DNA only | `-h · ln(1 - P/h - Q) - 0.5(1-h)·ln(1-2Q)` |
 /// | `Poisson` | Protein only | `-ln(1 - p)` |
+/// | `KimuraProtein` | Protein only | `-ln(1 - p - 0.2 p²)` |
 ///
 /// Model–alphabet compatibility is enforced at runtime in [`crate::nj`].
 #[derive(Clone, Debug, ts_rs::TS, Serialize, Deserialize)]
@@ -252,8 +416,14 @@ pub enum SubstitutionModel {
     JukesCantor,
     /// Kimura two-parameter (1980): separates transition and transversion rates.
     Kimura2P,
+    /// Tajima-Nei (1984): DNA model correcting for unequal base frequencies.
+    TajimaNei,
+    /// Tamura (1992): Kimura two-parameter with a GC-content correction.
+    Tamura,
     /// Poisson: equal-rate protein model with multiple-hit correction.
     Poisson,
+    /// Kimura (1983): empirical protein distance (`Poisson` plus a `0.2 p²` term).
+    KimuraProtein,
 }
 
 #[cfg(test)]
@@ -419,6 +589,168 @@ mod tests {
         // only 0 real differences out of 3 positions → p = 0 → d = 0
         assert_eq!(
             pairwise_distance::<Poisson, Protein>(&protein!("A-N"), &protein!("ARN")),
+            0.0
+        );
+    }
+
+    // --- KimuraProtein ---
+
+    #[test]
+    fn test_kimura_protein_identical() {
+        let s = protein!("ARND");
+        assert_eq!(pairwise_distance::<KimuraProtein, Protein>(&s, &s), 0.0);
+    }
+
+    #[test]
+    fn test_kimura_protein_one_difference() {
+        // p = 0.25 → d = -ln(1 - 0.25 - 0.2·0.25²)
+        let p = 0.25_f64;
+        let expected = -(1.0 - p - 0.2 * p * p).ln();
+        assert!(
+            (pairwise_distance::<KimuraProtein, Protein>(&protein!("ARND"), &protein!("ARNE"))
+                - expected)
+                .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn test_kimura_protein_exceeds_poisson() {
+        // The 0.2·p² term makes Kimura's correction larger than Poisson's for p>0.
+        let (a, b) = (protein!("ARNDC"), protein!("ARKEG")); // 3 diffs of 5 → p = 0.6
+        let kimura = pairwise_distance::<KimuraProtein, Protein>(&a, &b);
+        let poisson = pairwise_distance::<Poisson, Protein>(&a, &b);
+        assert!(kimura > poisson, "kimura={kimura}, poisson={poisson}");
+    }
+
+    #[test]
+    fn test_kimura_protein_saturated_returns_infinity() {
+        // p = 1.0 → arg = 1 - 1 - 0.2 = -0.2 ≤ 0 → infinity
+        assert_eq!(
+            pairwise_distance::<KimuraProtein, Protein>(&protein!("AR"), &protein!("DE")),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn test_kimura_protein_gaps_not_counted_as_differences() {
+        assert_eq!(
+            pairwise_distance::<KimuraProtein, Protein>(&protein!("A-N"), &protein!("ARN")),
+            0.0
+        );
+    }
+
+    // --- TajimaNei ---
+
+    #[test]
+    fn test_tajima_nei_identical() {
+        let s = dna!("ACGT");
+        assert_eq!(pairwise_distance::<TajimaNei, DNA>(&s, &s), 0.0);
+    }
+
+    #[test]
+    fn test_tajima_nei_hand_computed() {
+        // ACGT vs AGGT: 1 diff (C↔G) of 4. Base counts A=2,C=1,G=3,T=2 over the
+        // 8 observed bases → Σgᵢ² = 0.28125; the single C/G pair gives
+        // h = 0.25²/(2·0.125·0.375) = 2/3, so p²/h = 0.09375 and
+        // b = ½(1 - 0.28125 + 0.09375) = 0.40625.
+        let p = 0.25_f64;
+        let b = 0.40625_f64;
+        let expected = -b * (1.0 - p / b).ln();
+        assert!(
+            (pairwise_distance::<TajimaNei, DNA>(&dna!("ACGT"), &dna!("AGGT")) - expected).abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn test_tajima_nei_equals_jukes_cantor_when_uniform() {
+        // Tajima-Nei reduces exactly to Jukes-Cantor when base frequencies are
+        // equal AND every base-pair difference is equally frequent. The 6 leading
+        // columns realise each of the 6 distinct unordered base pairs exactly once
+        //   {A,C} {A,G} {A,T} {C,G} {C,T} {G,T}
+        // which on its own gives every base count 3; the 12 trailing identical
+        // columns (3 each of A/C/G/T) keep gᵢ = 0.25 while lowering p to 1/3 so
+        // Jukes-Cantor stays below saturation.
+        let s1 = dna!("AGTCTGAAACCCGGGTTT");
+        let s2 = dna!("CAAGCTAAACCCGGGTTT");
+        let tn = pairwise_distance::<TajimaNei, DNA>(&s1, &s2);
+        let jc = pairwise_distance::<JukesCantor, DNA>(&s1, &s2);
+        assert!(
+            (tn - jc).abs() < 1e-9,
+            "Tajima-Nei ({tn}) should match Jukes-Cantor ({jc}) under uniform composition"
+        );
+    }
+
+    #[test]
+    fn test_tajima_nei_saturated_returns_infinity() {
+        // AA vs CC: p = 1, g_A = g_C = 0.5, h = 2 → b = 0.5 → 1 - p/b = -1 → infinity
+        assert_eq!(
+            pairwise_distance::<TajimaNei, DNA>(&dna!("AA"), &dna!("CC")),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn test_tajima_nei_gaps_excluded() {
+        // pos1 gapped (excluded); remaining sites identical → p = 0 → d = 0
+        assert_eq!(
+            pairwise_distance::<TajimaNei, DNA>(&dna!("A-GT"), &dna!("ACGT")),
+            0.0
+        );
+    }
+
+    // --- Tamura ---
+
+    #[test]
+    fn test_tamura_identical() {
+        let s = dna!("ACGT");
+        assert_eq!(pairwise_distance::<Tamura, DNA>(&s, &s), 0.0);
+    }
+
+    #[test]
+    fn test_tamura_equals_kimura2p_at_gc_half() {
+        // Pooled GC content is exactly 0.5 (each sequence has 4 of 8 bases G/C),
+        // at which θ = 0.5, h = 0.5, and Tamura's formula collapses to Kimura-2P.
+        // One transition (A↔G) and one transversion (C↔A); GC stays balanced.
+        let s1 = dna!("ACGTACGT");
+        let s2 = dna!("GAGTACGT");
+        let tamura = pairwise_distance::<Tamura, DNA>(&s1, &s2);
+        let k2p = pairwise_distance::<Kimura2P, DNA>(&s1, &s2);
+        assert!(
+            (tamura - k2p).abs() < 1e-12,
+            "tamura={tamura} should equal k2p={k2p} at GC=0.5"
+        );
+    }
+
+    #[test]
+    fn test_tamura_gc_correction_differs_from_kimura2p() {
+        // θ ≠ 0.5: AATT vs GCTT has 1 transition, 1 transversion, GC = 0.25 → h = 0.375.
+        let big_p = 0.25_f64;
+        let big_q = 0.25_f64;
+        let h = 0.375_f64;
+        let expected =
+            -h * (1.0 - big_p / h - big_q).ln() - 0.5 * (1.0 - h) * (1.0 - 2.0 * big_q).ln();
+        let tamura = pairwise_distance::<Tamura, DNA>(&dna!("AATT"), &dna!("GCTT"));
+        assert!((tamura - expected).abs() < 1e-12, "tamura={tamura}");
+        // And it must genuinely differ from Kimura-2P when GC ≠ 0.5.
+        let k2p = pairwise_distance::<Kimura2P, DNA>(&dna!("AATT"), &dna!("GCTT"));
+        assert!((tamura - k2p).abs() > 1e-6, "tamura={tamura}, k2p={k2p}");
+    }
+
+    #[test]
+    fn test_tamura_saturated_returns_infinity() {
+        // Pure transitions → P = 1, arg1 = 1 - 1/h - 0 < 0 → infinity
+        assert_eq!(
+            pairwise_distance::<Tamura, DNA>(&dna!("ACAC"), &dna!("GTGT")),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn test_tamura_gaps_excluded() {
+        assert_eq!(
+            pairwise_distance::<Tamura, DNA>(&dna!("A-GT"), &dna!("ACGT")),
             0.0
         );
     }
