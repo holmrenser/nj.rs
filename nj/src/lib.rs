@@ -75,7 +75,8 @@ pub use crate::error::NJError;
 pub use crate::event::{LogLevel, NJEvent};
 pub use crate::fasta::parse_fasta;
 use crate::models::{
-    JukesCantor, Kimura2P, KimuraProtein, ModelCalculation, PDiff, Poisson, TajimaNei, Tamura,
+    JukesCantor, Kimura2P, KimuraProtein, ModelCalculation, PDiff, Poisson, RateHet, TajimaNei,
+    Tamura,
 };
 use crate::tree::{NameOrSupport, TreeNode};
 
@@ -162,13 +163,14 @@ fn run_one_replicate<A, M>(
     msa: &MSA<A>,
     idx_map: &HashMap<String, usize>,
     n_taxa: usize,
+    rates: RateHet,
 ) -> Result<HashMap<Vec<u8>, usize>, String>
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
     M: ModelCalculation<A> + Send + Sync,
 {
-    let tree = msa.bootstrap()?.into_dist::<M>().neighbor_joining()?;
+    let tree = msa.bootstrap()?.into_dist::<M>(rates).neighbor_joining()?;
     let mut local = HashMap::new();
     count_clades(&tree, idx_map, n_taxa, &mut local)?;
     Ok(local)
@@ -189,6 +191,7 @@ fn bootstrap_clade_counts_parallel<A, M>(
     n_taxa: usize,
     on_event: Option<&dyn Fn(NJEvent)>,
     num_threads: Option<usize>,
+    rates: RateHet,
 ) -> Result<HashMap<Vec<u8>, usize>, String>
 where
     A: AlphabetEncoding + Send + Sync,
@@ -212,7 +215,7 @@ where
                 (0..n_bootstrap_samples)
                     .into_par_iter()
                     .for_each_with(tx, |sender, _| {
-                        let result = run_one_replicate::<A, M>(msa, idx_map, n_taxa);
+                        let result = run_one_replicate::<A, M>(msa, idx_map, n_taxa, rates);
                         // Ignore send errors: only occurs if receiver was dropped,
                         // which cannot happen while we are in the recv loop below.
                         let _ = sender.send(result);
@@ -255,6 +258,7 @@ fn bootstrap_clade_counts<A, M>(
     n_bootstrap_samples: usize,
     on_event: Option<&dyn Fn(NJEvent)>,
     num_threads: Option<usize>,
+    rates: RateHet,
 ) -> Result<Option<HashMap<Vec<u8>, usize>>, String>
 where
     A: AlphabetEncoding + Send + Sync,
@@ -280,6 +284,7 @@ where
         n_taxa,
         on_event,
         num_threads,
+        rates,
     )?;
 
     #[cfg(not(feature = "parallel"))]
@@ -287,7 +292,7 @@ where
         let _ = num_threads;
         let mut c = HashMap::new();
         for i in 0..n_bootstrap_samples {
-            let local = run_one_replicate::<A, M>(msa, &idx_map, n_taxa)?;
+            let local = run_one_replicate::<A, M>(msa, &idx_map, n_taxa, rates)?;
             for (clade, count) in local {
                 *c.entry(clade).or_insert(0) += count;
             }
@@ -366,6 +371,29 @@ fn validate_msa(msa: &[SequenceObject]) -> Result<(), NJError> {
     Ok(())
 }
 
+/// Validates the among-site rate-variation parameters and packs them into a
+/// [`RateHet`].
+///
+/// `gamma_shape`, if present, must be finite and strictly positive; `p_invar`,
+/// if present, must be finite and in `[0, 1)`. A missing `p_invar` defaults to
+/// `0.0` (no invariant-sites correction).
+fn validate_rate_params(gamma_shape: Option<f64>, p_invar: Option<f64>) -> Result<RateHet, NJError> {
+    if let Some(alpha) = gamma_shape
+        && (!alpha.is_finite() || alpha <= 0.0)
+    {
+        return Err(NJError::InvalidGammaShape { value: alpha });
+    }
+    if let Some(pinv) = p_invar
+        && (!pinv.is_finite() || !(0.0..1.0).contains(&pinv))
+    {
+        return Err(NJError::InvalidPInvar { value: pinv });
+    }
+    Ok(RateHet {
+        gamma_shape,
+        p_invar: p_invar.unwrap_or(0.0),
+    })
+}
+
 /// Heuristically detects whether the MSA contains DNA or protein sequences.
 ///
 /// Returns [`Alphabet::DNA`] unless any sequence contains a byte that is not
@@ -400,6 +428,7 @@ fn detect_alphabet(msa: &[SequenceObject]) -> Alphabet {
 fn run_distance_matrix<A, M>(
     msa: MSA<A>,
     num_threads: Option<usize>,
+    rates: RateHet,
 ) -> Result<DistanceResult, String>
 where
     A: AlphabetEncoding + Send + Sync,
@@ -409,17 +438,21 @@ where
     #[cfg(feature = "parallel")]
     {
         let pool = build_thread_pool(num_threads)?;
-        Ok(pool.install(|| msa.into_dist::<M>()).into_result())
+        Ok(pool.install(|| msa.into_dist::<M>(rates)).into_result())
     }
     #[cfg(not(feature = "parallel"))]
     {
         let _ = num_threads;
-        Ok(msa.into_dist::<M>().into_result())
+        Ok(msa.into_dist::<M>(rates).into_result())
     }
 }
 
 /// Runs average distance computation with model `M` on alphabet `A`.
-fn run_average_distance<A, M>(msa: MSA<A>, num_threads: Option<usize>) -> Result<f64, String>
+fn run_average_distance<A, M>(
+    msa: MSA<A>,
+    num_threads: Option<usize>,
+    rates: RateHet,
+) -> Result<f64, String>
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
@@ -428,12 +461,12 @@ where
     #[cfg(feature = "parallel")]
     {
         let pool = build_thread_pool(num_threads)?;
-        Ok(pool.install(|| msa.into_dist::<M>()).average())
+        Ok(pool.install(|| msa.into_dist::<M>(rates)).average())
     }
     #[cfg(not(feature = "parallel"))]
     {
         let _ = num_threads;
-        Ok(msa.into_dist::<M>().average())
+        Ok(msa.into_dist::<M>(rates).average())
     }
 }
 
@@ -452,6 +485,7 @@ fn run_nj<A, M>(
     num_threads: Option<usize>,
     include_distance_matrix: bool,
     include_average_distance: bool,
+    rates: RateHet,
 ) -> Result<NJResult, String>
 where
     A: AlphabetEncoding + Send + Sync,
@@ -459,7 +493,7 @@ where
     M: ModelCalculation<A> + Send + Sync,
 {
     let clade_counts =
-        bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples, on_event, num_threads)?;
+        bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples, on_event, num_threads, rates)?;
 
     if let Some(cb) = on_event {
         cb(NJEvent::ComputingDistances);
@@ -468,10 +502,10 @@ where
     #[cfg(feature = "parallel")]
     let dist = {
         let pool = build_thread_pool(num_threads)?;
-        pool.install(|| msa.into_dist::<M>())
+        pool.install(|| msa.into_dist::<M>(rates))
     };
     #[cfg(not(feature = "parallel"))]
-    let dist = msa.into_dist::<M>();
+    let dist = msa.into_dist::<M>(rates);
 
     let distance_matrix = if include_distance_matrix {
         Some(dist.to_result())
@@ -640,7 +674,19 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
             alphabet: alphabet.clone(),
         });
     }
+    let rates = validate_rate_params(conf.gamma_shape, conf.p_invar)?;
     let model = conf.substitution_model;
+    if matches!(model, SubstitutionModel::PDiff)
+        && (rates.gamma_shape.is_some() || rates.p_invar > 0.0)
+        && let Some(cb) = cb
+    {
+        cb(NJEvent::Log {
+            level: LogLevel::Warning,
+            message: "Rate-variation parameters (gamma shape / invariant sites) have no effect \
+                      on the PDiff model and are ignored."
+                .to_string(),
+        });
+    }
     let pairs = conf.msa.into_iter().map(|s| (s.identifier, s.sequence));
     dispatch_run!(
         alphabet,
@@ -652,6 +698,7 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
             num_threads,
             include_distance_matrix,
             include_average_distance,
+            rates,
         )
     )
 }
@@ -665,10 +712,16 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
 pub fn distance_matrix(conf: DistConfig) -> Result<DistanceResult, NJError> {
     let num_threads = conf.num_threads;
     validate_msa(&conf.msa)?;
+    let rates = validate_rate_params(conf.gamma_shape, conf.p_invar)?;
     let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
     let model = conf.substitution_model;
     let pairs = conf.msa.into_iter().map(|s| (s.identifier, s.sequence));
-    dispatch_run!(alphabet, model, pairs, run_distance_matrix(num_threads))
+    dispatch_run!(
+        alphabet,
+        model,
+        pairs,
+        run_distance_matrix(num_threads, rates)
+    )
 }
 
 /// Computes the mean of all `n*(n-1)/2` unique pairwise distances.
@@ -679,10 +732,16 @@ pub fn distance_matrix(conf: DistConfig) -> Result<DistanceResult, NJError> {
 pub fn average_distance(conf: DistConfig) -> Result<f64, NJError> {
     let num_threads = conf.num_threads;
     validate_msa(&conf.msa)?;
+    let rates = validate_rate_params(conf.gamma_shape, conf.p_invar)?;
     let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
     let model = conf.substitution_model;
     let pairs = conf.msa.into_iter().map(|s| (s.identifier, s.sequence));
-    dispatch_run!(alphabet, model, pairs, run_average_distance(num_threads))
+    dispatch_run!(
+        alphabet,
+        model,
+        pairs,
+        run_average_distance(num_threads, rates)
+    )
 }
 
 #[cfg(test)]
@@ -707,7 +766,39 @@ mod tests {
             num_threads: None,
             return_distance_matrix: include_dm,
             return_average_distance: include_avg,
+            gamma_shape: None,
+            p_invar: None,
         }
+    }
+
+    #[test]
+    fn test_nj_rejects_nonpositive_gamma_shape() {
+        let mut conf = nj_conf(&[("A", "ACGT"), ("B", "ACGA")], false, false);
+        conf.substitution_model = SubstitutionModel::JukesCantor;
+        conf.gamma_shape = Some(0.0);
+        assert!(matches!(nj(conf, None), Err(NJError::InvalidGammaShape { .. })));
+    }
+
+    #[test]
+    fn test_nj_rejects_out_of_range_p_invar() {
+        let mut conf = nj_conf(&[("A", "ACGT"), ("B", "ACGA")], false, false);
+        conf.substitution_model = SubstitutionModel::JukesCantor;
+        conf.p_invar = Some(1.0);
+        assert!(matches!(nj(conf, None), Err(NJError::InvalidPInvar { .. })));
+    }
+
+    #[test]
+    fn test_nj_gamma_changes_branch_lengths() {
+        // The gamma shape must flow all the way through nj() into the model and
+        // change the resulting branch lengths versus the uniform-rate model.
+        let pairs = &[("A", "ACGTACGT"), ("B", "AGGTACGA"), ("C", "ACGAACTT")];
+        let mut plain = nj_conf(pairs, false, false);
+        plain.substitution_model = SubstitutionModel::JukesCantor;
+        let mut gamma = plain.clone();
+        gamma.gamma_shape = Some(0.5);
+        let plain_nwk = nj(plain, None).unwrap().newick;
+        let gamma_nwk = nj(gamma, None).unwrap().newick;
+        assert_ne!(plain_nwk, gamma_nwk);
     }
 
     #[test]
@@ -732,6 +823,8 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            gamma_shape: None,
+            p_invar: None,
         };
         let result = nj(conf, None).expect("NJ failed");
         assert_eq!(result.newick, "(A:0.200,B:0.200);");
@@ -757,6 +850,8 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            gamma_shape: None,
+            p_invar: None,
         };
         let out = nj(conf, None).unwrap();
         assert!(out.newick.ends_with(';'));
@@ -786,6 +881,8 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            gamma_shape: None,
+            p_invar: None,
         };
 
         let t1 = nj(conf.clone(), None).unwrap();
@@ -803,6 +900,8 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            gamma_shape: None,
+            p_invar: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -828,6 +927,8 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            gamma_shape: None,
+            p_invar: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -853,6 +954,8 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            gamma_shape: None,
+            p_invar: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -894,6 +997,8 @@ mod tests {
             num_threads: None,
             return_distance_matrix: true,
             return_average_distance: false,
+            gamma_shape: None,
+            p_invar: None,
         };
         let result = nj(conf, None).expect("NJ on lowercase protein should succeed");
         let dm = result.distance_matrix.unwrap();
@@ -992,6 +1097,8 @@ mod tests {
             substitution_model: model,
             alphabet: None,
             num_threads: None,
+            gamma_shape: None,
+            p_invar: None,
         }
     }
 
@@ -1099,6 +1206,8 @@ mod tests {
             substitution_model: SubstitutionModel::PDiff,
             alphabet: None,
             num_threads: None,
+            gamma_shape: None,
+            p_invar: None,
         };
         assert!(distance_matrix(conf).is_err());
     }
@@ -1162,6 +1271,8 @@ mod tests {
             substitution_model: SubstitutionModel::PDiff,
             alphabet: None,
             num_threads: None,
+            gamma_shape: None,
+            p_invar: None,
         };
         assert!(average_distance(conf).is_err());
     }
@@ -1246,6 +1357,8 @@ mod parallel_tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            gamma_shape: None,
+            p_invar: None,
         }
     }
 

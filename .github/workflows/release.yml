@@ -167,7 +167,7 @@ jobs:
           workspaces: wasm -> wasm/target
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: https://registry.npmjs.org
       - run: cp README.md wasm/README.md
       - run: npm ci
@@ -176,5 +176,3 @@ jobs:
         working-directory: wasm
       - run: npm publish --access public --provenance
         working-directory: wasm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

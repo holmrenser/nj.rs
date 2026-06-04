@@ -34,6 +34,8 @@ fn dist_config(msa: Vec<SequenceObject>) -> DistConfig {
         substitution_model: SubstitutionModel::JukesCantor,
         alphabet: None,
         num_threads: None,
+        gamma_shape: None,
+        p_invar: None,
     }
 }
 
@@ -46,6 +48,8 @@ fn nj_config(msa: Vec<SequenceObject>) -> NJConfig {
         num_threads: None,
         return_distance_matrix: false,
         return_average_distance: false,
+        gamma_shape: None,
+        p_invar: None,
     }
 }
 

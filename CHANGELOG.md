@@ -9,6 +9,16 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 ## [Unreleased]
 
 ### Added
+- Among-site rate-variation corrections for the distance models: a gamma
+  rate-heterogeneity shape parameter (`gamma_shape`, Jin & Nei 1990) and a
+  proportion of invariant sites (`p_invar`). For distance methods both are exact
+  closed-form corrections to each model's `−ln(...)` step, so no discrete rate
+  categories are needed; they apply to every correctable model (`JukesCantor`,
+  `Kimura2P`, `TajimaNei`, `Tamura`, `Poisson`, `KimuraProtein`) and compose as
+  `+I+Γ`. The gamma correction converges back to the uncorrected model as the
+  shape parameter grows; `PDiff` (raw p-distance) is unaffected. Exposed across
+  the CLI (`-g/--gamma-shape`, `-i/--p-invar`), Python, and WASM bindings, with
+  `NJError::InvalidGammaShape` / `NJError::InvalidPInvar` for out-of-range values.
 - Three substitution models: `TajimaNei` (Tajima-Nei 1984, DNA — corrects
   Jukes-Cantor for unequal base frequencies), `Tamura` (Tamura 1992, DNA —
   Kimura two-parameter with a GC-content correction), and `KimuraProtein`

@@ -68,6 +68,16 @@ mod cli {
         #[arg(short = 't', long, value_name = "N")]
         pub num_threads: Option<usize>,
 
+        /// Gamma rate-heterogeneity shape parameter (alpha, must be > 0). Omit for
+        /// uniform substitution rates. Has no effect on the p-diff model.
+        #[arg(short = 'g', long, value_name = "ALPHA")]
+        pub gamma_shape: Option<f64>,
+
+        /// Proportion of invariant sites in [0, 1). Omit to disable the
+        /// invariant-sites correction. Has no effect on the p-diff model.
+        #[arg(short = 'i', long = "p-invar", value_name = "FRACTION")]
+        pub p_invar: Option<f64>,
+
         /// Print algorithm stage messages (alphabet detection, distance computation, etc.) to stderr.
         #[arg(short = 'v', long, default_value_t = false)]
         pub verbose: bool,
@@ -107,6 +117,8 @@ mod cli {
             num_threads: args.num_threads,
             return_distance_matrix: args.distance_matrix,
             return_average_distance: args.average_distance,
+            gamma_shape: args.gamma_shape,
+            p_invar: args.p_invar,
         };
 
         let pb = if n_bootstrap > 0 {
@@ -228,6 +240,8 @@ mod main_tests {
             distance_matrix: false,
             average_distance: false,
             num_threads: None,
+            gamma_shape: None,
+            p_invar: None,
             verbose: false,
         }
     }

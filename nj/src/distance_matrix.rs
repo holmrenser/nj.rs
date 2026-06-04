@@ -9,7 +9,7 @@
 
 use crate::MSA;
 use crate::alphabet::AlphabetEncoding;
-use crate::models::{ModelCalculation, pairwise_distance};
+use crate::models::{ModelCalculation, RateHet, pairwise_distance_with};
 use crate::nj::NJState;
 use crate::tree::TreeNode;
 use serde::{Deserialize, Serialize};
@@ -86,7 +86,7 @@ impl DistMat {
     ///
     /// The `Send + Sync` bounds are required for the `parallel` feature and are
     /// trivially satisfied by all built-in alphabet and model types.
-    pub fn from_msa<M, A>(msa: &MSA<A>) -> DistMat
+    pub fn from_msa<M, A>(msa: &MSA<A>, rates: RateHet) -> DistMat
     where
         M: ModelCalculation<A> + Send + Sync,
         A: AlphabetEncoding + Sync,
@@ -104,7 +104,8 @@ impl DistMat {
                 .collect::<Vec<_>>()
                 .into_par_iter()
                 .map(|(i, j)| {
-                    let d = pairwise_distance::<M, A>(&msa.sequences[i], &msa.sequences[j]);
+                    let d =
+                        pairwise_distance_with::<M, A>(&msa.sequences[i], &msa.sequences[j], rates);
                     (i, j, d)
                 })
                 .collect();
@@ -118,7 +119,11 @@ impl DistMat {
         {
             for i in 0..n {
                 for j in 0..i {
-                    dist.set(i, j, pairwise_distance::<M, A>(&msa.sequences[i], &msa.sequences[j]));
+                    dist.set(
+                        i,
+                        j,
+                        pairwise_distance_with::<M, A>(&msa.sequences[i], &msa.sequences[j], rates),
+                    );
                 }
             }
         }
@@ -234,7 +239,7 @@ mod tests {
         // seq0 vs seq1 differ at middle position only
         let seqs: Vec<String> = vec!["ACG".into(), "ATG".into(), "A-G".into()];
         let msa = MSA::<DNA>::from_unnamed_sequences(seqs).unwrap();
-        let mat = msa.into_dist::<PDiff>();
+        let mat = msa.into_dist::<PDiff>(RateHet::NONE);
         // names default Seq0, Seq1, Seq2
         assert_eq!(mat.names, vec!["Seq0", "Seq1", "Seq2"]);
         // seq0 vs seq1: one mismatch across three aligned positions -> 1/3
@@ -251,7 +256,7 @@ mod tests {
         // n_comparable=2, diffs=1 (T vs C at pos 1), so 1/2.
         let seqs: Vec<String> = vec!["AT-".into(), "ACG".into()];
         let msa = MSA::<DNA>::from_unnamed_sequences(seqs).unwrap();
-        let mat = msa.into_dist::<PDiff>();
+        let mat = msa.into_dist::<PDiff>(RateHet::NONE);
 
         assert!((mat.get(0, 1) - (1.0 / 2.0)).abs() < 1e-12);
     }
@@ -261,7 +266,7 @@ mod tests {
         // no non-gap mismatches are counted, so the distance remains 0.0
         let seqs = vec![("X".into(), "A--".into()), ("Y".into(), "--A".into())];
         let msa = MSA::<DNA>::from_iter(seqs);
-        let mat = msa.into_dist::<PDiff>();
+        let mat = msa.into_dist::<PDiff>(RateHet::NONE);
         assert_eq!(mat.names, vec!["X", "Y"]);
         assert!((mat.get(0, 1) - 0.0).abs() < 1e-12);
     }

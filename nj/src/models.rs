@@ -16,31 +16,94 @@ use serde::{Deserialize, Serialize};
 
 use crate::alphabet::{AlphabetEncoding, DNA, DnaSymbol, Protein, ProteinSymbol};
 
+/// Among-site rate-variation parameters applied on top of a substitution model.
+///
+/// Both corrections act on the model's final `−c·ln(arg)` step (a no-op for the
+/// uncorrected [`PDiff`]):
+///
+/// * **Gamma rate heterogeneity** (`gamma_shape` = shape `α`): each `−c·ln(arg)`
+///   term becomes `c·α·(arg^(−1/α) − 1)` (Jin & Nei 1990). Converges back to
+///   `−c·ln(arg)` as `α → ∞`. `None` disables the correction.
+/// * **Invariant sites** (`p_invar` = proportion of invariant sites): observed
+///   divergence proportions are divided by `(1 − p_invar)` before forming `arg`,
+///   and the resulting distance is multiplied by `(1 − p_invar)`.
+///
+/// The two compose: `d = (1 − p_invar) · Σ c·α·(arg(p/(1−p_invar))^(−1/α) − 1)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RateHet {
+    /// Gamma distribution shape parameter `α` (> 0), or `None` for uniform rates.
+    pub gamma_shape: Option<f64>,
+    /// Proportion of invariant sites in `[0, 1)`; `0.0` disables the correction.
+    pub p_invar: f64,
+}
+
+impl RateHet {
+    /// No rate-variation correction (uniform rates, no invariant sites). Yields
+    /// exactly the classic model formulas.
+    pub const NONE: RateHet = RateHet {
+        gamma_shape: None,
+        p_invar: 0.0,
+    };
+}
+
+impl Default for RateHet {
+    fn default() -> Self {
+        RateHet::NONE
+    }
+}
+
+/// Applies the rate-variation correction to a single `−coef·ln(arg)` distance term.
+///
+/// With no gamma shape this is the classic `−coef·ln(arg)`; with shape `α` it is
+/// the gamma-corrected `coef·α·(arg^(−1/α) − 1)`. Callers must guarantee
+/// `arg > 0` (the per-model saturation guards do this), so the result is finite
+/// and non-negative.
+#[inline]
+fn corrected_term(coef: f64, arg: f64, gamma_shape: Option<f64>) -> f64 {
+    match gamma_shape {
+        Some(alpha) => coef * alpha * (arg.powf(-1.0 / alpha) - 1.0),
+        None => -coef * arg.ln(),
+    }
+}
+
 /// Trait for substitution-model distance calculations over a given alphabet.
 ///
 /// A model maps two aligned, pre-encoded sequences of equal length to an
-/// evolutionary distance. Columns where either sequence has a gap are excluded
+/// evolutionary distance, optionally applying the among-site rate variation in
+/// `rates` ([`RateHet`]). Columns where either sequence has a gap are excluded
 /// from the comparable-site count (pairwise deletion). Implementations return
 /// [`f64::INFINITY`] when the model's formula is undefined for the observed
 /// divergence (saturation) — the NJ algorithm handles infinite distances
 /// gracefully — and `0.0` when there are no comparable (non-gap) columns.
 pub trait ModelCalculation<A: AlphabetEncoding> {
     /// Computes the pairwise distance between two aligned sequences.
-    fn distance(s1: &[A::Symbol], s2: &[A::Symbol]) -> f64;
+    fn distance(s1: &[A::Symbol], s2: &[A::Symbol], rates: RateHet) -> f64;
 }
 
-/// Computes the pairwise distance between two aligned sequences using model `M`.
+/// Computes the pairwise distance between two aligned sequences using model `M`,
+/// applying the rate-variation correction in `rates`.
 ///
 /// `s1` and `s2` must have equal length (i.e. already be aligned). Thin wrapper
-/// over [`ModelCalculation::distance`]; retained as the stable call site used by
+/// over [`ModelCalculation::distance`]; the stable call site used by
 /// [`crate::distance_matrix`].
+#[inline(always)]
+pub fn pairwise_distance_with<M, A>(s1: &[A::Symbol], s2: &[A::Symbol], rates: RateHet) -> f64
+where
+    M: ModelCalculation<A>,
+    A: AlphabetEncoding,
+{
+    M::distance(s1, s2, rates)
+}
+
+/// Computes the pairwise distance with no rate-variation correction
+/// ([`RateHet::NONE`]). Convenience wrapper over [`pairwise_distance_with`].
 #[inline(always)]
 pub fn pairwise_distance<M, A>(s1: &[A::Symbol], s2: &[A::Symbol]) -> f64
 where
     M: ModelCalculation<A>,
     A: AlphabetEncoding,
 {
-    M::distance(s1, s2)
+    pairwise_distance_with::<M, A>(s1, s2, RateHet::NONE)
 }
 
 /// Counts `(n_diff, n_comparable)` over two equal-length encoded sequences.
@@ -120,7 +183,9 @@ fn count_diff_comparable(a: &[u8], b: &[u8], gap: u8) -> (usize, usize) {
 pub struct PDiff;
 
 impl ModelCalculation<DNA> for PDiff {
-    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol]) -> f64 {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], _rates: RateHet) -> f64 {
+        // Raw p-distance has no log-correction step, so rate-variation
+        // parameters do not apply and are ignored.
         let (n_diff, n_comparable) = diff_and_comparable::<DNA>(s1, s2);
         if n_comparable == 0 {
             return 0.0;
@@ -130,7 +195,9 @@ impl ModelCalculation<DNA> for PDiff {
 }
 
 impl ModelCalculation<Protein> for PDiff {
-    fn distance(s1: &[ProteinSymbol], s2: &[ProteinSymbol]) -> f64 {
+    fn distance(s1: &[ProteinSymbol], s2: &[ProteinSymbol], _rates: RateHet) -> f64 {
+        // Raw p-distance has no log-correction step, so rate-variation
+        // parameters do not apply and are ignored.
         let (n_diff, n_comparable) = diff_and_comparable::<Protein>(s1, s2);
         if n_comparable == 0 {
             return 0.0;
@@ -149,16 +216,18 @@ impl ModelCalculation<Protein> for PDiff {
 pub struct JukesCantor;
 
 impl ModelCalculation<DNA> for JukesCantor {
-    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol]) -> f64 {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
         let (n_diff, n_comparable) = diff_and_comparable::<DNA>(s1, s2);
         if n_comparable == 0 {
             return 0.0;
         }
-        let p = n_diff as f64 / n_comparable as f64;
-        if p >= 0.75 {
-            f64::INFINITY // distance undefined
+        let scale = 1.0 - rates.p_invar;
+        let p = (n_diff as f64 / n_comparable as f64) / scale;
+        let arg = 1.0 - (4.0 / 3.0) * p;
+        if arg <= 0.0 {
+            f64::INFINITY // distance undefined (saturation)
         } else {
-            -0.75 * (1.0 - (4.0 / 3.0) * p).ln()
+            scale * corrected_term(0.75, arg, rates.gamma_shape)
         }
     }
 }
@@ -174,7 +243,7 @@ impl ModelCalculation<DNA> for JukesCantor {
 pub struct Kimura2P;
 
 impl ModelCalculation<DNA> for Kimura2P {
-    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol]) -> f64 {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
         // Kimura2P classifies each mismatch as a transition (A↔G, C↔T) or a
         // transversion, so it keeps its own scalar pass rather than the shared
         // count kernel. Gap columns are excluded (pairwise deletion).
@@ -198,14 +267,17 @@ impl ModelCalculation<DNA> for Kimura2P {
         if n_comparable == 0 {
             return 0.0;
         }
-        let p = ti as f64 / n_comparable as f64;
-        let q = tv as f64 / n_comparable as f64;
+        let scale = 1.0 - rates.p_invar;
+        let p = (ti as f64 / n_comparable as f64) / scale;
+        let q = (tv as f64 / n_comparable as f64) / scale;
         let denom1 = 1.0 - 2.0 * p - q;
         let denom2 = 1.0 - 2.0 * q;
         if denom1 <= 0.0 || denom2 <= 0.0 {
-            f64::INFINITY // distance undefined
+            f64::INFINITY // distance undefined (saturation)
         } else {
-            -0.5 * denom1.ln() - 0.25 * denom2.ln()
+            scale
+                * (corrected_term(0.5, denom1, rates.gamma_shape)
+                    + corrected_term(0.25, denom2, rates.gamma_shape))
         }
     }
 }
@@ -219,16 +291,18 @@ impl ModelCalculation<DNA> for Kimura2P {
 pub struct Poisson;
 
 impl ModelCalculation<Protein> for Poisson {
-    fn distance(s1: &[ProteinSymbol], s2: &[ProteinSymbol]) -> f64 {
+    fn distance(s1: &[ProteinSymbol], s2: &[ProteinSymbol], rates: RateHet) -> f64 {
         let (n_diff, n_comparable) = diff_and_comparable::<Protein>(s1, s2);
         if n_comparable == 0 {
             return 0.0;
         }
-        let p = n_diff as f64 / n_comparable as f64;
-        if p >= 1.0 {
-            f64::INFINITY // distance undefined
+        let scale = 1.0 - rates.p_invar;
+        let p = (n_diff as f64 / n_comparable as f64) / scale;
+        let arg = 1.0 - p;
+        if arg <= 0.0 {
+            f64::INFINITY // distance undefined (saturation)
         } else {
-            -(1.0 - p).ln()
+            scale * corrected_term(1.0, arg, rates.gamma_shape)
         }
     }
 }
@@ -245,17 +319,18 @@ impl ModelCalculation<Protein> for Poisson {
 pub struct KimuraProtein;
 
 impl ModelCalculation<Protein> for KimuraProtein {
-    fn distance(s1: &[ProteinSymbol], s2: &[ProteinSymbol]) -> f64 {
+    fn distance(s1: &[ProteinSymbol], s2: &[ProteinSymbol], rates: RateHet) -> f64 {
         let (n_diff, n_comparable) = diff_and_comparable::<Protein>(s1, s2);
         if n_comparable == 0 {
             return 0.0;
         }
-        let p = n_diff as f64 / n_comparable as f64;
+        let scale = 1.0 - rates.p_invar;
+        let p = (n_diff as f64 / n_comparable as f64) / scale;
         let arg = 1.0 - p - 0.2 * p * p;
         if arg <= 0.0 {
             f64::INFINITY // distance undefined (saturation)
         } else {
-            -arg.ln()
+            scale * corrected_term(1.0, arg, rates.gamma_shape)
         }
     }
 }
@@ -273,7 +348,7 @@ impl ModelCalculation<Protein> for KimuraProtein {
 pub struct TajimaNei;
 
 impl ModelCalculation<DNA> for TajimaNei {
-    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol]) -> f64 {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
         // Tajima-Nei needs per-base frequencies and per-pair difference
         // frequencies, so it keeps its own scalar pass over the five non-gap DNA
         // states (A, C, G, T, N). Gap columns are excluded (pairwise deletion).
@@ -325,12 +400,16 @@ impl ModelCalculation<DNA> for TajimaNei {
         if h <= 0.0 {
             return f64::INFINITY;
         }
+        // `b = ½(1 - Σgᵢ² + p²/h)` is invariant under the invariant-sites scaling:
+        // dividing both `p` and the per-pair `xᵢⱼ` (hence `h`) by `(1 - p_invar)`
+        // leaves `p²/h` unchanged, so `b` is computed from the observed `p`.
         let b = 0.5 * (1.0 - sum_g2 + (p * p) / h);
-        let arg = 1.0 - p / b;
+        let scale = 1.0 - rates.p_invar;
+        let arg = 1.0 - (p / scale) / b;
         if b <= 0.0 || arg <= 0.0 {
             f64::INFINITY // distance undefined (saturation)
         } else {
-            -b * arg.ln()
+            scale * corrected_term(b, arg, rates.gamma_shape)
         }
     }
 }
@@ -348,7 +427,7 @@ impl ModelCalculation<DNA> for TajimaNei {
 pub struct Tamura;
 
 impl ModelCalculation<DNA> for Tamura {
-    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol]) -> f64 {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
         // Like Kimura2P, classifies each mismatch as transition or transversion;
         // additionally tallies G/C bases for the GC-content correction. Gap
         // columns are excluded (pairwise deletion).
@@ -379,8 +458,11 @@ impl ModelCalculation<DNA> for Tamura {
             return 0.0; // no comparable sites, or all comparable sites identical
         }
         let n = n_comparable as f64;
-        let big_p = ti as f64 / n;
-        let big_q = tv as f64 / n;
+        let scale = 1.0 - rates.p_invar;
+        let big_p = (ti as f64 / n) / scale;
+        let big_q = (tv as f64 / n) / scale;
+        // θ (GC content) is a composition statistic, not a divergence proportion,
+        // so it is not rescaled by the invariant-sites correction.
         let theta = gc as f64 / (2.0 * n); // GC content over both sequences
         let h = 2.0 * theta * (1.0 - theta);
         let arg1 = 1.0 - big_p / h - big_q;
@@ -388,7 +470,9 @@ impl ModelCalculation<DNA> for Tamura {
         if h <= 0.0 || arg1 <= 0.0 || arg2 <= 0.0 {
             f64::INFINITY // distance undefined (saturation or degenerate GC)
         } else {
-            -h * arg1.ln() - 0.5 * (1.0 - h) * arg2.ln()
+            scale
+                * (corrected_term(h, arg1, rates.gamma_shape)
+                    + corrected_term(0.5 * (1.0 - h), arg2, rates.gamma_shape))
         }
     }
 }
@@ -753,5 +837,125 @@ mod tests {
             pairwise_distance::<Tamura, DNA>(&dna!("A-GT"), &dna!("ACGT")),
             0.0
         );
+    }
+
+    // --- Rate heterogeneity (+Γ) and invariant sites (+I) ---
+
+    fn gamma(alpha: f64) -> RateHet {
+        RateHet {
+            gamma_shape: Some(alpha),
+            p_invar: 0.0,
+        }
+    }
+
+    fn pinv(p: f64) -> RateHet {
+        RateHet {
+            gamma_shape: None,
+            p_invar: p,
+        }
+    }
+
+    #[test]
+    fn test_rate_het_none_matches_uncorrected() {
+        // RateHet::NONE must reproduce the classic model exactly, including a
+        // p_invar of 0.0 written out explicitly.
+        let (s1, s2) = (dna!("ACGTA"), dna!("AGGTC"));
+        let classic = pairwise_distance::<JukesCantor, DNA>(&s1, &s2);
+        assert_eq!(JukesCantor::distance(&s1, &s2, RateHet::NONE), classic);
+        assert_eq!(JukesCantor::distance(&s1, &s2, pinv(0.0)), classic);
+    }
+
+    #[test]
+    fn test_jukes_cantor_gamma_reference_value() {
+        // d_Γ = (3α/4)·[(1 − 4p/3)^(−1/α) − 1] (Jin & Nei 1990). p = 2/5.
+        let p = 0.4_f64;
+        let alpha = 0.5_f64;
+        let expected = 0.75 * alpha * ((1.0 - (4.0 / 3.0) * p).powf(-1.0 / alpha) - 1.0);
+        let got = JukesCantor::distance(&dna!("ACGTA"), &dna!("AGGTC"), gamma(alpha));
+        assert!((got - expected).abs() < 1e-12, "got={got}, expected={expected}");
+        // Gamma rate variation inflates the distance relative to the uniform-rate model.
+        let plain = pairwise_distance::<JukesCantor, DNA>(&dna!("ACGTA"), &dna!("AGGTC"));
+        assert!(got > plain, "gamma={got} should exceed plain JC={plain}");
+    }
+
+    #[test]
+    fn test_gamma_large_alpha_approaches_uncorrected() {
+        // As α → ∞ the gamma correction converges back to −c·ln(arg).
+        let (s1, s2) = (dna!("ACGTA"), dna!("AGGTC"));
+        let plain = pairwise_distance::<JukesCantor, DNA>(&s1, &s2);
+        let big_alpha = JukesCantor::distance(&s1, &s2, gamma(1e6));
+        assert!(
+            (plain - big_alpha).abs() < 1e-3,
+            "plain={plain}, big_alpha={big_alpha}"
+        );
+    }
+
+    #[test]
+    fn test_jukes_cantor_invariant_reference_value() {
+        // d_I = (1 − p_inv)·[−¾·ln(1 − (4/3)·(p/(1 − p_inv)))]. p = 2/5, p_inv = 0.2.
+        let p = 0.4_f64;
+        let p_inv = 0.2_f64;
+        let scale = 1.0 - p_inv;
+        let expected = scale * (-0.75 * (1.0 - (4.0 / 3.0) * (p / scale)).ln());
+        let got = JukesCantor::distance(&dna!("ACGTA"), &dna!("AGGTC"), pinv(p_inv));
+        assert!((got - expected).abs() < 1e-12, "got={got}, expected={expected}");
+    }
+
+    #[test]
+    fn test_kimura2p_gamma_matches_jin_nei() {
+        // AATT vs GCTT: 1 transition, 1 transversion → P = Q = 0.25.
+        // Jin & Nei (1990): d_Γ = (α/2)[(1−2P−Q)^(−1/α) + ½(1−2Q)^(−1/α) − 3/2].
+        let (big_p, big_q, alpha) = (0.25_f64, 0.25_f64, 0.7_f64);
+        let arg1 = 1.0 - 2.0 * big_p - big_q;
+        let arg2 = 1.0 - 2.0 * big_q;
+        let expected =
+            0.5 * alpha * (arg1.powf(-1.0 / alpha) + 0.5 * arg2.powf(-1.0 / alpha) - 1.5);
+        let got = Kimura2P::distance(&dna!("AATT"), &dna!("GCTT"), gamma(alpha));
+        assert!((got - expected).abs() < 1e-12, "got={got}, expected={expected}");
+    }
+
+    #[test]
+    fn test_poisson_invariant_and_gamma_compose() {
+        // Poisson +I+Γ: d = (1−p_inv)·α·[(1 − p/(1−p_inv))^(−1/α) − 1]. p = 1/4.
+        let p = 0.25_f64;
+        let (alpha, p_inv) = (0.6_f64, 0.1_f64);
+        let scale = 1.0 - p_inv;
+        let expected = scale * alpha * ((1.0 - p / scale).powf(-1.0 / alpha) - 1.0);
+        let rates = RateHet {
+            gamma_shape: Some(alpha),
+            p_invar: p_inv,
+        };
+        let got = Poisson::distance(&protein!("ARND"), &protein!("ARNE"), rates);
+        assert!((got - expected).abs() < 1e-12, "got={got}, expected={expected}");
+    }
+
+    #[test]
+    fn test_corrections_preserve_saturation() {
+        // Saturated p stays infinite regardless of the gamma shape.
+        assert_eq!(
+            JukesCantor::distance(&dna!("AAAA"), &dna!("CGTC"), gamma(0.5)),
+            f64::INFINITY
+        );
+        // Invariant-sites rescaling can push an otherwise-finite p past saturation
+        // (p = 0.4, p_inv = 0.5 → effective p = 0.8 ≥ 0.75).
+        assert_eq!(
+            JukesCantor::distance(&dna!("ACGTA"), &dna!("AGGTC"), pinv(0.5)),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn test_pdiff_ignores_rate_variation() {
+        let (s1, s2) = (dna!("ACGTA"), dna!("AGGTC"));
+        let classic = <PDiff as ModelCalculation<DNA>>::distance(&s1, &s2, RateHet::NONE);
+        let with_rates = <PDiff as ModelCalculation<DNA>>::distance(
+            &s1,
+            &s2,
+            RateHet {
+                gamma_shape: Some(0.5),
+                p_invar: 0.3,
+            },
+        );
+        assert_eq!(classic, with_rates);
     }
 }

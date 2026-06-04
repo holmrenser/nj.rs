@@ -42,7 +42,19 @@ alphabet: Alphabet | null,
  * Only effective when the `parallel` Cargo feature is enabled.
  * When `None` (the default), Rayon uses all available hardware threads.
  */
-num_threads: number | null, };
+num_threads: number | null, 
+/**
+ * Gamma rate-heterogeneity shape parameter `α` (must be `> 0`). When `None`
+ * (the default), substitution rates are uniform across sites. Has no effect
+ * on the `PDiff` model. See [`crate::models::RateHet`].
+ */
+gamma_shape: number | null, 
+/**
+ * Proportion of invariant sites in `[0, 1)`. When `None` (the default), no
+ * invariant-sites correction is applied. Has no effect on the `PDiff` model.
+ * See [`crate::models::RateHet`].
+ */
+p_invar: number | null, };
 
 /**
  * Serializable pairwise distance matrix returned by [`crate::distance_matrix`].
@@ -114,7 +126,19 @@ return_distance_matrix: boolean,
  * [`NJResult`] as [`NJResult::average_distance`].
  * Defaults to `false`.
  */
-return_average_distance: boolean, };
+return_average_distance: boolean, 
+/**
+ * Gamma rate-heterogeneity shape parameter `α` (must be `> 0`). When `None`
+ * (the default), substitution rates are uniform across sites. Has no effect
+ * on the `PDiff` model. See [`crate::models::RateHet`].
+ */
+gamma_shape: number | null, 
+/**
+ * Proportion of invariant sites in `[0, 1)`. When `None` (the default), no
+ * invariant-sites correction is applied. Has no effect on the `PDiff` model.
+ * See [`crate::models::RateHet`].
+ */
+p_invar: number | null, };
 
 /**
  * Events fired by the NJ algorithm and passed to the `on_event` callback.

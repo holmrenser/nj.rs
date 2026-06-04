@@ -64,6 +64,16 @@ pub struct DistConfig {
     /// When `None` (the default), Rayon uses all available hardware threads.
     #[serde(default)]
     pub num_threads: Option<usize>,
+    /// Gamma rate-heterogeneity shape parameter `α` (must be `> 0`). When `None`
+    /// (the default), substitution rates are uniform across sites. Has no effect
+    /// on the `PDiff` model. See [`crate::models::RateHet`].
+    #[serde(default)]
+    pub gamma_shape: Option<f64>,
+    /// Proportion of invariant sites in `[0, 1)`. When `None` (the default), no
+    /// invariant-sites correction is applied. Has no effect on the `PDiff` model.
+    /// See [`crate::models::RateHet`].
+    #[serde(default)]
+    pub p_invar: Option<f64>,
 }
 
 /// Full configuration for a single Neighbor-Joining run.
@@ -105,6 +115,16 @@ pub struct NJConfig {
     /// Defaults to `false`.
     #[serde(default)]
     pub return_average_distance: bool,
+    /// Gamma rate-heterogeneity shape parameter `α` (must be `> 0`). When `None`
+    /// (the default), substitution rates are uniform across sites. Has no effect
+    /// on the `PDiff` model. See [`crate::models::RateHet`].
+    #[serde(default)]
+    pub gamma_shape: Option<f64>,
+    /// Proportion of invariant sites in `[0, 1)`. When `None` (the default), no
+    /// invariant-sites correction is applied. Has no effect on the `PDiff` model.
+    /// See [`crate::models::RateHet`].
+    #[serde(default)]
+    pub p_invar: Option<f64>,
 }
 
 /// Combined result returned by [`crate::nj`].

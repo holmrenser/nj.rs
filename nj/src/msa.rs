@@ -7,7 +7,7 @@
 
 use crate::DistMat;
 use crate::alphabet::AlphabetEncoding;
-use crate::models::ModelCalculation;
+use crate::models::{ModelCalculation, RateHet};
 use nanorand::{Rng, WyRand};
 use std::collections::HashMap;
 
@@ -152,19 +152,20 @@ impl<A: AlphabetEncoding> MSA<A> {
         Ok(new_msa)
     }
 
-    /// Computes a pairwise distance matrix using substitution model `M`.
+    /// Computes a pairwise distance matrix using substitution model `M`, applying
+    /// the among-site rate variation in `rates`.
     ///
     /// Convenience wrapper around [`DistMat::from_msa`]. Choose `M` to match
     /// the alphabet: DNA models (`JukesCantor`, `Kimura2P`, `PDiff`) for
     /// `MSA::<DNA>`, and protein models (`Poisson`, `PDiff`) for
-    /// `MSA::<Protein>`.
-    pub fn into_dist<M>(&self) -> DistMat
+    /// `MSA::<Protein>`. Pass [`RateHet::NONE`] for the classic, uncorrected models.
+    pub fn into_dist<M>(&self, rates: RateHet) -> DistMat
     where
         M: ModelCalculation<A> + Send + Sync,
         A: Sync,
         A::Symbol: Send + Sync,
     {
-        DistMat::from_msa::<M, A>(self)
+        DistMat::from_msa::<M, A>(self, rates)
     }
 }
 
@@ -380,7 +381,7 @@ mod tests {
         let mut msa = MSA::<DNA>::new();
         msa.push("seq1".into(), "ACGT".into()).unwrap();
         msa.push("seq2".into(), "AGGT".into()).unwrap();
-        let dist_mat = msa.into_dist::<crate::models::PDiff>();
+        let dist_mat = msa.into_dist::<crate::models::PDiff>(crate::models::RateHet::NONE);
         assert_eq!(dist_mat.names.len(), 2);
     }
 
@@ -391,7 +392,7 @@ mod tests {
             .unwrap();
         msa.push("prot2".into(), "ACDEFGHIKLMNPQRSTVWY".into())
             .unwrap();
-        let dist_mat = msa.into_dist::<crate::models::PDiff>();
+        let dist_mat = msa.into_dist::<crate::models::PDiff>(crate::models::RateHet::NONE);
         assert_eq!(dist_mat.names.len(), 2);
     }
 }

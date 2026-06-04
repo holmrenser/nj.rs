@@ -293,3 +293,42 @@ class TestReturnOptions:
         result = nj(msa(("A", "ACGT"), ("B", "ACGA")))
         assert "distance_matrix" not in result
         assert "average_distance" not in result
+
+
+class TestRateVariation:
+    SEQS = (
+        ("A", "ACGTACGTACGTACGTACGTACGT"),
+        ("B", "ACGTACGTACGAACGTAGGTACGT"),
+        ("C", "ACGTTCGTACGTACATACGTACCT"),
+        ("D", "ACGTACGTTCGTACGTACGTACGA"),
+    )
+
+    def test_gamma_changes_tree(self):
+        plain = nj(msa(*self.SEQS), substitution_model="JukesCantor")
+        gamma = nj(msa(*self.SEQS), substitution_model="JukesCantor", gamma_shape=0.5)
+        assert plain["newick"] != gamma["newick"]
+
+    def test_gamma_inflates_average_distance(self):
+        plain = average_distance(msa(*self.SEQS), substitution_model="JukesCantor")
+        gamma = average_distance(
+            msa(*self.SEQS), substitution_model="JukesCantor", gamma_shape=0.5
+        )
+        assert gamma > plain
+
+    def test_p_invar_accepted(self):
+        result = nj(msa(*self.SEQS), substitution_model="JukesCantor", p_invar=0.3)
+        assert result["newick"].endswith(";")
+
+    def test_distance_matrix_accepts_rate_params(self):
+        result = distance_matrix(
+            msa(*self.SEQS), substitution_model="JukesCantor", gamma_shape=0.5
+        )
+        assert len(result["names"]) == 4
+
+    def test_invalid_gamma_shape_raises(self):
+        with pytest.raises(ValueError, match="[Gg]amma"):
+            nj(msa(*self.SEQS), substitution_model="JukesCantor", gamma_shape=0.0)
+
+    def test_invalid_p_invar_raises(self):
+        with pytest.raises(ValueError, match="invariant"):
+            nj(msa(*self.SEQS), substitution_model="JukesCantor", p_invar=1.0)

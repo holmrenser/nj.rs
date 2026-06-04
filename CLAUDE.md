@@ -91,6 +91,8 @@ FASTA input / SequenceObject list
 
 Models implement `ModelCalculation<A: AlphabetEncoding>`. DNA-only: `JukesCantor`, `Kimura2P`, `TajimaNei`, `Tamura`. Protein-only: `Poisson`, `KimuraProtein`. `PDiff` works for both alphabets. Model–alphabet compatibility is enforced at runtime inside `nj()` (the `dispatch_run!` macro in `lib.rs`).
 
+`distance()` takes a `RateHet { gamma_shape: Option<f64>, p_invar: f64 }` value (threaded through `into_dist`/`from_msa`/`pairwise_distance_with`) that applies among-site rate variation to each model's `−c·ln(arg)` term: gamma rate heterogeneity becomes `c·α·(arg^(−1/α) − 1)` via the shared `corrected_term` helper, and invariant sites divide observed proportions by `(1 − p_invar)` then scale the result by `(1 − p_invar)`. `RateHet::NONE` reproduces the classic formulas exactly; `PDiff` ignores it. The `gamma_shape`/`p_invar` config fields are validated in `validate_rate_params` (`NJError::InvalidGammaShape` / `InvalidPInvar`).
+
 ### Bootstrap support
 
 Bootstrap runs N replicate NJ trees on column-resampled MSAs, tallies clade membership using `BitVec`-keyed `HashMap` counters (`count_clades`), then maps support values back onto the main tree's internal nodes (`add_bootstrap_to_tree`).

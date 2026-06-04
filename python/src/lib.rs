@@ -73,6 +73,8 @@ mod _nj_py {
             | NJError::SequenceLengthMismatch { .. }
             | NJError::DuplicateIdentifier { .. }
             | NJError::IncompatibleModel { .. }
+            | NJError::InvalidGammaShape { .. }
+            | NJError::InvalidPInvar { .. }
             | NJError::ParseError(_) => PyValueError::new_err(msg),
             NJError::AlgorithmFailure(_) | NJError::RngError(_) => PyRuntimeError::new_err(msg),
         }

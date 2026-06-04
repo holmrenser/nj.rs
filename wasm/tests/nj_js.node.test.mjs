@@ -272,6 +272,29 @@ test("average_distance incompatible model throws", async () => {
   assert.throws(() => wasm.average_distance(makeDistConfig([["A", "ACGT"], ["B", "ACGA"]], "Poisson")));
 });
 
+// --- rate variation (+gamma / +invariant sites) ---
+
+test("gamma shape changes the tree", async () => {
+  const wasm = await loadWasm();
+  const seqs = [["A", "ACGTACGTACGT"], ["B", "ACGAACGTAGGT"], ["C", "ACGTTCATACGT"]];
+  const plain = wasm.nj(makeConfig(seqs, "JukesCantor"));
+  const gamma = wasm.nj({ ...makeConfig(seqs, "JukesCantor"), gamma_shape: 0.5 });
+  assert.notEqual(plain.newick, gamma.newick);
+});
+
+test("p_invar is accepted", async () => {
+  const wasm = await loadWasm();
+  const seqs = [["A", "ACGTACGTACGT"], ["B", "ACGAACGTAGGT"], ["C", "ACGTTCATACGT"]];
+  const result = wasm.nj({ ...makeConfig(seqs, "JukesCantor"), p_invar: 0.3 });
+  assert.ok(result.newick.endsWith(";"));
+});
+
+test("invalid gamma shape throws", async () => {
+  const wasm = await loadWasm();
+  const seqs = [["A", "ACGT"], ["B", "ACGA"]];
+  assert.throws(() => wasm.nj({ ...makeConfig(seqs, "JukesCantor"), gamma_shape: 0.0 }));
+});
+
 // --- bootstrap ---
 
 test("bootstrap with n>0 returns valid newick", async () => {

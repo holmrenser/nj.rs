@@ -86,6 +86,8 @@ def nj(
     n_bootstrap_samples: int = 0,
     return_distance_matrix: bool = False,
     return_average_distance: bool = False,
+    gamma_shape: float | None = None,
+    p_invar: float | None = None,
     on_event: Callable[[NJEvent], None] | None = None,
 ) -> NJResult:
     """Infer a Neighbor-Joining tree and return a Newick string.
@@ -98,6 +100,11 @@ def nj(
             auto-detected; passing an incompatible model raises ``ValueError``.
         n_bootstrap_samples: Number of bootstrap replicates used to annotate
             internal nodes with support values. ``0`` disables bootstrapping.
+        gamma_shape: Gamma rate-heterogeneity shape parameter ``alpha`` (must be
+            ``> 0``). ``None`` (default) uses uniform substitution rates. No effect
+            on the ``"PDiff"`` model.
+        p_invar: Proportion of invariant sites in ``[0, 1)``. ``None`` (default)
+            disables the invariant-sites correction. No effect on ``"PDiff"``.
         on_event: Optional callable invoked with a dict for each algorithm event.
             The dict always has a ``"type"`` key. Bootstrap progress events look
             like ``{"type": "BootstrapProgress", "completed": 5, "total": 100}``.
@@ -142,6 +149,8 @@ def nj(
             "n_bootstrap_samples": n_bootstrap_samples,
             "return_distance_matrix": return_distance_matrix,
             "return_average_distance": return_average_distance,
+            "gamma_shape": gamma_shape,
+            "p_invar": p_invar,
         },
         on_event,
     )
@@ -151,6 +160,8 @@ def distance_matrix(
     msa: list[SequenceObject],
     *,
     substitution_model: SubstitutionModel = "PDiff",
+    gamma_shape: float | None = None,
+    p_invar: float | None = None,
 ) -> DistanceResult:
     """Compute pairwise distances and return a full symmetric distance matrix.
 
@@ -183,13 +194,22 @@ def distance_matrix(
         # result["names"] == ["human", "chimp", "mouse"]
         # result["matrix"][0][1]  # distance between human and chimp
     """
-    return _distance_matrix({"msa": msa, "substitution_model": substitution_model})
+    return _distance_matrix(
+        {
+            "msa": msa,
+            "substitution_model": substitution_model,
+            "gamma_shape": gamma_shape,
+            "p_invar": p_invar,
+        }
+    )
 
 
 def average_distance(
     msa: list[SequenceObject],
     *,
     substitution_model: SubstitutionModel = "PDiff",
+    gamma_shape: float | None = None,
+    p_invar: float | None = None,
 ) -> float:
     """Compute the mean of all n*(n-1)/2 unique pairwise distances.
 
@@ -207,7 +227,14 @@ def average_distance(
         ValueError: If the MSA is empty, a model is incompatible with the
             detected alphabet, or sequences have unequal length.
     """
-    return _average_distance({"msa": msa, "substitution_model": substitution_model})
+    return _average_distance(
+        {
+            "msa": msa,
+            "substitution_model": substitution_model,
+            "gamma_shape": gamma_shape,
+            "p_invar": p_invar,
+        }
+    )
 
 
 __all__ = [
