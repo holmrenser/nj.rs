@@ -176,3 +176,5 @@ jobs:
         working-directory: wasm
       - run: npm publish --access public --provenance
         working-directory: wasm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
