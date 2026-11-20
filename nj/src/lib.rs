@@ -35,9 +35,11 @@
 //!
 //! # Public API
 //!
-//! The single public entry point is [`nj`], which accepts an [`NJConfig`] and
-//! returns a Newick string. Everything else is internal implementation detail
-//! exposed only to the Python and WASM wrapper crates.
+//! The main entry point is [`nj`], which accepts an [`NJConfig`] and returns an
+//! [`NJResult`] containing the Newick tree string and, optionally, the pairwise
+//! distance matrix and mean distance. [`distance_matrix`] and [`average_distance`]
+//! take a [`DistConfig`] for distance-only computation. Everything else is
+//! internal implementation detail exposed only to the Python and WASM wrapper crates.
 //!
 //! # Model–alphabet compatibility
 //!
@@ -63,575 +65,20 @@ pub mod msa;
 pub mod nj;
 pub mod tree;
 
-use bitvec::prelude::{BitVec, Lsb0, bitvec};
-use std::collections::{HashMap, HashSet};
+mod bootstrap;
+mod runner;
+mod validate;
 
-use crate::alphabet::{Alphabet, AlphabetEncoding, DNA, Protein};
 use crate::config::SubstitutionModel;
 pub use crate::config::{DistConfig, MSA, NJConfig, NJResult, SequenceObject};
-use crate::distance_matrix::DistMat;
 pub use crate::distance_matrix::DistanceResult;
 pub use crate::error::NJError;
 pub use crate::event::{LogLevel, NJEvent};
 pub use crate::fasta::parse_fasta;
-use crate::models::{
-    JukesCantor, Kimura2P, KimuraProtein, ModelCalculation, PDiff, Poisson, RateHet, TajimaNei,
-    Tamura,
+use crate::runner::{dispatch_run, run_average_distance, run_distance_matrix, run_nj};
+use crate::validate::{
+    detect_alphabet, validate_msa, validate_rate_params, warn_degenerate_sequences,
 };
-use crate::tree::{NameOrSupport, TreeNode};
-
-/// Fills `out` with the leaf indices of all taxa in the subtree rooted at `node`.
-///
-/// Bits in `out` are set to `true` for each leaf encountered. The bit position
-/// is looked up in `idx` by the leaf's name label. Returns `Err` if a leaf
-/// has no name label (should not occur for well-formed NJ trees).
-fn bitset_of(
-    node: &TreeNode,
-    idx: &HashMap<String, usize>,
-    out: &mut BitVec<u8, Lsb0>,
-) -> Result<(), String> {
-    match &node.children {
-        None => match &node.label {
-            Some(NameOrSupport::Name(name)) => {
-                let i = *idx
-                    .get(name)
-                    .ok_or_else(|| format!("leaf '{name}' not found in index map"))?;
-                out.set(i, true);
-                Ok(())
-            }
-            _ => Err("Leaf node without a name label".into()),
-        },
-        Some([l, r]) => {
-            bitset_of(l, idx, out)?;
-            bitset_of(r, idx, out)?;
-            Ok(())
-        }
-    }
-}
-
-/// Recursively counts how many times each non-trivial clade appears in `tree`.
-///
-/// A clade is represented as a raw-byte encoding of a `BitVec` over the `n_taxa`
-/// leaf indices. Only clades with `1 < size < n_taxa` (i.e. proper internal
-/// clades) are counted. Each call increments the clade's entry in `counter` by 1.
-/// Used by [`bootstrap_clade_counts`] to aggregate over bootstrap replicates.
-fn count_clades(
-    tree: &TreeNode,
-    idx: &HashMap<String, usize>,
-    n_taxa: usize,
-    counter: &mut HashMap<Vec<u8>, usize>,
-) -> Result<(), String> {
-    if let Some([l, r]) = &tree.children {
-        let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
-        bitset_of(tree, idx, &mut bv)?;
-
-        let n = bv.count_ones();
-        if n > 1 && n < n_taxa {
-            counter
-                .entry(bv.as_raw_slice().to_vec())
-                .and_modify(|c| *c += 1)
-                .or_insert(1);
-        }
-
-        count_clades(l, idx, n_taxa, counter)?;
-        count_clades(r, idx, n_taxa, counter)?;
-    }
-    Ok(())
-}
-
-/// Builds a Rayon thread pool with `num_threads` workers.
-///
-/// When `num_threads` is `None`, Rayon uses its default (one thread per logical CPU).
-/// Returns `Err` if the pool cannot be constructed.
-#[cfg(feature = "parallel")]
-pub(crate) fn build_thread_pool(num_threads: Option<usize>) -> Result<rayon::ThreadPool, String> {
-    let mut builder = rayon::ThreadPoolBuilder::new();
-    if let Some(n) = num_threads {
-        builder = builder.num_threads(n);
-    }
-    builder.build().map_err(|e| e.to_string())
-}
-
-/// Runs a single bootstrap replicate end-to-end: resample alignment columns,
-/// compute the distance matrix with model `M`, run Neighbor-Joining, and tally
-/// the replicate's clades into a fresh counter.
-///
-/// Shared by the sequential and parallel bootstrap paths. Every fallible step is
-/// propagated via `?` so a failed replicate becomes a returned `Err` rather than
-/// a panic (which would otherwise poison a Rayon worker thread).
-fn run_one_replicate<A, M>(
-    msa: &MSA<A>,
-    idx_map: &HashMap<String, usize>,
-    n_taxa: usize,
-    rates: RateHet,
-) -> Result<HashMap<Vec<u8>, usize>, String>
-where
-    A: AlphabetEncoding + Send + Sync,
-    A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
-{
-    let tree = msa.bootstrap()?.into_dist::<M>(rates).neighbor_joining()?;
-    let mut local = HashMap::new();
-    count_clades(&tree, idx_map, n_taxa, &mut local)?;
-    Ok(local)
-}
-
-/// Parallel bootstrap worker: runs all replicates on Rayon threads and sends
-/// per-replicate clade maps over an MPSC channel. The main thread (caller)
-/// merges results and fires `on_event` — keeping the callback on a single
-/// thread with no `Sync` requirement.
-///
-/// Uses `std::thread::scope` so `msa` and `idx_map` can be borrowed into the
-/// spawned thread without requiring `'static` lifetimes.
-#[cfg(feature = "parallel")]
-fn bootstrap_clade_counts_parallel<A, M>(
-    msa: &MSA<A>,
-    n_bootstrap_samples: usize,
-    idx_map: &HashMap<String, usize>,
-    n_taxa: usize,
-    on_event: Option<&dyn Fn(NJEvent)>,
-    num_threads: Option<usize>,
-    rates: RateHet,
-) -> Result<HashMap<Vec<u8>, usize>, String>
-where
-    A: AlphabetEncoding + Send + Sync,
-    A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
-{
-    use rayon::iter::{IntoParallelIterator, ParallelIterator};
-    use std::sync::mpsc;
-
-    let pool = build_thread_pool(num_threads)?;
-    let (tx, rx) = mpsc::channel::<Result<HashMap<Vec<u8>, usize>, String>>();
-    let mut counter: HashMap<Vec<u8>, usize> = HashMap::new();
-
-    std::thread::scope(|scope| -> Result<(), String> {
-        // Spawn the Rayon work onto a background OS thread so the main thread
-        // can consume from `rx` concurrently, giving real per-replicate progress.
-        // `pool.install` installs the thread pool as the active pool for the
-        // duration of the closure, bounding parallelism to `num_threads` workers.
-        scope.spawn(|| {
-            pool.install(|| {
-                (0..n_bootstrap_samples)
-                    .into_par_iter()
-                    .for_each_with(tx, |sender, _| {
-                        let result = run_one_replicate::<A, M>(msa, idx_map, n_taxa, rates);
-                        // Ignore send errors: only occurs if receiver was dropped,
-                        // which cannot happen while we are in the recv loop below.
-                        let _ = sender.send(result);
-                    });
-            });
-        });
-
-        // Main thread: receive results as they arrive, merge, and fire progress.
-        for completed in 1..=n_bootstrap_samples {
-            match rx.recv() {
-                Ok(Ok(local)) => {
-                    for (clade, count) in local {
-                        *counter.entry(clade).or_insert(0) += count;
-                    }
-                }
-                Ok(Err(e)) => return Err(e),
-                Err(_) => return Err("bootstrap channel closed unexpectedly".into()),
-            }
-            if let Some(cb) = on_event {
-                cb(NJEvent::BootstrapProgress {
-                    completed,
-                    total: n_bootstrap_samples,
-                });
-            }
-        }
-        Ok(())
-    })?;
-
-    Ok(counter)
-}
-
-/// Performs bootstrap sampling and counts clades across bootstrap trees.
-///
-/// When the `parallel` feature is enabled, replicates run on the Rayon thread
-/// pool via [`bootstrap_clade_counts_parallel`]; the `on_event` callback is
-/// still called after each replicate from the main thread. Without the feature
-/// the loop is sequential and `on_event` fires in order.
-fn bootstrap_clade_counts<A, M>(
-    msa: &MSA<A>,
-    n_bootstrap_samples: usize,
-    on_event: Option<&dyn Fn(NJEvent)>,
-    num_threads: Option<usize>,
-    rates: RateHet,
-) -> Result<Option<HashMap<Vec<u8>, usize>>, String>
-where
-    A: AlphabetEncoding + Send + Sync,
-    A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
-{
-    if n_bootstrap_samples == 0 {
-        return Ok(None);
-    }
-    if let Some(cb) = on_event {
-        cb(NJEvent::BootstrapStarted {
-            total: n_bootstrap_samples,
-        });
-    }
-    let idx_map: HashMap<String, usize> = msa.to_index_map();
-    let n_taxa = msa.n_sequences;
-
-    #[cfg(feature = "parallel")]
-    let counter = bootstrap_clade_counts_parallel::<A, M>(
-        msa,
-        n_bootstrap_samples,
-        &idx_map,
-        n_taxa,
-        on_event,
-        num_threads,
-        rates,
-    )?;
-
-    #[cfg(not(feature = "parallel"))]
-    let counter = {
-        let _ = num_threads;
-        let mut c = HashMap::new();
-        for i in 0..n_bootstrap_samples {
-            let local = run_one_replicate::<A, M>(msa, &idx_map, n_taxa, rates)?;
-            for (clade, count) in local {
-                *c.entry(clade).or_insert(0) += count;
-            }
-            if let Some(cb) = on_event {
-                cb(NJEvent::BootstrapProgress {
-                    completed: i + 1,
-                    total: n_bootstrap_samples,
-                });
-            }
-        }
-        c
-    };
-
-    Ok(Some(counter))
-}
-
-/// Annotates internal nodes with bootstrap support values from `counts`.
-///
-/// For each internal node, computes its clade `BitVec`, looks up the count in
-/// `counts`, normalises it to a percentage (`count * 100 / n_bootstrap_samples`),
-/// and assigns a [`NameOrSupport::Support`] label if a matching entry is found.
-/// Nodes whose clade was never observed in bootstrap replicates receive no label.
-fn add_bootstrap_to_tree(
-    node: &mut TreeNode,
-    idx: &HashMap<String, usize>,
-    n_taxa: usize,
-    counts: &HashMap<Vec<u8>, usize>,
-    n_bootstrap_samples: usize,
-) -> Result<(), String> {
-    if node.children.is_some() {
-        let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
-        bitset_of(node, idx, &mut bv)?;
-
-        let n = bv.count_ones();
-        if n > 1
-            && n < n_taxa
-            && let Some(c) = counts.get(&bv.as_raw_slice().to_vec())
-        {
-            let pct = c * 100 / n_bootstrap_samples;
-            node.label = Some(NameOrSupport::Support(pct));
-        }
-
-        if let Some([l, r]) = &mut node.children {
-            add_bootstrap_to_tree(l, idx, n_taxa, counts, n_bootstrap_samples)?;
-            add_bootstrap_to_tree(r, idx, n_taxa, counts, n_bootstrap_samples)?;
-        }
-    }
-    Ok(())
-}
-
-/// Validates that the MSA is non-empty, all sequences have equal length, and
-/// all identifiers are unique.
-fn validate_msa(msa: &[SequenceObject]) -> Result<(), NJError> {
-    if msa.is_empty() {
-        return Err(NJError::EmptyMsa);
-    }
-    let expected_len = msa[0].sequence.len();
-    if expected_len == 0 {
-        return Err(NJError::EmptySequence);
-    }
-    let mut seen: HashSet<&str> = HashSet::with_capacity(msa.len());
-    for s in msa {
-        if s.sequence.len() != expected_len {
-            return Err(NJError::SequenceLengthMismatch {
-                expected: expected_len,
-                got: s.sequence.len(),
-                identifier: s.identifier.clone(),
-            });
-        }
-        if !seen.insert(s.identifier.as_str()) {
-            return Err(NJError::DuplicateIdentifier {
-                identifier: s.identifier.clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Validates the among-site rate-variation parameters and packs them into a
-/// [`RateHet`].
-///
-/// `gamma_shape`, if present, must be finite and strictly positive; `p_invar`,
-/// if present, must be finite and in `[0, 1)`. A missing `p_invar` defaults to
-/// `0.0` (no invariant-sites correction).
-fn validate_rate_params(gamma_shape: Option<f64>, p_invar: Option<f64>) -> Result<RateHet, NJError> {
-    if let Some(alpha) = gamma_shape
-        && (!alpha.is_finite() || alpha <= 0.0)
-    {
-        return Err(NJError::InvalidGammaShape { value: alpha });
-    }
-    if let Some(pinv) = p_invar
-        && (!pinv.is_finite() || !(0.0..1.0).contains(&pinv))
-    {
-        return Err(NJError::InvalidPInvar { value: pinv });
-    }
-    Ok(RateHet {
-        gamma_shape,
-        p_invar: p_invar.unwrap_or(0.0),
-    })
-}
-
-/// Heuristically detects whether the MSA contains DNA or protein sequences.
-///
-/// Returns [`Alphabet::DNA`] unless any sequence contains a byte that is not
-/// in the DNA character set (case-insensitive), in which case
-/// [`Alphabet::Protein`] is returned. The DNA set includes standard bases
-/// `{A, C, G, T}`, uridine `U` (RNA), `N` (unknown), gap `-`, and all 11
-/// IUPAC ambiguity codes `{R, Y, S, W, K, M, B, D, H, V}`.
-fn detect_alphabet(msa: &[SequenceObject]) -> Alphabet {
-    let mut is_protein = false;
-
-    'outer: for seq in msa {
-        for c in seq.sequence.bytes() {
-            match c.to_ascii_uppercase() {
-                b'A' | b'C' | b'G' | b'T' | b'U' | b'N' | b'-' | b'R' | b'Y' | b'S' | b'W'
-                | b'K' | b'M' | b'B' | b'D' | b'H' | b'V' => { /* still possible DNA */ }
-                _ => {
-                    is_protein = true;
-                    break 'outer;
-                }
-            }
-        }
-    }
-
-    if is_protein {
-        Alphabet::Protein
-    } else {
-        Alphabet::DNA
-    }
-}
-
-/// Runs distance matrix computation with model `M` on alphabet `A`.
-fn run_distance_matrix<A, M>(
-    msa: MSA<A>,
-    num_threads: Option<usize>,
-    rates: RateHet,
-) -> Result<DistanceResult, String>
-where
-    A: AlphabetEncoding + Send + Sync,
-    A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
-{
-    #[cfg(feature = "parallel")]
-    {
-        let pool = build_thread_pool(num_threads)?;
-        Ok(pool.install(|| msa.into_dist::<M>(rates)).into_result())
-    }
-    #[cfg(not(feature = "parallel"))]
-    {
-        let _ = num_threads;
-        Ok(msa.into_dist::<M>(rates).into_result())
-    }
-}
-
-/// Runs average distance computation with model `M` on alphabet `A`.
-fn run_average_distance<A, M>(
-    msa: MSA<A>,
-    num_threads: Option<usize>,
-    rates: RateHet,
-) -> Result<f64, String>
-where
-    A: AlphabetEncoding + Send + Sync,
-    A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
-{
-    #[cfg(feature = "parallel")]
-    {
-        let pool = build_thread_pool(num_threads)?;
-        Ok(pool.install(|| msa.into_dist::<M>(rates)).average())
-    }
-    #[cfg(not(feature = "parallel"))]
-    {
-        let _ = num_threads;
-        Ok(msa.into_dist::<M>(rates).average())
-    }
-}
-
-/// Runs NJ with model `M` on alphabet `A` and returns an [`NJResult`].
-///
-/// If `n_bootstrap_samples > 0`, generates that many bootstrap replicates,
-/// collects clade counts via [`bootstrap_clade_counts`], runs NJ on the
-/// original distances, and annotates the tree before serialising to Newick.
-/// When `include_distance_matrix` or `include_average_distance` is `true`,
-/// the corresponding values are captured from the distance matrix before NJ
-/// consumes it and included in the returned [`NJResult`].
-fn run_nj<A, M>(
-    msa: MSA<A>,
-    n_bootstrap_samples: usize,
-    on_event: Option<&dyn Fn(NJEvent)>,
-    num_threads: Option<usize>,
-    include_distance_matrix: bool,
-    include_average_distance: bool,
-    rates: RateHet,
-) -> Result<NJResult, String>
-where
-    A: AlphabetEncoding + Send + Sync,
-    A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
-{
-    let clade_counts =
-        bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples, on_event, num_threads, rates)?;
-
-    if let Some(cb) = on_event {
-        cb(NJEvent::ComputingDistances);
-    }
-
-    #[cfg(feature = "parallel")]
-    let dist = {
-        let pool = build_thread_pool(num_threads)?;
-        pool.install(|| msa.into_dist::<M>(rates))
-    };
-    #[cfg(not(feature = "parallel"))]
-    let dist = msa.into_dist::<M>(rates);
-
-    let distance_matrix = if include_distance_matrix {
-        Some(dist.to_result())
-    } else {
-        None
-    };
-    let average_distance = if include_average_distance {
-        Some(dist.average())
-    } else {
-        None
-    };
-
-    if let Some(cb) = on_event {
-        cb(NJEvent::RunningNJ);
-    }
-
-    let mut main_tree = dist.neighbor_joining()?;
-
-    let newick = match clade_counts {
-        Some(counts) => {
-            if let Some(cb) = on_event {
-                cb(NJEvent::AnnotatingBootstrap);
-            }
-            let main_idx_map: HashMap<String, usize> = msa.to_index_map();
-            add_bootstrap_to_tree(
-                &mut main_tree,
-                &main_idx_map,
-                msa.n_sequences,
-                &counts,
-                n_bootstrap_samples,
-            )?;
-            main_tree.to_newick()
-        }
-        None => main_tree.to_newick(),
-    };
-    Ok(NJResult {
-        newick,
-        distance_matrix,
-        average_distance,
-    })
-}
-
-/// Emits a `Warning`-level [`NJEvent::Log`] for any sequence consisting entirely
-/// of gap characters. Such sequences have no comparable sites, so every pairwise
-/// distance involving them is `0.0` ([`crate::models`]); surfacing a warning makes
-/// that otherwise-silent behaviour observable. No-op when `on_event` is `None`.
-fn warn_degenerate_sequences(msa: &[SequenceObject], on_event: Option<&dyn Fn(NJEvent)>) {
-    let Some(cb) = on_event else { return };
-    for s in msa {
-        if !s.sequence.is_empty() && s.sequence.bytes().all(|b| b == b'-') {
-            cb(NJEvent::Log {
-                level: LogLevel::Warning,
-                message: format!(
-                    "Sequence '{}' contains only gaps; its pairwise distances will be 0.0",
-                    s.identifier
-                ),
-            });
-        }
-    }
-}
-
-/// Dispatches to a generic runner based on the runtime alphabet and substitution
-/// model, enforcing the model–alphabet compatibility table in a single place.
-///
-/// `$pairs` is consumed to build the typed [`MSA`]; `$run` is the generic runner
-/// (`run_nj`, `run_distance_matrix`, `run_average_distance`) and its trailing
-/// arguments follow the `msa` it receives. Each runner returns `Result<_, String>`,
-/// mapped here to [`NJError::AlgorithmFailure`]; unsupported (alphabet, model)
-/// pairs yield [`NJError::IncompatibleModel`].
-macro_rules! dispatch_run {
-    ($alphabet:expr, $model:expr, $pairs:expr, $run:ident ( $($arg:expr),* $(,)? )) => {{
-        let alphabet = $alphabet;
-        let model = $model;
-        match alphabet {
-            Alphabet::DNA => {
-                let msa = MSA::<DNA>::try_from_pairs($pairs).map_err(NJError::AlgorithmFailure)?;
-                match model {
-                    SubstitutionModel::PDiff => {
-                        $run::<DNA, PDiff>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
-                    }
-                    SubstitutionModel::JukesCantor => {
-                        $run::<DNA, JukesCantor>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
-                    }
-                    SubstitutionModel::Kimura2P => {
-                        $run::<DNA, Kimura2P>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
-                    }
-                    SubstitutionModel::TajimaNei => {
-                        $run::<DNA, TajimaNei>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
-                    }
-                    SubstitutionModel::Tamura => {
-                        $run::<DNA, Tamura>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
-                    }
-                    SubstitutionModel::Poisson | SubstitutionModel::KimuraProtein => {
-                        Err(NJError::IncompatibleModel {
-                            model,
-                            alphabet: Alphabet::DNA,
-                        })
-                    }
-                }
-            }
-            Alphabet::Protein => {
-                let msa =
-                    MSA::<Protein>::try_from_pairs($pairs).map_err(NJError::AlgorithmFailure)?;
-                match model {
-                    SubstitutionModel::Poisson => {
-                        $run::<Protein, Poisson>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
-                    }
-                    SubstitutionModel::KimuraProtein => {
-                        $run::<Protein, KimuraProtein>(msa, $($arg),*)
-                            .map_err(NJError::AlgorithmFailure)
-                    }
-                    SubstitutionModel::PDiff => {
-                        $run::<Protein, PDiff>(msa, $($arg),*).map_err(NJError::AlgorithmFailure)
-                    }
-                    SubstitutionModel::JukesCantor
-                    | SubstitutionModel::Kimura2P
-                    | SubstitutionModel::TajimaNei
-                    | SubstitutionModel::Tamura => Err(NJError::IncompatibleModel {
-                        model,
-                        alphabet: Alphabet::Protein,
-                    }),
-                }
-            }
-        }
-    }};
-}
 
 /// Infers a phylogenetic tree from an aligned MSA and returns an [`NJResult`].
 ///
@@ -747,6 +194,7 @@ pub fn average_distance(conf: DistConfig) -> Result<f64, NJError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::alphabet::Alphabet;
     use crate::config::DistConfig;
     use crate::models::SubstitutionModel;
 
@@ -776,7 +224,10 @@ mod tests {
         let mut conf = nj_conf(&[("A", "ACGT"), ("B", "ACGA")], false, false);
         conf.substitution_model = SubstitutionModel::JukesCantor;
         conf.gamma_shape = Some(0.0);
-        assert!(matches!(nj(conf, None), Err(NJError::InvalidGammaShape { .. })));
+        assert!(matches!(
+            nj(conf, None),
+            Err(NJError::InvalidGammaShape { .. })
+        ));
     }
 
     #[test]
@@ -1002,7 +453,10 @@ mod tests {
         };
         let result = nj(conf, None).expect("NJ on lowercase protein should succeed");
         let dm = result.distance_matrix.unwrap();
-        assert!(dm.matrix[0][1] > 0.0, "expected non-zero distance, got {dm:?}");
+        assert!(
+            dm.matrix[0][1] > 0.0,
+            "expected non-zero distance, got {dm:?}"
+        );
     }
 
     #[test]

@@ -6,7 +6,15 @@ from nj_py._nj_py import average_distance as _average_distance
 from nj_py._nj_py import distance_matrix as _distance_matrix
 from nj_py._nj_py import nj as _nj
 
-SubstitutionModel = Literal["PDiff", "JukesCantor", "Kimura2P", "Poisson"]
+SubstitutionModel = Literal[
+    "PDiff",
+    "JukesCantor",
+    "Kimura2P",
+    "TajimaNei",
+    "Tamura",
+    "Poisson",
+    "KimuraProtein",
+]
 Alphabet = Literal["DNA", "Protein"]
 LogLevel = Literal["Info", "Warning"]
 
@@ -90,14 +98,15 @@ def nj(
     p_invar: float | None = None,
     on_event: Callable[[NJEvent], None] | None = None,
 ) -> NJResult:
-    """Infer a Neighbor-Joining tree and return a Newick string.
+    """Infer a Neighbor-Joining tree and return an ``NJResult`` dict.
 
     Args:
         msa: Aligned sequences as a list of ``{"identifier": ..., "sequence": ...}``
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
-            ``"Kimura2P"``. Protein: ``"PDiff"``, ``"Poisson"``. Alphabet is
-            auto-detected; passing an incompatible model raises ``ValueError``.
+            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``. Protein: ``"PDiff"``,
+            ``"Poisson"``, ``"KimuraProtein"``. Alphabet is auto-detected;
+            passing an incompatible model raises ``ValueError``.
         n_bootstrap_samples: Number of bootstrap replicates used to annotate
             internal nodes with support values. ``0`` disables bootstrapping.
         gamma_shape: Gamma rate-heterogeneity shape parameter ``alpha`` (must be
@@ -113,7 +122,9 @@ def nj(
             ``"AnnotatingBootstrap"``, and ``"Log"``.
 
     Returns:
-        Newick string, e.g. ``"(A:0.1,B:0.2);"``
+        A dict with a ``"newick"`` key (e.g. ``"(A:0.1,B:0.2);"``), plus
+        ``"distance_matrix"`` / ``"average_distance"`` when requested via
+        ``return_distance_matrix`` / ``return_average_distance``.
 
     Raises:
         ValueError: If the MSA is empty, a model is incompatible with the
@@ -169,8 +180,9 @@ def distance_matrix(
         msa: Aligned sequences as a list of ``{"identifier": ..., "sequence": ...}``
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
-            ``"Kimura2P"``. Protein: ``"PDiff"``, ``"Poisson"``. Alphabet is
-            auto-detected; passing an incompatible model raises ``ValueError``.
+            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``. Protein: ``"PDiff"``,
+            ``"Poisson"``, ``"KimuraProtein"``. Alphabet is auto-detected;
+            passing an incompatible model raises ``ValueError``.
 
     Returns:
         A dict with keys ``"names"`` (list of taxon names) and ``"matrix"``
@@ -217,8 +229,9 @@ def average_distance(
         msa: Aligned sequences as a list of ``{"identifier": ..., "sequence": ...}``
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
-            ``"Kimura2P"``. Protein: ``"PDiff"``, ``"Poisson"``. Alphabet is
-            auto-detected; passing an incompatible model raises ``ValueError``.
+            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``. Protein: ``"PDiff"``,
+            ``"Poisson"``, ``"KimuraProtein"``. Alphabet is auto-detected;
+            passing an incompatible model raises ``ValueError``.
 
     Returns:
         Mean pairwise distance as a float. Returns ``0.0`` for fewer than 2 taxa.

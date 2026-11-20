@@ -5,8 +5,8 @@
 //! `A` binds the alphabet at compile time, ensuring model–alphabet compatibility
 //! is enforced without runtime branching inside the distance computation.
 
-use crate::DistMat;
 use crate::alphabet::AlphabetEncoding;
+use crate::distance_matrix::DistMat;
 use crate::models::{ModelCalculation, RateHet};
 use nanorand::{Rng, WyRand};
 use std::collections::HashMap;
