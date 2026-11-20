@@ -85,18 +85,28 @@ FASTA input / SequenceObject list
 
 ### Public API entry point
 
-`nj::nj(NJConfig) -> Result<String, String>` in `lib.rs` is the single public entry point for all three distribution targets. It auto-detects the alphabet (`DNA` vs `Protein`) and dispatches to the correct generic `run_nj::<A, M>()` monomorphisation.
+`nj::nj(NJConfig, Option<Box<dyn Fn(NJEvent)>>) -> Result<NJResult, NJError>` in `lib.rs` is the main entry point for all three distribution targets; `NJResult` holds the Newick string plus the optional distance matrix and average distance. `distance_matrix(DistConfig)` and `average_distance(DistConfig)` cover distance-only computation. `nj()` auto-detects the alphabet (`DNA` vs `Protein`) and dispatches to the correct generic `run_nj::<A, M>()` monomorphisation.
+
+`lib.rs` holds only the public functions, re-exports and tests; the implementation lives in private modules:
+
+| Module | Purpose |
+|---|---|
+| `validate.rs` | `validate_msa`, `validate_rate_params`, `detect_alphabet`, all-gap warning |
+| `runner.rs` | `build_thread_pool`, `run_nj` / `run_distance_matrix` / `run_average_distance`, and the `dispatch_run!` macro |
+| `bootstrap.rs` | Replicate runs (sequential and Rayon-parallel), split counting, support annotation |
 
 ### Substitution models (`models.rs`)
 
-Models implement `ModelCalculation<A: AlphabetEncoding>`. DNA-only: `JukesCantor`, `Kimura2P`, `TajimaNei`, `Tamura`. Protein-only: `Poisson`, `KimuraProtein`. `PDiff` works for both alphabets. Model–alphabet compatibility is enforced at runtime inside `nj()` (the `dispatch_run!` macro in `lib.rs`).
+Models implement `ModelCalculation<A: AlphabetEncoding>`. DNA-only: `JukesCantor`, `Kimura2P`, `TajimaNei`, `Tamura`. Protein-only: `Poisson`, `KimuraProtein`. `PDiff` works for both alphabets. Model–alphabet compatibility is enforced at runtime inside `nj()` (the `dispatch_run!` macro in `runner.rs`).
 
 `distance()` takes a `RateHet { gamma_shape: Option<f64>, p_invar: f64 }` value (threaded through `into_dist`/`from_msa`/`pairwise_distance_with`) that applies among-site rate variation to each model's `−c·ln(arg)` term: gamma rate heterogeneity becomes `c·α·(arg^(−1/α) − 1)` via the shared `corrected_term` helper, and invariant sites divide observed proportions by `(1 − p_invar)` then scale the result by `(1 − p_invar)`. `RateHet::NONE` reproduces the classic formulas exactly; `PDiff` ignores it. The `gamma_shape`/`p_invar` config fields are validated in `validate_rate_params` (`NJError::InvalidGammaShape` / `InvalidPInvar`).
 
 ### Bootstrap support
 
-Bootstrap runs N replicate NJ trees on column-resampled MSAs, tallies clade membership using `BitVec`-keyed `HashMap` counters (`count_clades`), then maps support values back onto the main tree's internal nodes (`add_bootstrap_to_tree`).
+Bootstrap runs N replicate NJ trees on column-resampled MSAs, tallies splits using `BitVec`-derived keys in a `HashMap` counter, then maps support values back onto the main tree's internal nodes (`add_bootstrap_to_tree`).
+
+NJ output is unrooted but stored with an arbitrary root, so splits are keyed by `split_key` — the side that excludes taxon 0 — making keys independent of rooting. `collect_splits` records each split once per tree (the root's two children describe the same split), and trivial splits (a side with fewer than two taxa) are never labelled.
 
 ### CLI (`main.rs`)
 
-Enabled only with `--features cli`. Parses FASTA via `clap`, builds a `NJConfig`, calls `nj()`, and prints the Newick string.
+Enabled only with `--features cli`. Parses FASTA via `clap`, builds a `NJConfig`, calls `nj()`, and prints the Newick string (or a JSON object when `--distance-matrix` / `--average-distance` is set).

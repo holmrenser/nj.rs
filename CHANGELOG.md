@@ -27,6 +27,15 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   conditions (Tajima-Nei → Jukes-Cantor at equal frequencies, Tamura →
   Kimura-2P at GC = 0.5). Exposed across the CLI, Python, and WASM bindings.
 
+### Fixed
+- Bootstrap support values are now independent of tree rooting. Splits were
+  previously keyed by the clade below each node, so the same split could be
+  tallied under different keys when replicate trees were rooted differently, and
+  the root's two children double-counted its split. Splits are now keyed by the
+  side excluding the first taxon and counted once per replicate. Trivial splits
+  (one side with a single taxon) no longer receive a support label.
+
+
 ## [0.0.23] - 2026-06-04
 
 ### Fixed

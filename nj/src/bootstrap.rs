@@ -1,7 +1,7 @@
 //! Bootstrap support: replicate resampling, clade tallying and tree annotation.
 
 use bitvec::prelude::{BitVec, Lsb0, bitvec};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::alphabet::AlphabetEncoding;
 use crate::config::MSA;
@@ -38,32 +38,58 @@ fn bitset_of(
     }
 }
 
-/// Recursively counts how many times each non-trivial clade appears in `tree`.
+/// Returns the rooting-independent key of the split induced by `node`, or `None`
+/// for a leaf or a trivial split (one side has fewer than two taxa).
 ///
-/// A clade is represented as a raw-byte encoding of a `BitVec` over the `n_taxa`
-/// leaf indices. Only clades with `1 < size < n_taxa` (i.e. proper internal
-/// clades) are counted. Each call increments the clade's entry in `counter` by 1.
-/// Used by [`bootstrap_clade_counts`] to aggregate over bootstrap replicates.
-pub(crate) fn count_clades(
+/// NJ trees are unrooted, but are stored with an arbitrary root (the final
+/// join), so the same split can appear as clade `S` in one tree and as its
+/// complement in another. The key is the raw-byte encoding of whichever side
+/// does **not** contain taxon 0, which is identical for both orientations.
+fn split_key(
+    node: &TreeNode,
+    idx: &HashMap<String, usize>,
+    n_taxa: usize,
+) -> Result<Option<Vec<u8>>, String> {
+    if node.children.is_none() {
+        return Ok(None);
+    }
+    let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
+    bitset_of(node, idx, &mut bv)?;
+
+    let n = bv.count_ones();
+    if n <= 1 || n + 1 >= n_taxa {
+        return Ok(None);
+    }
+    if bv[0] {
+        // Complement bit by bit so the unused padding bits stay zero and keys
+        // compare equal as raw bytes.
+        let mut flipped = bitvec![u8, Lsb0; 0; n_taxa];
+        for i in 0..n_taxa {
+            flipped.set(i, !bv[i]);
+        }
+        bv = flipped;
+    }
+    Ok(Some(bv.as_raw_slice().to_vec()))
+}
+
+/// Recursively collects the distinct splits of `tree` into `splits`.
+///
+/// Splits are keyed by [`split_key`]. A set is used so a split is recorded once
+/// per tree: the two children of the root describe the same split, and must not
+/// be counted twice. Used by [`bootstrap_clade_counts`] to aggregate over
+/// bootstrap replicates.
+pub(crate) fn collect_splits(
     tree: &TreeNode,
     idx: &HashMap<String, usize>,
     n_taxa: usize,
-    counter: &mut HashMap<Vec<u8>, usize>,
+    splits: &mut HashSet<Vec<u8>>,
 ) -> Result<(), String> {
     if let Some([l, r]) = &tree.children {
-        let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
-        bitset_of(tree, idx, &mut bv)?;
-
-        let n = bv.count_ones();
-        if n > 1 && n < n_taxa {
-            counter
-                .entry(bv.as_raw_slice().to_vec())
-                .and_modify(|c| *c += 1)
-                .or_insert(1);
+        if let Some(key) = split_key(tree, idx, n_taxa)? {
+            splits.insert(key);
         }
-
-        count_clades(l, idx, n_taxa, counter)?;
-        count_clades(r, idx, n_taxa, counter)?;
+        collect_splits(l, idx, n_taxa, splits)?;
+        collect_splits(r, idx, n_taxa, splits)?;
     }
     Ok(())
 }
@@ -87,9 +113,9 @@ where
     M: ModelCalculation<A> + Send + Sync,
 {
     let tree = msa.bootstrap()?.into_dist::<M>(rates).neighbor_joining()?;
-    let mut local = HashMap::new();
-    count_clades(&tree, idx_map, n_taxa, &mut local)?;
-    Ok(local)
+    let mut splits = HashSet::new();
+    collect_splits(&tree, idx_map, n_taxa, &mut splits)?;
+    Ok(splits.into_iter().map(|k| (k, 1)).collect())
 }
 
 /// Parallel bootstrap worker: runs all replicates on Rayon threads and sends
@@ -227,10 +253,10 @@ where
 
 /// Annotates internal nodes with bootstrap support values from `counts`.
 ///
-/// For each internal node, computes its clade `BitVec`, looks up the count in
+/// For each internal node, computes its [`split_key`], looks up the count in
 /// `counts`, normalises it to a percentage (`count * 100 / n_bootstrap_samples`),
 /// and assigns a [`NameOrSupport::Support`] label if a matching entry is found.
-/// Nodes whose clade was never observed in bootstrap replicates receive no label.
+/// Nodes whose split was never observed in bootstrap replicates receive no label.
 pub(crate) fn add_bootstrap_to_tree(
     node: &mut TreeNode,
     idx: &HashMap<String, usize>,
@@ -239,13 +265,8 @@ pub(crate) fn add_bootstrap_to_tree(
     n_bootstrap_samples: usize,
 ) -> Result<(), String> {
     if node.children.is_some() {
-        let mut bv = bitvec![u8, Lsb0; 0; n_taxa];
-        bitset_of(node, idx, &mut bv)?;
-
-        let n = bv.count_ones();
-        if n > 1
-            && n < n_taxa
-            && let Some(c) = counts.get(&bv.as_raw_slice().to_vec())
+        if let Some(key) = split_key(node, idx, n_taxa)?
+            && let Some(c) = counts.get(&key)
         {
             let pct = c * 100 / n_bootstrap_samples;
             node.label = Some(NameOrSupport::Support(pct));
@@ -257,4 +278,108 @@ pub(crate) fn add_bootstrap_to_tree(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn leaf(i: usize, name: &str) -> Box<TreeNode> {
+        Box::new(TreeNode::leaf(i, name.to_string(), Some(1.0)))
+    }
+
+    fn node(l: Box<TreeNode>, r: Box<TreeNode>) -> Box<TreeNode> {
+        Box::new(TreeNode::internal(99, Some([l, r]), Some(1.0), None))
+    }
+
+    fn index() -> HashMap<String, usize> {
+        ["A", "B", "C", "D", "E"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.to_string(), i))
+            .collect()
+    }
+
+    fn splits_of(tree: &TreeNode) -> HashSet<Vec<u8>> {
+        let mut s = HashSet::new();
+        collect_splits(tree, &index(), 5, &mut s).unwrap();
+        s
+    }
+
+    /// The unrooted tree ((A,B),(C,D),E) written with two different roots.
+    #[test]
+    fn same_unrooted_tree_gives_same_splits_for_different_roots() {
+        // Rooted on the E branch: (((A,B),(C,D)),E)
+        let t1 = node(
+            node(
+                node(leaf(0, "A"), leaf(1, "B")),
+                node(leaf(2, "C"), leaf(3, "D")),
+            ),
+            leaf(4, "E"),
+        );
+        // Rooted on the (C,D) branch: ((A,B),E) joined to (C,D)
+        let t2 = node(
+            node(node(leaf(0, "A"), leaf(1, "B")), leaf(4, "E")),
+            node(leaf(2, "C"), leaf(3, "D")),
+        );
+        // Rooted inside (A,B): (A,(B,((C,D),E)))
+        let t3 = node(
+            leaf(0, "A"),
+            node(
+                leaf(1, "B"),
+                node(node(leaf(2, "C"), leaf(3, "D")), leaf(4, "E")),
+            ),
+        );
+        let s1 = splits_of(&t1);
+        assert_eq!(s1, splits_of(&t2));
+        assert_eq!(s1, splits_of(&t3));
+    }
+
+    /// A split must be counted once per tree even though both root children
+    /// describe it.
+    #[test]
+    fn root_split_is_counted_once() {
+        let t = node(
+            node(node(leaf(0, "A"), leaf(1, "B")), leaf(4, "E")),
+            node(leaf(2, "C"), leaf(3, "D")),
+        );
+        // Splits: {A,B} | {C,D} | and {C,D}=={A,B,E}. Nontrivial distinct: AB, CD.
+        assert_eq!(splits_of(&t).len(), 2);
+    }
+
+    #[test]
+    fn different_topologies_give_different_splits() {
+        let t1 = node(
+            node(leaf(0, "A"), leaf(1, "B")),
+            node(leaf(2, "C"), node(leaf(3, "D"), leaf(4, "E"))),
+        );
+        let t2 = node(
+            node(leaf(0, "A"), leaf(2, "C")),
+            node(leaf(1, "B"), node(leaf(3, "D"), leaf(4, "E"))),
+        );
+        assert_ne!(splits_of(&t1), splits_of(&t2));
+    }
+
+    /// Support is looked up correctly regardless of the root used to annotate.
+    #[test]
+    fn support_annotation_is_rooting_independent() {
+        let mut counts = HashMap::new();
+        for s in splits_of(&node(
+            node(node(leaf(0, "A"), leaf(1, "B")), leaf(4, "E")),
+            node(leaf(2, "C"), leaf(3, "D")),
+        )) {
+            counts.insert(s, 10usize);
+        }
+        // Different root, same unrooted topology.
+        let mut t = node(
+            leaf(4, "E"),
+            node(
+                node(leaf(0, "A"), leaf(1, "B")),
+                node(leaf(2, "C"), leaf(3, "D")),
+            ),
+        );
+        add_bootstrap_to_tree(&mut t, &index(), 5, &counts, 10).unwrap();
+        let nwk = t.to_newick();
+        assert_eq!(nwk.matches(")100").count(), 2, "{nwk}");
+    }
 }
