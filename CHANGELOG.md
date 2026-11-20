@@ -8,6 +8,23 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 
 ## [Unreleased]
 
+### Fixed
+- Bootstrap support values are now independent of tree rooting. Splits were
+  previously keyed by the clade below each node, so the same split could be
+  tallied under different keys when replicate trees were rooted differently, and
+  the root's two children double-counted its split. Splits are now keyed by the
+  side excluding the first taxon and counted once per replicate. Trivial splits
+  (one side with a single taxon) no longer receive a support label.
+
+### Changed
+- Internal: `lib.rs` split into `bootstrap`, `validate` and `runner` modules, with
+  no public API change. README and Python type hints/docstrings updated to cover
+  all seven substitution models and rate-variation options.
+- Releases now rotate the `[Unreleased]` changelog section automatically and use
+  it as the GitHub release notes.
+
+## [0.0.25] - 2026-06-04
+
 ### Added
 - Among-site rate-variation corrections for the distance models: a gamma
   rate-heterogeneity shape parameter (`gamma_shape`, Jin & Nei 1990) and a
@@ -19,6 +36,10 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   shape parameter grows; `PDiff` (raw p-distance) is unaffected. Exposed across
   the CLI (`-g/--gamma-shape`, `-i/--p-invar`), Python, and WASM bindings, with
   `NJError::InvalidGammaShape` / `NJError::InvalidPInvar` for out-of-range values.
+
+## [0.0.24] - 2026-06-04
+
+### Added
 - Three substitution models: `TajimaNei` (Tajima-Nei 1984, DNA — corrects
   Jukes-Cantor for unequal base frequencies), `Tamura` (Tamura 1992, DNA —
   Kimura two-parameter with a GC-content correction), and `KimuraProtein`
@@ -26,15 +47,6 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   closed-form and reduce to the model they extend under the appropriate
   conditions (Tajima-Nei → Jukes-Cantor at equal frequencies, Tamura →
   Kimura-2P at GC = 0.5). Exposed across the CLI, Python, and WASM bindings.
-
-### Fixed
-- Bootstrap support values are now independent of tree rooting. Splits were
-  previously keyed by the clade below each node, so the same split could be
-  tallied under different keys when replicate trees were rooted differently, and
-  the root's two children double-counted its split. Splits are now keyed by the
-  side excluding the first taxon and counted once per replicate. Trivial splits
-  (one side with a single taxon) no longer receive a support label.
-
 
 ## [0.0.23] - 2026-06-04
 

@@ -36,6 +36,10 @@ The root `README.md` is the **only** committed README. It is copied into
 
 ## Releasing
 
+Add user-visible changes to the `## [Unreleased]` section of `CHANGELOG.md` as
+you make them (Added / Changed / Fixed). A release is refused if that section is
+empty.
+
 All three packages share one version. Bump them together — never edit the
 version strings by hand:
 
@@ -46,11 +50,15 @@ make bump-patch   # or bump-minor / bump-major
 `release.sh` (invoked by `make bump-*`) requires `cargo-workspaces`, `toml`,
 `jq`, and `sponge` on `PATH`. It bumps the Cargo workspace version, syncs
 `python/pyproject.toml` and `wasm/package.json`, runs `scripts/check-versions.sh`
-to confirm they agree, then creates a `Release vX.Y.Z` commit and tag.
+to confirm they agree, renames `[Unreleased]` to `[X.Y.Z] - <date>` in
+`CHANGELOG.md` (via `scripts/changelog.sh`), then creates a `Release vX.Y.Z` commit
+and tag.
 
 Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which runs the
-full test matrix, re-verifies the version, and publishes to crates.io, PyPI
-(OIDC trusted publishing), and npm (OIDC + provenance).
+full test matrix, re-verifies the version and that `CHANGELOG.md` has an entry for
+it, publishes to crates.io, PyPI
+(OIDC trusted publishing), and npm (OIDC + provenance), and creates the GitHub release using that
+changelog section as its notes.
 
 You can sanity-check version consistency at any time:
 
