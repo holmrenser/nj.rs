@@ -8,6 +8,8 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 
 ## [Unreleased]
 
+## [0.0.26] - 2026-11-20
+
 ### Fixed
 - Bootstrap support values are now independent of tree rooting. Splits were
   previously keyed by the clade below each node, so the same split could be
