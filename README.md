@@ -30,6 +30,8 @@ Takes a multiple sequence alignment and returns a Newick tree. The alphabet (DNA
 
 Using a model that does not match the alphabet returns an error. `gamma_shape` (α) must be `> 0` and `p_invar` must be in `[0, 1)`; they combine as `+I+Γ`.
 
+**Saturated sequence pairs.** When two sequences are too diverged for a model, its distance is infinite, which neighbor-joining cannot use. `nj` sets such pairs to `max_distance` (default `10` substitutions per site; the CLI flag, config field and Python argument are all called `max_distance`), emits a warning event naming how many pairs were affected, and carries on, including in bootstrap replicates. A capped value means "at least this far". The standalone `distance_matrix` and `average_distance` return the raw estimates, including infinity.
+
 ## CLI
 
 ```bash
@@ -53,6 +55,7 @@ nj -t 4 --n-bootstrap-samples 1000 sequences.fasta > tree.nwk
 | `-a, --alphabet <ALPHABET>` | Override alphabet auto-detection |
 | `-g, --gamma-shape <ALPHA>` | Gamma rate-heterogeneity shape |
 | `-i, --p-invar <FRACTION>` | Proportion of invariant sites |
+| `--max-distance <D>` | Distance given to saturated pairs, which have no finite estimate (default `10`) |
 | `--distance-matrix`, `--average-distance` | Also compute these; output becomes a JSON object with a `newick` field |
 | `-t, --num-threads <N>` | Worker thread cap |
 | `-v, --verbose` | Print stage log messages to stderr |
@@ -83,6 +86,7 @@ let result = nj(
         num_threads: None,
         return_distance_matrix: false,
         return_average_distance: false,
+        max_distance: None,
         gamma_shape: None,
         p_invar: None,
     },
@@ -188,4 +192,4 @@ const { names, matrix } = distance_matrix({ msa, substitution_model: 'JukesCanto
 const mean = average_distance({ msa, substitution_model: 'JukesCantor' });
 ```
 
-`gamma_shape`, `p_invar`, `return_distance_matrix` and `return_average_distance` are accepted in the config object as in Python.
+`gamma_shape`, `p_invar`, `max_distance`, `return_distance_matrix` and `return_average_distance` are accepted in the config object as in Python.

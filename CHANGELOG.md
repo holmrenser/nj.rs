@@ -8,6 +8,31 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 
 ## [Unreleased]
 
+### Added
+- `max_distance` option (default 10.0 substitutions per site) on `NJConfig`, the
+  CLI (`--max-distance`) and the Python `nj()` function: the distance given to a
+  sequence pair whose distance is not finite because the sequences are saturated
+  for the model.
+
+### Fixed
+- Saturated sequence pairs no longer produce `NaN`/`inf` branch lengths. With, for
+  example, `JukesCantor` and two sequences differing at every site, the distance is
+  infinite; the NJ update then turned the infinite row sums into `NaN`, and the
+  Newick output contained `:NaN` and `:inf` (and the JSON distance matrix `null`).
+  Non-finite distances are now replaced by `max_distance` before the tree is built,
+  a warning event reports how many pairs were affected, and the run continues.
+  Bootstrap replicates are handled the same way (a single warning reports how many
+  replicates were affected).
+
+### Changed
+- `nj()` now returns the capped distance matrix and average when
+  `return_distance_matrix` / `return_average_distance` are set, i.e. the values the
+  tree was built from. The standalone `distance_matrix()` and `average_distance()`
+  are unchanged and still return raw estimates, including `inf`.
+- `DistMat::neighbor_joining` returns an error for a matrix containing a non-finite
+  distance instead of silently producing a `NaN` tree; use the new
+  `DistMat::cap_non_finite` first.
+
 ## [0.0.26] - 2026-11-20
 
 ### Fixed

@@ -94,9 +94,22 @@ pub(crate) fn collect_splits(
     Ok(())
 }
 
+type Counts = HashMap<Vec<u8>, usize>;
+
+/// Split tallies from the bootstrap phase.
+pub(crate) struct BootstrapTally {
+    /// How many replicates contained each split.
+    pub counts: Counts,
+    /// Number of replicates in which at least one distance was not finite and was
+    /// replaced by `max_distance`.
+    pub saturated_replicates: usize,
+}
+
 /// Runs a single bootstrap replicate end-to-end: resample alignment columns,
-/// compute the distance matrix with model `M`, run Neighbor-Joining, and tally
-/// the replicate's clades into a fresh counter.
+/// compute the distance matrix with model `M`, cap non-finite distances at
+/// `max_distance`, run Neighbor-Joining, and tally the replicate's clades into a
+/// fresh counter. The returned flag says whether any distance had to be capped
+/// (resampling can saturate a pair that the original data do not).
 ///
 /// Shared by the sequential and parallel bootstrap paths. Every fallible step is
 /// propagated via `?` so a failed replicate becomes a returned `Err` rather than
@@ -106,16 +119,19 @@ fn run_one_replicate<A, M>(
     idx_map: &HashMap<String, usize>,
     n_taxa: usize,
     rates: RateHet,
-) -> Result<HashMap<Vec<u8>, usize>, String>
+    max_distance: f64,
+) -> Result<(Counts, bool), String>
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
     M: ModelCalculation<A> + Send + Sync,
 {
-    let tree = msa.bootstrap()?.into_dist::<M>(rates).neighbor_joining()?;
+    let mut dist = msa.bootstrap()?.into_dist::<M>(rates);
+    let saturated = !dist.cap_non_finite(max_distance).is_empty();
+    let tree = dist.neighbor_joining()?;
     let mut splits = HashSet::new();
     collect_splits(&tree, idx_map, n_taxa, &mut splits)?;
-    Ok(splits.into_iter().map(|k| (k, 1)).collect())
+    Ok((splits.into_iter().map(|k| (k, 1)).collect(), saturated))
 }
 
 /// Parallel bootstrap worker: runs all replicates on Rayon threads and sends
@@ -134,7 +150,8 @@ fn bootstrap_clade_counts_parallel<A, M>(
     on_event: Option<&dyn Fn(NJEvent)>,
     num_threads: Option<usize>,
     rates: RateHet,
-) -> Result<HashMap<Vec<u8>, usize>, String>
+    max_distance: f64,
+) -> Result<BootstrapTally, String>
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
@@ -144,8 +161,9 @@ where
     use std::sync::mpsc;
 
     let pool = crate::runner::build_thread_pool(num_threads)?;
-    let (tx, rx) = mpsc::channel::<Result<HashMap<Vec<u8>, usize>, String>>();
-    let mut counter: HashMap<Vec<u8>, usize> = HashMap::new();
+    let (tx, rx) = mpsc::channel::<Result<(Counts, bool), String>>();
+    let mut counter: Counts = HashMap::new();
+    let mut saturated_replicates = 0usize;
 
     std::thread::scope(|scope| -> Result<(), String> {
         // Spawn the Rayon work onto a background OS thread so the main thread
@@ -157,7 +175,7 @@ where
                 (0..n_bootstrap_samples)
                     .into_par_iter()
                     .for_each_with(tx, |sender, _| {
-                        let result = run_one_replicate::<A, M>(msa, idx_map, n_taxa, rates);
+                        let result = run_one_replicate::<A, M>(msa, idx_map, n_taxa, rates, max_distance);
                         // Ignore send errors: only occurs if receiver was dropped,
                         // which cannot happen while we are in the recv loop below.
                         let _ = sender.send(result);
@@ -168,10 +186,11 @@ where
         // Main thread: receive results as they arrive, merge, and fire progress.
         for completed in 1..=n_bootstrap_samples {
             match rx.recv() {
-                Ok(Ok(local)) => {
+                Ok(Ok((local, saturated))) => {
                     for (clade, count) in local {
                         *counter.entry(clade).or_insert(0) += count;
                     }
+                    saturated_replicates += usize::from(saturated);
                 }
                 Ok(Err(e)) => return Err(e),
                 Err(_) => return Err("bootstrap channel closed unexpectedly".into()),
@@ -186,7 +205,10 @@ where
         Ok(())
     })?;
 
-    Ok(counter)
+    Ok(BootstrapTally {
+        counts: counter,
+        saturated_replicates,
+    })
 }
 
 /// Performs bootstrap sampling and counts clades across bootstrap trees.
@@ -201,7 +223,8 @@ pub(crate) fn bootstrap_clade_counts<A, M>(
     on_event: Option<&dyn Fn(NJEvent)>,
     num_threads: Option<usize>,
     rates: RateHet,
-) -> Result<Option<HashMap<Vec<u8>, usize>>, String>
+    max_distance: f64,
+) -> Result<Option<BootstrapTally>, String>
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
@@ -219,7 +242,7 @@ where
     let n_taxa = msa.n_sequences;
 
     #[cfg(feature = "parallel")]
-    let counter = bootstrap_clade_counts_parallel::<A, M>(
+    let tally = bootstrap_clade_counts_parallel::<A, M>(
         msa,
         n_bootstrap_samples,
         &idx_map,
@@ -227,17 +250,21 @@ where
         on_event,
         num_threads,
         rates,
+        max_distance,
     )?;
 
     #[cfg(not(feature = "parallel"))]
-    let counter = {
+    let tally = {
         let _ = num_threads;
         let mut c = HashMap::new();
+        let mut saturated_replicates = 0usize;
         for i in 0..n_bootstrap_samples {
-            let local = run_one_replicate::<A, M>(msa, &idx_map, n_taxa, rates)?;
+            let (local, saturated) =
+                run_one_replicate::<A, M>(msa, &idx_map, n_taxa, rates, max_distance)?;
             for (clade, count) in local {
                 *c.entry(clade).or_insert(0) += count;
             }
+            saturated_replicates += usize::from(saturated);
             if let Some(cb) = on_event {
                 cb(NJEvent::BootstrapProgress {
                     completed: i + 1,
@@ -245,10 +272,13 @@ where
                 });
             }
         }
-        c
+        BootstrapTally {
+            counts: c,
+            saturated_replicates,
+        }
     };
 
-    Ok(Some(counter))
+    Ok(Some(tally))
 }
 
 /// Annotates internal nodes with bootstrap support values from `counts`.

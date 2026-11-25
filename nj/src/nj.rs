@@ -123,9 +123,9 @@ impl<'a> NJState<'a> {
     ///
     /// Q(i,j) = (n-2)·d(i,j) - S_i - S_j, where `n` is the current number
     /// of active taxa and `S_i` is the precomputed row sum. Returns the pair
-    /// indices and the raw distance `d(i,j)` (not the Q value). NaN Q values
-    /// (which can arise when distances are infinite) are treated as the worst
-    /// case via `unwrap_or(Ordering::Greater)`.
+    /// indices and the raw distance `d(i,j)` (not the Q value). Distances are
+    /// finite here ([`DistMat::neighbor_joining`] rejects anything else), so Q is
+    /// never `NaN`; `unwrap_or(Ordering::Greater)` is only a defensive fallback.
     fn select_min_q_pair(&self) -> Option<(usize, usize, f64)> {
         let n_active = self.active.count_ones() as f64;
 

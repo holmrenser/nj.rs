@@ -77,6 +77,27 @@ impl DistMat {
         }
     }
 
+    /// Replaces every non-finite entry (`inf` from a saturated pair, or `NaN`) by
+    /// `max_distance` and returns the affected `(i, j)` pairs with `i > j`.
+    ///
+    /// Neighbor-joining cannot use infinite distances (infinite row sums turn into
+    /// `NaN` in the update step), so callers apply this before
+    /// [`neighbor_joining`](DistMat::neighbor_joining). A capped value stands for
+    /// "at least this far". Finite entries, however large, are left untouched.
+    pub fn cap_non_finite(&mut self, max_distance: f64) -> Vec<(usize, usize)> {
+        let mut capped = Vec::new();
+        for i in 1..self.dim() {
+            for j in 0..i {
+                let k = i * (i - 1) / 2 + j;
+                if !self.data[k].is_finite() {
+                    self.data[k] = max_distance;
+                    capped.push((i, j));
+                }
+            }
+        }
+        capped
+    }
+
     /// Computes a pairwise distance matrix from an MSA using substitution model `M`.
     ///
     /// Iterates over all `n*(n-1)/2` sequence pairs and fills the lower triangle
@@ -164,9 +185,21 @@ impl DistMat {
     /// Runs the Neighbor-Joining algorithm and returns the inferred tree.
     ///
     /// Consumes `self` because the NJ state machine mutates the matrix in
-    /// place during the join iterations. Returns `Err` for an empty matrix
-    /// or if an internal consistency check fails.
+    /// place during the join iterations. Returns `Err` for an empty matrix,
+    /// if any distance is not finite (call [`cap_non_finite`](DistMat::cap_non_finite)
+    /// first), or if an internal consistency check fails.
     pub fn neighbor_joining(mut self: DistMat) -> Result<TreeNode, String> {
+        for i in 1..self.dim() {
+            for j in 0..i {
+                if !self.get(i, j).is_finite() {
+                    return Err(format!(
+                        "distance between '{}' and '{}' is not finite; cap it with \
+                         DistMat::cap_non_finite before running neighbor-joining",
+                        self.names[i], self.names[j]
+                    ));
+                }
+            }
+        }
         NJState::new(&mut self).run()
     }
 }
@@ -192,6 +225,58 @@ mod tests {
     use crate::models::PDiff;
     use crate::msa::MSA;
     use crate::tree::NameOrSupport;
+
+    fn named_matrix(n: usize) -> DistMat {
+        let names = (0..n).map(|i| format!("t{i}")).collect();
+        let mut d = DistMat::empty_with_names(names);
+        for i in 1..n {
+            for j in 0..i {
+                d.set(i, j, 0.1 * (i + j) as f64 + 0.1);
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn test_cap_non_finite_replaces_inf_and_nan_only() {
+        let mut d = named_matrix(4);
+        d.set(2, 0, f64::INFINITY);
+        d.set(3, 1, f64::NAN);
+        d.set(3, 2, 123.0); // large but finite: untouched
+        let before = d.get(1, 0);
+        let capped = d.cap_non_finite(10.0);
+        assert_eq!(capped, vec![(2, 0), (3, 1)]);
+        assert_eq!(d.get(2, 0), 10.0);
+        assert_eq!(d.get(0, 2), 10.0); // symmetric access
+        assert_eq!(d.get(3, 1), 10.0);
+        assert_eq!(d.get(3, 2), 123.0);
+        assert_eq!(d.get(1, 0), before);
+    }
+
+    #[test]
+    fn test_cap_non_finite_is_noop_on_finite_matrix() {
+        let mut d = named_matrix(5);
+        let original = d.data.clone();
+        assert!(d.cap_non_finite(10.0).is_empty());
+        assert_eq!(d.data, original);
+    }
+
+    #[test]
+    fn test_neighbor_joining_rejects_non_finite_distance() {
+        let mut d = named_matrix(4);
+        d.set(3, 1, f64::INFINITY);
+        let err = d.neighbor_joining().unwrap_err();
+        assert!(err.contains("'t3'") && err.contains("'t1'"), "{err}");
+    }
+
+    #[test]
+    fn test_neighbor_joining_after_cap_has_finite_newick() {
+        let mut d = named_matrix(5);
+        d.set(4, 0, f64::INFINITY);
+        d.cap_non_finite(10.0);
+        let newick = d.neighbor_joining().unwrap().to_newick();
+        assert!(!newick.contains("NaN") && !newick.contains("inf"), "{newick}");
+    }
 
     /// Recursively collects the names of all leaf nodes in the given NJNode tree.
     /// Used for testing correctness of tree structure.

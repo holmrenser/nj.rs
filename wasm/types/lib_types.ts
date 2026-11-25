@@ -138,7 +138,21 @@ gamma_shape: number | null,
  * invariant-sites correction is applied. Has no effect on the `PDiff` model.
  * See [`crate::models::RateHet`].
  */
-p_invar: number | null, };
+p_invar: number | null, 
+/**
+ * Distance (substitutions per site) assigned to any pair whose distance is not
+ * finite, i.e. the sequences are saturated and the model has no finite estimate.
+ * Must be finite and positive; `None` uses [`DEFAULT_MAX_DISTANCE`] (10.0).
+ *
+ * Neighbor-joining cannot use infinite distances, so they are replaced before the
+ * tree is built, a warning event reports how many pairs were affected, and the
+ * run continues (including bootstrap replicates). A capped value is a surrogate
+ * for "at least this far". The same capped matrix is what
+ * [`NJResult::distance_matrix`] and [`NJResult::average_distance`] report. The
+ * standalone [`crate::distance_matrix`] and [`crate::average_distance`] functions
+ * are unaffected and return the raw estimates, including `inf`.
+ */
+max_distance: number | null, };
 
 /**
  * Events fired by the NJ algorithm and passed to the `on_event` callback.

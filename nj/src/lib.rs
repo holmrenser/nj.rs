@@ -77,7 +77,8 @@ pub use crate::event::{LogLevel, NJEvent};
 pub use crate::fasta::parse_fasta;
 use crate::runner::{dispatch_run, run_average_distance, run_distance_matrix, run_nj};
 use crate::validate::{
-    detect_alphabet, validate_msa, validate_rate_params, warn_degenerate_sequences,
+    detect_alphabet, validate_max_distance, validate_msa, validate_rate_params,
+    warn_degenerate_sequences,
 };
 
 /// Infers a phylogenetic tree from an aligned MSA and returns an [`NJResult`].
@@ -96,6 +97,12 @@ use crate::validate::{
 /// Sequences consisting entirely of gaps have no comparable sites, so their
 /// pairwise distances are `0.0` (see [`crate::models`]); a `Warning`-level
 /// [`NJEvent::Log`] is emitted for each such sequence so the behaviour is not silent.
+///
+/// **Saturated pairs.** Neighbor-joining cannot use infinite distances, so any
+/// distance that is not finite (the sequences are too diverged for the model) is
+/// replaced by [`NJConfig::max_distance`] (default 10.0 substitutions per site), a
+/// warning [`NJEvent::Log`] reports how many pairs were affected, and the run
+/// continues; bootstrap replicates are treated the same way.
 ///
 /// `on_event` is called with an [`NJEvent`] at each stage of the algorithm.
 /// Bootstrap progress is reported via [`NJEvent::BootstrapProgress`] after
@@ -122,6 +129,7 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
         });
     }
     let rates = validate_rate_params(conf.gamma_shape, conf.p_invar)?;
+    let max_distance = validate_max_distance(conf.max_distance)?;
     let model = conf.substitution_model;
     if matches!(model, SubstitutionModel::PDiff)
         && (rates.gamma_shape.is_some() || rates.p_invar > 0.0)
@@ -146,6 +154,7 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
             include_distance_matrix,
             include_average_distance,
             rates,
+            max_distance,
         )
     )
 }
@@ -214,6 +223,7 @@ mod tests {
             num_threads: None,
             return_distance_matrix: include_dm,
             return_average_distance: include_avg,
+            max_distance: None,
             gamma_shape: None,
             p_invar: None,
         }
@@ -274,6 +284,7 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            max_distance: None,
             gamma_shape: None,
             p_invar: None,
         };
@@ -301,6 +312,7 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            max_distance: None,
             gamma_shape: None,
             p_invar: None,
         };
@@ -332,6 +344,7 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            max_distance: None,
             gamma_shape: None,
             p_invar: None,
         };
@@ -351,6 +364,7 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            max_distance: None,
             gamma_shape: None,
             p_invar: None,
         };
@@ -378,6 +392,7 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            max_distance: None,
             gamma_shape: None,
             p_invar: None,
         };
@@ -405,6 +420,7 @@ mod tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            max_distance: None,
             gamma_shape: None,
             p_invar: None,
         };
@@ -448,6 +464,7 @@ mod tests {
             num_threads: None,
             return_distance_matrix: true,
             return_average_distance: false,
+            max_distance: None,
             gamma_shape: None,
             p_invar: None,
         };
@@ -478,6 +495,130 @@ mod tests {
         let collected = warnings.lock().unwrap();
         assert_eq!(collected.len(), 1, "expected exactly one all-gap warning");
         assert!(collected[0].contains("only gaps"), "got {:?}", collected[0]);
+    }
+
+    // --- Saturated pairs (max_distance) ---
+
+    /// Two groups of near-identical sequences, `{A, C, D}` and `{B, E}`, with every
+    /// site differing between the groups. Under `JukesCantor` the six between-group
+    /// pairs have no finite distance; the four within-group pairs are close.
+    fn saturated_conf() -> NJConfig {
+        let mut conf = nj_conf(
+            &[
+                ("A", "ACGTACGTACGTACGTACGT"),
+                ("B", "CATGCATGCATGCATGCATG"),
+                ("C", "ACGTACGTACGAACGTACGT"),
+                ("D", "ACGTACGTTCGTACGTACGT"),
+                ("E", "CATGCATGCATCCATGCATG"),
+            ],
+            true,
+            true,
+        );
+        conf.substitution_model = SubstitutionModel::JukesCantor;
+        conf
+    }
+
+    fn run_collecting_warnings(conf: NJConfig) -> (NJResult, Vec<String>) {
+        use std::sync::{Arc, Mutex};
+        let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&warnings);
+        let cb: Box<dyn Fn(NJEvent)> = Box::new(move |event| {
+            if let NJEvent::Log {
+                level: LogLevel::Warning,
+                message,
+            } = event
+            {
+                sink.lock().unwrap().push(message);
+            }
+        });
+        let result = nj(conf, Some(cb)).expect("NJ should succeed with saturated pairs");
+        let collected = warnings.lock().unwrap().clone();
+        (result, collected)
+    }
+
+    #[test]
+    fn test_saturated_pairs_give_finite_newick_and_one_warning() {
+        let (result, warnings) = run_collecting_warnings(saturated_conf());
+        assert!(
+            !result.newick.contains("NaN") && !result.newick.contains("inf"),
+            "non-finite value in Newick: {}",
+            result.newick
+        );
+        assert_eq!(warnings.len(), 1, "got {warnings:?}");
+        assert!(warnings[0].contains("6 sequence pair(s)"), "got {warnings:?}");
+        assert!(warnings[0].contains("and 1 more"), "got {warnings:?}");
+        assert!(warnings[0].contains("max_distance = 10"), "got {warnings:?}");
+    }
+
+    #[test]
+    fn test_saturated_pairs_are_capped_in_returned_matrix_and_average() {
+        let (result, _) = run_collecting_warnings(saturated_conf());
+        let dm = result.distance_matrix.unwrap();
+        assert_eq!(dm.matrix[0][1], DEFAULT_MAX_DISTANCE_FOR_TESTS);
+        assert_eq!(dm.matrix[1][0], DEFAULT_MAX_DISTANCE_FOR_TESTS);
+        assert!(dm.matrix.iter().flatten().all(|d| d.is_finite()));
+        assert!(result.average_distance.unwrap().is_finite());
+    }
+
+    const DEFAULT_MAX_DISTANCE_FOR_TESTS: f64 = crate::config::DEFAULT_MAX_DISTANCE;
+
+    #[test]
+    fn test_custom_max_distance_is_used() {
+        let mut conf = saturated_conf();
+        conf.max_distance = Some(3.0);
+        let (result, warnings) = run_collecting_warnings(conf);
+        assert_eq!(result.distance_matrix.unwrap().matrix[0][1], 3.0);
+        assert!(warnings[0].contains("max_distance = 3"), "got {warnings:?}");
+    }
+
+    #[test]
+    fn test_invalid_max_distance_is_rejected() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut conf = saturated_conf();
+            conf.max_distance = Some(bad);
+            assert!(
+                matches!(nj(conf, None), Err(NJError::InvalidMaxDistance { .. })),
+                "max_distance = {bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_saturation_no_warning() {
+        let mut conf = nj_conf(&[("A", "ACGTACGT"), ("B", "ACGTACGA"), ("C", "ACGAACGA")], false, false);
+        conf.substitution_model = SubstitutionModel::JukesCantor;
+        let (_, warnings) = run_collecting_warnings(conf);
+        assert!(warnings.is_empty(), "got {warnings:?}");
+    }
+
+    #[test]
+    fn test_bootstrap_with_saturated_pairs_completes_and_warns_once() {
+        let mut conf = saturated_conf();
+        conf.n_bootstrap_samples = 10;
+        let (result, warnings) = run_collecting_warnings(conf);
+        assert!(
+            !result.newick.contains("NaN") && !result.newick.contains("inf"),
+            "{}",
+            result.newick
+        );
+        let replicate_warnings: Vec<_> = warnings.iter().filter(|w| w.contains("bootstrap")).collect();
+        assert_eq!(replicate_warnings.len(), 1, "got {warnings:?}");
+        assert!(replicate_warnings[0].contains("10 of 10 bootstrap replicates"), "got {warnings:?}");
+    }
+
+    #[test]
+    fn test_standalone_distance_matrix_still_reports_raw_infinity() {
+        let conf = saturated_conf();
+        let result = distance_matrix(DistConfig {
+            msa: conf.msa,
+            substitution_model: SubstitutionModel::JukesCantor,
+            alphabet: None,
+            num_threads: None,
+            gamma_shape: None,
+            p_invar: None,
+        })
+        .unwrap();
+        assert!(result.matrix[0][1].is_infinite());
     }
 
     // --- NJResult optional fields ---
@@ -811,6 +952,7 @@ mod parallel_tests {
             num_threads: None,
             return_distance_matrix: false,
             return_average_distance: false,
+            max_distance: None,
             gamma_shape: None,
             p_invar: None,
         }

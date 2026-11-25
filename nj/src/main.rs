@@ -78,6 +78,11 @@ mod cli {
         #[arg(short = 'i', long = "p-invar", value_name = "FRACTION")]
         pub p_invar: Option<f64>,
 
+        /// Distance (substitutions per site) given to pairs whose distance is not finite
+        /// because the sequences are saturated for the model. Default: 10.
+        #[arg(long, value_name = "D")]
+        pub max_distance: Option<f64>,
+
         /// Print algorithm stage messages (alphabet detection, distance computation, etc.) to stderr.
         #[arg(short = 'v', long, default_value_t = false)]
         pub verbose: bool,
@@ -119,6 +124,7 @@ mod cli {
             return_average_distance: args.average_distance,
             gamma_shape: args.gamma_shape,
             p_invar: args.p_invar,
+            max_distance: args.max_distance,
         };
 
         let pb = if n_bootstrap > 0 {
@@ -242,6 +248,7 @@ mod main_tests {
             num_threads: None,
             gamma_shape: None,
             p_invar: None,
+            max_distance: None,
             verbose: false,
         }
     }

@@ -11,6 +11,11 @@ pub use crate::models::SubstitutionModel;
 pub use crate::msa::MSA;
 use serde::{Deserialize, Serialize};
 
+/// Default for [`NJConfig::max_distance`]: the distance (substitutions per site)
+/// assigned to a pair whose distance cannot be estimated because the sequences are
+/// saturated. Matches the upper bound used when estimating distances numerically.
+pub const DEFAULT_MAX_DISTANCE: f64 = 10.0;
+
 /// A single sequence in a multiple sequence alignment.
 ///
 /// Both fields are plain `String`s so that the struct can be constructed
@@ -125,6 +130,19 @@ pub struct NJConfig {
     /// See [`crate::models::RateHet`].
     #[serde(default)]
     pub p_invar: Option<f64>,
+    /// Distance (substitutions per site) assigned to any pair whose distance is not
+    /// finite, i.e. the sequences are saturated and the model has no finite estimate.
+    /// Must be finite and positive; `None` uses [`DEFAULT_MAX_DISTANCE`] (10.0).
+    ///
+    /// Neighbor-joining cannot use infinite distances, so they are replaced before the
+    /// tree is built, a warning event reports how many pairs were affected, and the
+    /// run continues (including bootstrap replicates). A capped value is a surrogate
+    /// for "at least this far". The same capped matrix is what
+    /// [`NJResult::distance_matrix`] and [`NJResult::average_distance`] report. The
+    /// standalone [`crate::distance_matrix`] and [`crate::average_distance`] functions
+    /// are unaffected and return the raw estimates, including `inf`.
+    #[serde(default)]
+    pub max_distance: Option<f64>,
 }
 
 /// Combined result returned by [`crate::nj`].

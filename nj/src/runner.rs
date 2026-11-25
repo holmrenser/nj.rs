@@ -7,7 +7,7 @@ use crate::alphabet::AlphabetEncoding;
 use crate::bootstrap::{add_bootstrap_to_tree, bootstrap_clade_counts};
 use crate::config::{MSA, NJResult};
 use crate::distance_matrix::DistanceResult;
-use crate::event::NJEvent;
+use crate::event::{LogLevel, NJEvent};
 use crate::models::{ModelCalculation, RateHet};
 
 /// Builds a Rayon thread pool with `num_threads` workers.
@@ -69,6 +69,28 @@ where
     }
 }
 
+/// Describes the pairs whose distance was capped, naming at most five of them.
+fn saturation_message(names: &[String], capped: &[(usize, usize)], max_distance: f64) -> String {
+    const SHOWN: usize = 5;
+    let listed: Vec<String> = capped
+        .iter()
+        .take(SHOWN)
+        .map(|&(i, j)| format!("'{}'/'{}'", names[j], names[i]))
+        .collect();
+    let more = capped.len().saturating_sub(SHOWN);
+    let tail = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    format!(
+        "{} sequence pair(s) are saturated (no finite distance under the chosen model) and \
+         were set to max_distance = {max_distance}: {}{tail}",
+        capped.len(),
+        listed.join(", ")
+    )
+}
+
 /// Runs NJ with model `M` on alphabet `A` and returns an [`NJResult`].
 ///
 /// If `n_bootstrap_samples > 0`, generates that many bootstrap replicates,
@@ -85,26 +107,57 @@ pub(crate) fn run_nj<A, M>(
     include_distance_matrix: bool,
     include_average_distance: bool,
     rates: RateHet,
+    max_distance: f64,
 ) -> Result<NJResult, String>
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
     M: ModelCalculation<A> + Send + Sync,
 {
-    let clade_counts =
-        bootstrap_clade_counts::<A, M>(&msa, n_bootstrap_samples, on_event, num_threads, rates)?;
+    let tally = bootstrap_clade_counts::<A, M>(
+        &msa,
+        n_bootstrap_samples,
+        on_event,
+        num_threads,
+        rates,
+        max_distance,
+    )?;
+    if let (Some(t), Some(cb)) = (&tally, on_event)
+        && t.saturated_replicates > 0
+    {
+        cb(NJEvent::Log {
+            level: LogLevel::Warning,
+            message: format!(
+                "{} of {} bootstrap replicates contained saturated sequence pairs; their \
+                 distances were set to max_distance = {max_distance}",
+                t.saturated_replicates, n_bootstrap_samples
+            ),
+        });
+    }
+    let clade_counts = tally.map(|t| t.counts);
 
     if let Some(cb) = on_event {
         cb(NJEvent::ComputingDistances);
     }
 
     #[cfg(feature = "parallel")]
-    let dist = {
+    let mut dist = {
         let pool = build_thread_pool(num_threads)?;
         pool.install(|| msa.into_dist::<M>(rates))
     };
     #[cfg(not(feature = "parallel"))]
-    let dist = msa.into_dist::<M>(rates);
+    let mut dist = msa.into_dist::<M>(rates);
+
+    // Neighbor-joining cannot use infinite distances: cap them (and report) before
+    // anything else reads the matrix, so the tree, the returned distance matrix and
+    // the average all describe the same values.
+    let capped = dist.cap_non_finite(max_distance);
+    if let (false, Some(cb)) = (capped.is_empty(), on_event) {
+        cb(NJEvent::Log {
+            level: LogLevel::Warning,
+            message: saturation_message(&dist.names, &capped, max_distance),
+        });
+    }
 
     let distance_matrix = if include_distance_matrix {
         Some(dist.to_result())

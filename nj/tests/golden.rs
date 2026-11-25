@@ -24,6 +24,7 @@ fn config(pairs: &[(&str, &str)], model: SubstitutionModel) -> NJConfig {
         num_threads: None,
         return_distance_matrix: false,
         return_average_distance: false,
+        max_distance: None,
         gamma_shape: None,
         p_invar: None,
     }

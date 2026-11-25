@@ -96,6 +96,7 @@ def nj(
     return_average_distance: bool = False,
     gamma_shape: float | None = None,
     p_invar: float | None = None,
+    max_distance: float | None = None,
     on_event: Callable[[NJEvent], None] | None = None,
 ) -> NJResult:
     """Infer a Neighbor-Joining tree and return an ``NJResult`` dict.
@@ -114,6 +115,15 @@ def nj(
             on the ``"PDiff"`` model.
         p_invar: Proportion of invariant sites in ``[0, 1)``. ``None`` (default)
             disables the invariant-sites correction. No effect on ``"PDiff"``.
+        max_distance: Distance (substitutions per site) given to sequence pairs
+            whose distance is not finite because they are saturated for the model.
+            Neighbor-joining cannot use infinite distances, so these pairs are set to
+            this value and a ``"Log"`` warning event reports how many; the run
+            continues, including bootstrap replicates. Must be finite and ``> 0``.
+            ``None`` (default) uses ``10.0``. The returned ``distance_matrix`` and
+            ``average_distance`` use the capped values; the standalone
+            :func:`distance_matrix` and :func:`average_distance` return raw
+            estimates.
         on_event: Optional callable invoked with a dict for each algorithm event.
             The dict always has a ``"type"`` key. Bootstrap progress events look
             like ``{"type": "BootstrapProgress", "completed": 5, "total": 100}``.
@@ -162,6 +172,7 @@ def nj(
             "return_average_distance": return_average_distance,
             "gamma_shape": gamma_shape,
             "p_invar": p_invar,
+            "max_distance": max_distance,
         },
         on_event,
     )

@@ -29,6 +29,8 @@ pub enum NJError {
     InvalidGammaShape { value: f64 },
     /// The proportion of invariant sites is not finite and in `[0, 1)`.
     InvalidPInvar { value: f64 },
+    /// `max_distance` is not finite and positive.
+    InvalidMaxDistance { value: f64 },
     /// An internal NJ algorithm failure (should be unreachable for valid input).
     AlgorithmFailure(String),
     /// Failed to collect entropy from the OS PRNG (bootstrap only).
@@ -52,6 +54,7 @@ impl NJError {
             NJError::IncompatibleModel { .. } => "IncompatibleModel",
             NJError::InvalidGammaShape { .. } => "InvalidGammaShape",
             NJError::InvalidPInvar { .. } => "InvalidPInvar",
+            NJError::InvalidMaxDistance { .. } => "InvalidMaxDistance",
             NJError::AlgorithmFailure(_) => "AlgorithmFailure",
             NJError::RngError(_) => "RngError",
             NJError::ParseError(_) => "ParseError",
@@ -82,6 +85,10 @@ impl fmt::Display for NJError {
             NJError::InvalidPInvar { value } => write!(
                 f,
                 "Proportion of invariant sites must be a finite number in [0, 1), got {value}"
+            ),
+            NJError::InvalidMaxDistance { value } => write!(
+                f,
+                "max_distance must be a finite positive number, got {value}"
             ),
             NJError::AlgorithmFailure(msg) => write!(f, "NJ algorithm failure: {msg}"),
             NJError::RngError(msg) => write!(f, "RNG error: {msg}"),

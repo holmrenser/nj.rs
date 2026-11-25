@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::alphabet::Alphabet;
-use crate::config::SequenceObject;
+use crate::config::{DEFAULT_MAX_DISTANCE, SequenceObject};
 use crate::error::NJError;
 use crate::event::{LogLevel, NJEvent};
 use crate::models::RateHet;
@@ -60,6 +60,15 @@ pub(crate) fn validate_rate_params(
         gamma_shape,
         p_invar: p_invar.unwrap_or(0.0),
     })
+}
+
+/// Validates `max_distance` (finite and positive) and applies the default when absent.
+pub(crate) fn validate_max_distance(max_distance: Option<f64>) -> Result<f64, NJError> {
+    match max_distance {
+        None => Ok(DEFAULT_MAX_DISTANCE),
+        Some(d) if d.is_finite() && d > 0.0 => Ok(d),
+        Some(d) => Err(NJError::InvalidMaxDistance { value: d }),
+    }
 }
 
 /// Heuristically detects whether the MSA contains DNA or protein sequences.

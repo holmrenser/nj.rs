@@ -332,3 +332,64 @@ class TestRateVariation:
     def test_invalid_p_invar_raises(self):
         with pytest.raises(ValueError, match="invariant"):
             nj(msa(*self.SEQS), substitution_model="JukesCantor", p_invar=1.0)
+
+
+class TestSaturatedPairs:
+    """Two groups of near-identical sequences that differ at every site between
+    groups: under Jukes-Cantor the between-group pairs have no finite distance."""
+
+    SEQS = (
+        ("A", "ACGTACGTACGTACGTACGT"),
+        ("B", "CATGCATGCATGCATGCATG"),
+        ("C", "ACGTACGTACGAACGTACGT"),
+        ("D", "ACGTACGTTCGTACGTACGT"),
+        ("E", "CATGCATGCATCCATGCATG"),
+    )
+
+    def run(self, **kwargs):
+        events = []
+        result = nj(
+            msa(*self.SEQS),
+            substitution_model="JukesCantor",
+            return_distance_matrix=True,
+            return_average_distance=True,
+            on_event=events.append,
+            **kwargs,
+        )
+        warnings = [
+            e["message"]
+            for e in events
+            if e["type"] == "Log" and e["level"] == "Warning"
+        ]
+        return result, warnings
+
+    def test_newick_is_finite_and_warns(self):
+        result, warnings = self.run()
+        assert "NaN" not in result["newick"] and "inf" not in result["newick"]
+        assert len(warnings) == 1 and "6 sequence pair(s)" in warnings[0]
+
+    def test_default_cap_is_ten(self):
+        result, _ = self.run()
+        matrix = result["distance_matrix"]["matrix"]
+        assert matrix[0][1] == 10.0
+        assert all(math.isfinite(d) for row in matrix for d in row)
+        assert math.isfinite(result["average_distance"])
+
+    def test_custom_cap(self):
+        result, warnings = self.run(max_distance=3.0)
+        assert result["distance_matrix"]["matrix"][0][1] == 3.0
+        assert "max_distance = 3" in warnings[0]
+
+    def test_bootstrap_completes(self):
+        result, warnings = self.run(n_bootstrap_samples=5)
+        assert result["newick"].endswith(";")
+        assert any("5 of 5 bootstrap replicates" in w for w in warnings)
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+    def test_invalid_max_distance_raises(self, bad):
+        with pytest.raises(ValueError, match="max_distance"):
+            nj(msa(*self.SEQS), substitution_model="JukesCantor", max_distance=bad)
+
+    def test_standalone_distance_matrix_is_raw(self):
+        result = distance_matrix(msa(*self.SEQS), substitution_model="JukesCantor")
+        assert math.isinf(result["matrix"][0][1])
