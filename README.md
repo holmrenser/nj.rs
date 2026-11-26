@@ -120,7 +120,7 @@ let result = distance_matrix(DistConfig {
 
 `average_distance` takes the same `DistConfig` and returns the mean of all pairwise distances as an `f64`.
 
-Cargo features: `parallel` (Rayon-based bootstrap and distance computation), `cli` (the binary; implies `parallel`), and `simd` (explicit SIMD kernel, nightly only).
+Cargo features: `parallel` (Rayon-based bootstrap and distance computation) and `cli` (the binary; implies `parallel`). SIMD kernels are always on (stable Rust, instruction set chosen at run time); `simd` is a deprecated no-op.
 
 ## Python
 

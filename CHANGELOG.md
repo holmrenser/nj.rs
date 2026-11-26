@@ -37,6 +37,12 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   distinct state: one `N` against a base was a mismatch and `N` against `N` a match,
   so a pair differing only by an `N` had a non-zero distance. Alignments containing
   `N` or `X` now give smaller distances. Ambiguity codes were already read as `N`.
+- The SIMD kernels no longer need a nightly compiler. They are written against
+  `fearless_simd` (stable Rust, safe API) and pick the widest instruction set at run
+  time (NEON, SSE2/SSE4.2/AVX2/AVX-512, WebAssembly SIMD, or a scalar fallback), so
+  source installs and `cargo install` get them too, and the PyPI wheels build on
+  stable. The `simd` Cargo feature is now a no-op. The minimum supported Rust version
+  is 1.89. Protein distances are about 6× faster.
 - DNA distances are computed from bit-planes (four bitmasks per sequence, A/C/G/T) and a
   pair-count table: `Kimura2P`, `TajimaNei` and `Tamura` are about 30× faster, `PDiff`
   and `JukesCantor` about 6×, with identical results. The parallel pair loop writes rows

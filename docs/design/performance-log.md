@@ -17,7 +17,7 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 | 2a | Missing data: `N`/`X` dropped per pair; DNA models consume a 4×4 pair-count table | done |
 | 2b | `Prepared` alignment, bit-planes for DNA, tiled parallel pair loop | done (scalar popcount) |
 | 2c | Bootstrap: fuse column gather with packing | pending: decide after SIMD, when counting is cheaper and the gather+pack share is known |
-| 3a | `fearless_simd` on stable: port the byte kernel, remove nightly and the `simd` gate | pending |
+| 3a | `fearless_simd` on stable: port the byte kernel, remove nightly and the `simd` gate | done |
 | 3b | SIMD NJ row-minimum | pending |
 | 3c | SIMD popcount loop over the planes | pending |
 | 4 | ML solver SIMD | blocked: the ML solver does not exist yet (`substitution-models.md` plan step 4) |
@@ -37,6 +37,16 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
   "treat `N`/`X` as missing in the existing models too"; it changes results for alignments containing `N`/`X`
   (CHANGELOG entry added). A sequence of only `N`s still gives distance 0 with no warning (the existing warning
   covers only all-gap sequences).
+- **Byte kernel uses lane counters (step 3a).** Compared in the prototype crate first: accumulating the lane
+  masks into `i8` counters (flushed every 127 steps) took 0.027 ns/site against 0.038 for extracting a bitmask
+  each step (and 0.084 for the nightly `core::simd` kernel it replaces), so the counter variant of decision D5
+  was adopted.
+- **`simd` Cargo feature kept as a deprecated no-op** so `--features simd` keeps building. The `simd-nightly` CI job
+  and the pinned nightly in `release.yml` are gone; wheels build on stable. `rust-version = "1.89"` (the
+  `fearless_simd` MSRV; the crate already needed 1.88 for let-chains).
+- **Kernel tests run every level** (`kernels::testing::levels`): best, scalar fallback and, on x86, SSE2/SSE4.2/AVX2/AVX-512
+  where the CPU offers them. Checked natively on NEON and, cross-compiled, under `qemu-x86_64` with CPU models
+  Nehalem, Haswell and `max` (correctness only; AVX-512 was not offered by the emulator).
 - **WASM already builds with `+simd128`** (`wasm/.cargo/config.toml`), so the "WASM needs a second SIMD build"
   caveat in `performance.md` does not apply to this repo.
 
@@ -87,6 +97,12 @@ The plane kernel is exact: every pair-count table equals the histogram, and the 
 per-pair loop bit for bit (block sizes 1–50 around the 16-row block, lengths around the 64-column word boundary,
 both alphabets, with and without rate variation). Protein distances still run through the byte kernel.
 
+## After step 3a (byte kernel on `fearless_simd`, stable)
+
+| Case | Distances before | Distances after |
+|---|---|---|
+| protein n=1000 L=500 `poisson` | 65.7 ms (scalar byte kernel) | 10.3 ms (6.4×) |
+
 ## Commits
 
 - `perf: add progress log and perf_probe example` — this file, `nj/examples/perf_probe.rs`, baseline above.
@@ -96,3 +112,5 @@ both alphabets, with and without rate variation). Protein distances still run th
   `AlphabetEncoding::N_STATES`, `from_counts` on `Kimura2P`/`TajimaNei`/`Tamura`, policy tests, CHANGELOG.
 - `perf(distances): bit-plane pair counts and a tiled pair loop` — `nj/src/prepared.rs`, `ModelCalculation::distance_prepared`,
   `DistMat::from_prepared` (row blocks written in place; no `(i, j)` / result vectors), bit-exactness tests.
+- `perf(simd): port the byte kernel to fearless_simd and drop nightly` — `nj/src/kernels.rs`, `fearless_simd` dependency,
+  `simd` feature is a no-op, CI/release on stable, `rust-version = "1.89"`.

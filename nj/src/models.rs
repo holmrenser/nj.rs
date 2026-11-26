@@ -8,9 +8,8 @@
 //! the distance, so it is neither a match nor a mismatch.
 //!
 //! The count-based models (`PDiff`, `JukesCantor`, `Poisson`, `KimuraProtein`)
-//! share a single branchless byte kernel ([`diff_and_comparable`]) that the
-//! compiler autovectorizes; with the `simd` Cargo feature it dispatches to an
-//! explicit [`core::simd`] kernel. `Kimura2P`, `TajimaNei`, and `Tamura` need
+//! share one byte kernel ([`diff_and_comparable`], in [`crate::kernels`]) that
+//! dispatches to the widest SIMD level at run time. `Kimura2P`, `TajimaNei`, and `Tamura` need
 //! per-mismatch classification (transition vs. transversion) or base-composition
 //! tallies; they are functions of the 4×4 pair-count table [`DnaCounts`], exposed as
 //! `from_counts` on each model.
@@ -129,67 +128,7 @@ where
 /// distance.
 #[inline]
 fn diff_and_comparable<A: AlphabetEncoding>(s1: &[A::Symbol], s2: &[A::Symbol]) -> (usize, usize) {
-    count_diff_comparable(A::as_bytes(s1), A::as_bytes(s2), A::N_STATES as u8)
-}
-
-/// Branchless scalar kernel: counts `(n_diff, n_comparable)` over raw bytes, where a
-/// byte below `n_states` is a real state and anything else (unknown, gap) is missing.
-///
-/// Written without data-dependent branches (boolean masks accumulated as `0`/`1`)
-/// so the compiler can autovectorize the two reductions. Also used for the
-/// SIMD path's sub-`N` remainder.
-#[inline]
-fn count_diff_comparable_scalar(a: &[u8], b: &[u8], n_states: u8) -> (usize, usize) {
-    let mut n_comparable = 0usize;
-    let mut n_diff = 0usize;
-    for (&x, &y) in a.iter().zip(b.iter()) {
-        let comparable = (x < n_states) & (y < n_states);
-        let diff = comparable & (x != y);
-        n_comparable += comparable as usize;
-        n_diff += diff as usize;
-    }
-    (n_diff, n_comparable)
-}
-
-/// SIMD kernel (`simd` feature; nightly [`core::simd`]): same contract as
-/// [`count_diff_comparable_scalar`], processing `N` bytes per step. Counts set
-/// lanes per chunk via the mask bitmask, so the per-chunk popcounts never
-/// overflow regardless of sequence length.
-#[cfg(feature = "simd")]
-#[inline]
-fn count_diff_comparable(a: &[u8], b: &[u8], n_states: u8) -> (usize, usize) {
-    use core::simd::{
-        Simd,
-        cmp::{SimdPartialEq, SimdPartialOrd},
-    };
-
-    const N: usize = 32;
-    type V = Simd<u8, N>;
-
-    let limit = V::splat(n_states);
-    let mut n_comparable = 0usize;
-    let mut n_diff = 0usize;
-
-    let mut ca = a.chunks_exact(N);
-    let mut cb = b.chunks_exact(N);
-    for (ka, kb) in ca.by_ref().zip(cb.by_ref()) {
-        let va = V::from_slice(ka);
-        let vb = V::from_slice(kb);
-        let comparable = va.simd_lt(limit) & vb.simd_lt(limit);
-        let diff = comparable & va.simd_ne(vb);
-        n_comparable += comparable.to_bitmask().count_ones() as usize;
-        n_diff += diff.to_bitmask().count_ones() as usize;
-    }
-
-    let (rd, rc) = count_diff_comparable_scalar(ca.remainder(), cb.remainder(), n_states);
-    (n_diff + rd, n_comparable + rc)
-}
-
-/// Scalar fallback used when the `simd` feature is disabled (stable toolchains).
-#[cfg(not(feature = "simd"))]
-#[inline]
-fn count_diff_comparable(a: &[u8], b: &[u8], n_states: u8) -> (usize, usize) {
-    count_diff_comparable_scalar(a, b, n_states)
+    crate::kernels::count_diff_comparable(A::as_bytes(s1), A::as_bytes(s2), A::N_STATES as u8)
 }
 
 /// p-distance (proportion of differing sites).
