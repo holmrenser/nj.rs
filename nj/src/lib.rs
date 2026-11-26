@@ -54,6 +54,7 @@ pub mod alphabet;
 pub mod config;
 pub mod counts;
 pub mod distance_matrix;
+pub mod empirical;
 pub mod error;
 pub mod event;
 pub mod fasta;

@@ -14,7 +14,8 @@
 //! a data-dependent histogram cell per column.
 
 use crate::alphabet::{AlphabetEncoding, DNA};
-use crate::counts::DnaCounts;
+use crate::alphabet::Protein;
+use crate::counts::{DnaCounts, ProteinCounts};
 use crate::kernels;
 use crate::msa::MSA;
 use fearless_simd::Level;
@@ -105,6 +106,14 @@ impl Prepared<'_, DNA> {
         DnaCounts {
             f: kernels::plane_counts(self.level, planes.sequence(i), planes.sequence(j), planes.words),
         }
+    }
+}
+
+impl Prepared<'_, Protein> {
+    /// The 20×20 pair-count table of sequences `i` and `j`.
+    #[inline]
+    pub fn protein_counts(&self, i: usize, j: usize) -> ProteinCounts {
+        ProteinCounts::from_symbols(self.sequence(i), self.sequence(j))
     }
 }
 

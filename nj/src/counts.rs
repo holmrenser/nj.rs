@@ -7,7 +7,7 @@
 //! produced in different ways (a histogram over symbols here, bit-planes in
 //! [`crate::prepared`]) without touching the model formulas.
 
-use crate::alphabet::{AlphabetEncoding, DNA, DnaSymbol};
+use crate::alphabet::{AlphabetEncoding, DNA, DnaSymbol, Protein, ProteinSymbol};
 
 /// A 4×4 table of aligned base pairs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -80,6 +80,50 @@ impl DnaCounts {
     }
 }
 
+/// A 20×20 table of aligned amino-acid pairs, the sufficient statistic of the protein
+/// maximum-likelihood distances ([`crate::ml`]).
+///
+/// `f[a * 20 + b]` is the number of columns with residue `a` in the first and `b` in the
+/// second sequence (alphabetical one-letter order `ARNDCQEGHILKMFPSTWYV`). Columns with a
+/// gap or `X` in either sequence are not counted (pairwise deletion).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProteinCounts {
+    /// Row-major counts, `f[a * 20 + b]`.
+    pub f: [u32; 400],
+}
+
+impl ProteinCounts {
+    /// One histogram increment per column; symbols with a byte value of 20 or more are skipped.
+    pub fn from_bytes(a: &[u8], b: &[u8]) -> Self {
+        let mut f = [0u32; 400];
+        for (&x, &y) in a.iter().zip(b) {
+            if x < 20 && y < 20 {
+                f[x as usize * 20 + y as usize] += 1;
+            }
+        }
+        Self { f }
+    }
+
+    /// From encoded protein symbols.
+    pub fn from_symbols(s1: &[ProteinSymbol], s2: &[ProteinSymbol]) -> Self {
+        Self::from_bytes(Protein::as_bytes(s1), Protein::as_bytes(s2))
+    }
+
+    /// Number of columns where both sequences have a residue.
+    pub fn n_comparable(&self) -> usize {
+        self.f.iter().map(|&c| c as usize).sum()
+    }
+
+    /// The table as `f64`, the form the solver takes.
+    pub fn to_f64(&self) -> [f64; 400] {
+        let mut out = [0.0; 400];
+        for (o, &c) in out.iter_mut().zip(&self.f) {
+            *o = c as f64;
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +141,19 @@ mod tests {
         assert_eq!(c.transversions(), 1); // G/T
         assert_eq!(c.base_counts(), [3, 2, 2, 1]);
         assert_eq!(c.unordered(0, 2), 1);
+    }
+
+    #[test]
+    fn test_protein_counts_skip_gaps_and_unknowns() {
+        // A R N X | D - E E   vs   A R D A | X K E -
+        let a = [0u8, 1, 2, 20, 3, 21, 6, 6];
+        let b = [0u8, 1, 3, 0, 20, 11, 6, 21];
+        let c = ProteinCounts::from_bytes(&a, &b);
+        assert_eq!(c.n_comparable(), 4); // A/A, R/R, N/D, E/E
+        assert_eq!(c.f[0], 1);
+        assert_eq!(c.f[1 * 20 + 1], 1);
+        assert_eq!(c.f[2 * 20 + 3], 1);
+        assert_eq!(c.f[6 * 20 + 6], 1);
+        assert_eq!(c.to_f64().iter().sum::<f64>(), 4.0);
     }
 }

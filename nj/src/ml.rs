@@ -12,15 +12,26 @@
 //! `d̂ = argmax ℓ`. The model is fixed; only `t` is fitted, so this is a one-dimensional
 //! problem per pair. Background: `docs/theory/distance-estimation.md`.
 //!
+//! # Unordered pairs
+//!
+//! Reversibility gives `π_a P_ab(t) = π_b P_ba(t)`, so `F_ab ln P_ab + F_ba ln P_ba =
+//! (F_ab + F_ba) ln P_ab + F_ba ln(π_a/π_b)`: the second term does not depend on `t`. Only the
+//! merged counts of unordered pairs `a ≤ b` are needed, which roughly halves the work per
+//! evaluation. `ℓ` below is this reduced log-likelihood (it differs from the full one by a
+//! constant), and `ℓ(∞)` is reduced in the same way.
+//!
 //! # Solver
 //!
-//! `ℓ′(0⁺) = +∞` whenever the pair differs, but `ℓ′` can change sign again in the tail, so
-//! the likelihood is not assumed unimodal. The solver starts at the Poisson-type closed-form
-//! estimate, brackets a sign change of `ℓ′` by doubling (or halving) `t`, then runs Newton's
-//! method on `ℓ′` safeguarded by bisection inside the bracket. A pair is **saturated**
-//! (`d̂ = ∞`) when no sign change occurs below [`T_MAX`], or when the maximum does not beat the
-//! limit `ℓ(∞)`: the data are then no better explained by any finite distance than by two
-//! independent sequences.
+//! `ℓ′(0⁺) = +∞` whenever the pair differs, but `ℓ′` can change sign again in the tail, so the
+//! likelihood is not assumed unimodal. The solver runs Newton's method on `ℓ′` from the
+//! Poisson-type closed-form estimate (typically within a few evaluations of the answer) and
+//! keeps the tightest bracket seen so far, a point with `ℓ′ > 0` on the left and one with
+//! `ℓ′ < 0` on the right. A step that leaves the bracket, or that has the wrong curvature, is
+//! replaced by bisection; while one side is still unknown the step doubles or halves `t`.
+//!
+//! A pair is **saturated** (`d̂ = ∞`) when `ℓ′` is still positive at [`T_MAX`], or when the
+//! maximum does not beat the limit `ℓ(∞)`: the data are then no better explained by any finite
+//! distance than by two independent sequences.
 
 use crate::models::RateHet;
 use crate::reversible::ReversibleModel;
@@ -90,11 +101,6 @@ impl Pair<'_> {
             .map(|&(a, b, n)| n * (w * pi[b] + if a == b { p_inv } else { 0.0 }).ln())
             .sum()
     }
-
-    /// Sign of `ℓ′(t)`; an unevaluable (too small) `t` counts as positive.
-    fn slope_positive(&mut self, t: f64) -> bool {
-        self.eval(t).is_none_or(|e| e.d1 > 0.0)
-    }
 }
 
 /// Maximum-likelihood distance for the pair-count table `counts` (row-major `K×K`
@@ -107,17 +113,21 @@ pub fn ml_distance(model: &ReversibleModel, counts: &[f64], het: RateHet) -> f64
     let k = model.n_states();
     debug_assert_eq!(counts.len(), k * k);
 
+    // Unordered pairs a <= b (see the module docs); `total` and `differing` use the raw table.
     let mut entries = Vec::new();
     let (mut total, mut differing) = (0.0, 0.0);
     for a in 0..k {
-        for b in 0..k {
-            let n = counts[a * k + b];
+        let n = counts[a * k + a];
+        if n > 0.0 {
+            entries.push((a, a, n));
+            total += n;
+        }
+        for b in (a + 1)..k {
+            let n = counts[a * k + b] + counts[b * k + a];
             if n > 0.0 {
                 entries.push((a, b, n));
                 total += n;
-                if a != b {
-                    differing += n;
-                }
+                differing += n;
             }
         }
     }
@@ -147,71 +157,64 @@ fn solve(pair: &mut Pair<'_>, total: f64, differing: f64) -> Option<f64> {
     // Closed-form start (equal rates, variable sites only).
     let p = differing / total / (1.0 - pair.het.p_invar);
     let start = if p < b { -b * (1.0 - p / b).ln() } else { 1.0 };
-    let start = start.clamp(10.0 * T_MIN, T_MAX / 2.0);
 
-    // Bracket a sign change of ℓ′: positive at `lo`, negative at `hi`.
-    let (mut lo, mut hi);
-    if pair.slope_positive(start) {
-        lo = start;
-        hi = start;
-        loop {
-            hi = (hi * 2.0).min(T_MAX);
-            if !pair.slope_positive(hi) {
-                break;
+    // Bracket: ℓ′ > 0 at `lo` (0 = nothing known yet), ℓ′ < 0 at `hi` (∞ = nothing known yet).
+    let (mut lo, mut hi) = (0.0f64, f64::INFINITY);
+    let mut t = start.clamp(10.0 * T_MIN, T_MAX / 2.0);
+    let mut ll = f64::NEG_INFINITY;
+    for _ in 0..200 {
+        let mut next;
+        match pair.eval(t) {
+            None => {
+                // t is too small to evaluate: the slope there is positive.
+                lo = lo.max(t);
+                next = if hi.is_finite() { 0.5 * (lo + hi) } else { 2.0 * t };
             }
-            if hi >= T_MAX {
+            Some(e) => {
+                ll = e.ll;
+                if e.d1 == 0.0 {
+                    next = t;
+                } else {
+                    if e.d1 > 0.0 {
+                        lo = lo.max(t);
+                    } else {
+                        hi = hi.min(t);
+                    }
+                    let newton = t - e.d1 / e.d2;
+                    let usable = e.d2 < 0.0 && newton > lo && newton < hi;
+                    next = if usable {
+                        newton
+                    } else if hi.is_finite() && lo > 0.0 {
+                        0.5 * (lo + hi)
+                    } else if hi.is_finite() {
+                        (0.5 * t).max(T_MIN) // only a right end known: go left
+                    } else {
+                        2.0 * t // only a left end known: go right
+                    };
+                }
+            }
+        }
+        if next >= T_MAX {
+            if lo >= T_MAX {
                 return None; // still rising at t_max: no interior maximum
             }
-            lo = hi;
+            next = T_MAX;
         }
-    } else {
-        hi = start;
-        lo = start;
-        loop {
-            lo = (lo / 2.0).max(T_MIN);
-            if pair.slope_positive(lo) {
-                break;
-            }
-            if lo <= T_MIN {
+        if next <= T_MIN {
+            if hi <= T_MIN {
                 return Some(T_MIN); // falling from the smallest resolvable distance
             }
-            hi = lo;
+            next = T_MIN;
         }
-    }
-
-    // Safeguarded Newton on ℓ′ inside [lo, hi].
-    let mut t = lo + 0.5 * (hi - lo);
-    for _ in 0..200 {
-        let next = match pair.eval(t) {
-            Some(e) => {
-                if e.d1 > 0.0 {
-                    lo = t;
-                } else if e.d1 < 0.0 {
-                    hi = t;
-                } else {
-                    break;
-                }
-                let newton = t - e.d1 / e.d2;
-                if e.d2 < 0.0 && newton > lo && newton < hi {
-                    newton
-                } else {
-                    0.5 * (lo + hi)
-                }
-            }
-            None => {
-                lo = t;
-                0.5 * (lo + hi)
-            }
-        };
-        let done = (next - t).abs() <= 1e-12 + 1e-9 * t || hi - lo <= 1e-12 + 1e-9 * t;
+        let converged = (next - t).abs() <= 1e-12 + 1e-8 * t;
         t = next;
-        if done {
+        if converged {
             break;
         }
     }
 
-    // The maximum must beat "the sequences are independent".
-    let ll = pair.eval(t)?.ll;
+    // The maximum must beat "the sequences are independent" (ℓ from the last evaluation,
+    // which is at a point within the convergence tolerance of `t`).
     (ll > pair.loglik_at_infinity()).then_some(t)
 }
 
@@ -353,6 +356,114 @@ mod tests {
         // The two differ by about 0.5% here; guard against confusing them.
         let poisson = -(1.0_f64 - p).ln();
         assert!((ml_distance(&model, &f, RateHet::NONE) - poisson).abs() > 5e-4);
+    }
+
+    /// Draws `n` aligned pairs from `π_a P_ab(t)` and tabulates them (row-major `K×K`).
+    fn simulate_counts(rng: &mut Rng, model: &ReversibleModel, t: f64, n: usize) -> Vec<f64> {
+        let k = model.n_states();
+        let p = model.transition_matrix(t, RateHet::NONE);
+        let pick = |rng: &mut Rng, weights: &mut dyn Iterator<Item = f64>| {
+            let u = rng.unit();
+            let mut acc = 0.0;
+            let mut last = 0;
+            for (i, w) in weights.enumerate() {
+                acc += w;
+                last = i;
+                if u < acc {
+                    return i;
+                }
+            }
+            last
+        };
+        let mut f = vec![0.0; k * k];
+        for _ in 0..n {
+            let a = pick(rng, &mut model.frequencies().iter().copied());
+            let b = pick(rng, &mut p[a * k..(a + 1) * k].iter().copied());
+            f[a * k + b] += 1.0;
+        }
+        f
+    }
+
+    /// The full (unmerged) log-likelihood on a grid, the independent reference for the solver.
+    fn grid_maximum(model: &ReversibleModel, f: &[f64], step: f64, steps: usize) -> (f64, f64, f64) {
+        let k = model.n_states();
+        let ll = |p: &[f64]| -> f64 {
+            (0..k * k).filter(|&i| f[i] > 0.0).map(|i| f[i] * p[i].ln()).sum()
+        };
+        let (mut best_t, mut best_ll) = (0.0, f64::NEG_INFINITY);
+        for i in 1..=steps {
+            let t = step * i as f64;
+            let v = ll(&model.transition_matrix(t, RateHet::NONE));
+            if v > best_ll {
+                (best_t, best_ll) = (t, v);
+            }
+        }
+        let limit: f64 = (0..k * k)
+            .filter(|&i| f[i] > 0.0)
+            .map(|i| f[i] * model.frequencies()[i % k].ln())
+            .sum();
+        (best_t, best_ll, limit)
+    }
+
+    /// Compares the solver with the grid maximum of the full likelihood on simulated pairs.
+    /// Short sequences at high divergence are where the likelihood is flat, has tails that
+    /// rise towards ℓ(∞), or has no interior maximum at all. Returns (finite, saturated).
+    fn check_against_grid(k: usize, trials: usize, sites: usize, seed: u64) -> (usize, usize) {
+        let mut rng = Rng(seed);
+        let (mut finite, mut saturated) = (0, 0);
+        for trial in 0..trials {
+            let model = random_model(&mut rng, k);
+            let t = [0.3, 1.0, 2.0, 3.0, 4.5][trial % 5];
+            let f = simulate_counts(&mut rng, &model, t, sites);
+            let d = ml_distance(&model, &f, RateHet::NONE);
+            let (grid_t, grid_ll, limit) = grid_maximum(&model, &f, 0.01, 1000);
+            let differing: f64 = (0..k * k).filter(|i| i / k != i % k).map(|i| f[i]).sum();
+            if differing == 0.0 {
+                assert_eq!(d, 0.0);
+                continue;
+            }
+            let loglik = |t: f64| -> f64 {
+                let p = model.transition_matrix(t, RateHet::NONE);
+                (0..k * k).filter(|&i| f[i] > 0.0).map(|i| f[i] * p[i].ln()).sum()
+            };
+            // A maximum on the grid's last point means ℓ is still rising at t_max: saturated by
+            // definition. A margin keeps knife-edge cases (within rounding of ℓ(∞)) out of the test.
+            if grid_t >= 9.995 {
+                saturated += 1;
+                assert!(d.is_infinite(), "k {k} trial {trial}: still rising at t_max but solver returned {d}");
+            } else if grid_ll > limit + 1e-6 {
+                finite += 1;
+                assert!(d.is_finite(), "k {k} trial {trial}: grid finds a maximum at {grid_t}, solver says saturated");
+                // Two maxima of nearly equal height may swap places: accept any maximum whose
+                // likelihood is within a hair of the grid's best.
+                assert!(
+                    (d - grid_t).abs() < 0.011 || loglik(d) >= grid_ll - 1e-3,
+                    "k {k} trial {trial}: solver {d}, grid {grid_t}"
+                );
+            } else if grid_ll < limit - 1e-6 {
+                saturated += 1;
+                assert!(d.is_infinite(), "k {k} trial {trial}: no maximum beats ℓ(∞) but solver returned {d}");
+            }
+        }
+        (finite, saturated)
+    }
+
+    #[test]
+    fn test_solver_agrees_with_a_grid_search_on_simulated_pairs() {
+        let (finite, saturated) = check_against_grid(4, 800, 100, 0x5EED_0030);
+        assert!(finite > 300 && saturated > 30, "both outcomes must occur: {finite} finite, {saturated} saturated");
+        // Saturation is rare at K=20 and 300 sites (about 2%); the extensive test covers it.
+        let (finite, _) = check_against_grid(20, 30, 300, 0x5EED_0031);
+        assert!(finite > 20, "K=20: only {finite} pairs had a finite maximum");
+    }
+
+    /// Larger sweep: `cargo test --release -p nj --lib ml::tests::extensive -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn extensive_grid_comparison() {
+        let (f4, s4) = check_against_grid(4, 60_000, 100, 0xABCD_0001);
+        let (f20, s20) = check_against_grid(20, 2_500, 300, 0xABCD_0002);
+        println!("K=4: {f4} finite, {s4} saturated; K=20: {f20} finite, {s20} saturated");
     }
 
     #[test]
