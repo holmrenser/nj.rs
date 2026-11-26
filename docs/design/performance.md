@@ -21,6 +21,9 @@ that is one 8-byte load, a multiply, a subtract and a min. Today it costs 7.7 ns
 active-set bit, rebuilds the flat triangular index and branches. No vector width fixes that; contiguity does.
 
 - Keep active rows contiguous (swap-remove the joined row); scan each row as a slice with a row-minimum reduction.
+- Define `Q_ij = (m−2)·d_ij − (S_i + S_j)`. The old `(m−2)·d_ij − S_i − S_j` rounds differently depending on which
+  node is `i`, and slot order no longer follows original order; addition is commutative, so the symmetric form
+  depends only on the pair. The oracle uses the same definition.
 - Keep multiply and subtract separate (no `mul_add`) so results are bit-identical at every instruction-set level.
 - Keep today's tie-breaking (first minimum by original `(i, j)`): record per-row minima, rescan only rows equal to
   the global minimum and compare original ids, since slot order no longer follows them. This matters for

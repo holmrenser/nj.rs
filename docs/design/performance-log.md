@@ -13,7 +13,7 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 | # | Step | Status |
 |---|---|---|
 | 0 | Log, probe example, baseline | done |
-| 1 | NJ: contiguous rows, symmetric `Q`, oracle under `cfg(test)` | pending |
+| 1 | NJ: contiguous rows, symmetric `Q`, oracle under `cfg(test)` | done |
 | 2a | Missing data: `N`/`X` dropped per pair; DNA models consume a 4×4 pair-count table | pending |
 | 2b | `Prepared` alignment, bit-planes for DNA, tiled parallel pair loop | pending |
 | 2c | Bootstrap: fuse column gather with packing | pending |
@@ -24,7 +24,14 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 
 ## Decisions and deviations
 
-(filled in as the work proceeds)
+- **Symmetric `Q` (step 1).** The old `(m−2)·d − S_i − S_j` rounds differently depending on which node is `i`
+  (the larger original index). After compaction the slot order no longer follows original order, so that
+  association cannot be reproduced by a vectorisable loop. `Q` is now `(m−2)·d − (S_i + S_j)`, which is symmetric
+  and layout-independent. The reference implementation uses the same definition, so the oracle comparison stays
+  bit-exact. This can change which of two *near-equal* pairs is joined, relative to releases before this branch,
+  in the last bit only; the golden and property tests are unaffected.
+- **WASM already builds with `+simd128`** (`wasm/.cargo/config.toml`), so the "WASM needs a second SIMD build"
+  caveat in `performance.md` does not apply to this repo.
 
 ## Baseline (`018e188`)
 
@@ -43,6 +50,21 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 
 (Stable toolchain without the `simd` feature, i.e. the autovectorised scalar byte kernel.)
 
+## After step 1 (NJ compaction)
+
+| Case | NJ stage before | NJ stage after |
+|---|---|---|
+| DNA n=500 | 160.3 ms | 5.8 ms (28×) |
+| DNA n=1000 | 1284 ms | 44.1 ms (29×) |
+| DNA n=2000 | 10304 ms | 329 ms (31×) |
+| protein n=1000 | 1285 ms | 43.9 ms (29×) |
+
+A scalar, auto-vectorised row minimum (`.min()` on four lanes) is enough for this; the explicit SIMD kernel
+(step 3b) adds on top. Oracle tests: random, integer-tie, duplicate-taxon and degenerate matrices give
+bit-identical trees (identifiers, branch-length bits, labels).
+
 ## Commits
 
 - `perf: add progress log and perf_probe example` — this file, `nj/examples/perf_probe.rs`, baseline above.
+- `perf(nj): compact the matrix, scan rows as slices` — `nj/src/nj.rs` rewritten, previous implementation kept as
+  `nj/src/nj_reference.rs` (`cfg(test)`), four oracle tests.
