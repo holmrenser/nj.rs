@@ -2,7 +2,8 @@
 
 Status: agreed 2026-11-25. Matrix sourcing is open (§5.6); the numerics in §5.4 are to be confirmed during
 implementation. Why ML distances belong in a distance method, how other tools do it, and the statistical
-guarantees: [`theory/distance-estimation.md`](../theory/distance-estimation.md).
+guarantees: [`theory/distance-estimation.md`](../theory/distance-estimation.md). Performance work (NJ restructure,
+packed pair counts, SIMD) and the `Prepared` alignment it requires: [`performance.md`](performance.md).
 
 ## 1. Goal
 
@@ -54,15 +55,16 @@ the reported distance is `(1 − p_inv)·t̂` (substitutions per site over all s
 
 | Layer | Responsibility |
 |---|---|
-| `PairCounts<K>` | One O(L) pass yields `F`, dropping columns outside the `K` states. `PDiff` keeps its SIMD kernel by needing only `n_diff`/`n_comparable`. |
+| `PairCounts` | `F` for a pair of sequences, taken from the prepared alignment (packed bit-planes for DNA, byte histogram for protein), dropping columns outside the `K` states. `PDiff` needs only `n_diff`/`n_comparable`. |
 | `ReversibleModel` | `π`, `s_ij`, cached eigensystem; constructors `jc`, `k2p(κ)`, `hky(κ)`, `gtr(s)`, protein tables; `P(t)`, `P′(t)`, `P″(t)`, gamma/`p_inv` hooks. |
 | Estimator | Closed form (today's), per-pair ML, optional empirical GTR; maps `F` and a model to `d`. |
 
-Models become values built once per run, with access to the alignment (for `π`):
+Models become values built once per run, with access to the alignment (for `π`). They work on a prepared
+alignment and a pair of indices, so that DNA can use packed bit-planes ([`performance.md`](performance.md) §4):
 
 ```rust
 pub trait DistanceModel<A: AlphabetEncoding>: Send + Sync {
-    fn distance(&self, a: &[A::Symbol], b: &[A::Symbol]) -> f64;   // INFINITY if saturated
+    fn distance(&self, data: &Prepared<A>, i: usize, j: usize) -> f64;   // INFINITY if saturated
 }
 impl SubstitutionModel {
     fn build<A: AlphabetEncoding>(&self, msa: &MSA<A>, cfg: &ModelConfig)
@@ -153,7 +155,7 @@ rate 1). This is for the maintainer to settle; it is not legal advice.
 1. Registry, `list_models()`, generated docs and typings, drift checks.
 2. `DistanceModel` objects and `build(&msa, cfg)`; replace the dispatch macro. Required first, because `π` is
    alignment-wide and parameters are configuration. Benchmark.
-3. `PairCounts` and the missing-data policy for all models (§5.2).
+3. `Prepared` alignment, `PairCounts` and the missing-data policy for all models (§5.2); the packed DNA counts are step 2 of [`performance.md`](performance.md).
 4. `ReversibleModel` and solver (§5.4); DNA presets JC, K2P, HKY/F84, GTR with explicit parameters; gamma and `p_inv`.
 5. Protein matrices, once §5.6 is decided.
 6. Later: empirical GTR, estimating exchangeabilities, custom matrices, set-likelihood for partial codes, NJ*.
