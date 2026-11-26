@@ -64,6 +64,7 @@ pub mod fasta;
 pub mod models;
 pub mod msa;
 pub mod nj;
+pub mod prepared;
 #[cfg(test)]
 mod nj_reference;
 pub mod tree;

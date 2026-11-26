@@ -37,6 +37,10 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   distinct state: one `N` against a base was a mismatch and `N` against `N` a match,
   so a pair differing only by an `N` had a non-zero distance. Alignments containing
   `N` or `X` now give smaller distances. Ambiguity codes were already read as `N`.
+- DNA distances are computed from bit-planes (four bitmasks per sequence, A/C/G/T) and a
+  pair-count table: `Kimura2P`, `TajimaNei` and `Tamura` are about 30× faster, `PDiff`
+  and `JukesCantor` about 6×, with identical results. The parallel pair loop writes rows
+  in blocks straight into the matrix instead of materialising every `(i, j)` pair and result.
 - Neighbor-joining is about 30× faster: the active rows of the matrix are kept
   contiguous instead of testing an active-set bit and rebuilding the triangular
   index for every element (n=1000: 1.3 s to 44 ms; n=2000: 10.3 s to 0.33 s). The

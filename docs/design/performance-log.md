@@ -15,8 +15,8 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 | 0 | Log, probe example, baseline | done |
 | 1 | NJ: contiguous rows, symmetric `Q`, oracle under `cfg(test)` | done |
 | 2a | Missing data: `N`/`X` dropped per pair; DNA models consume a 4×4 pair-count table | done |
-| 2b | `Prepared` alignment, bit-planes for DNA, tiled parallel pair loop | pending |
-| 2c | Bootstrap: fuse column gather with packing | pending |
+| 2b | `Prepared` alignment, bit-planes for DNA, tiled parallel pair loop | done (scalar popcount) |
+| 2c | Bootstrap: fuse column gather with packing | pending: decide after SIMD, when counting is cheaper and the gather+pack share is known |
 | 3a | `fearless_simd` on stable: port the byte kernel, remove nightly and the `simd` gate | pending |
 | 3b | SIMD NJ row-minimum | pending |
 | 3c | SIMD popcount loop over the planes | pending |
@@ -70,6 +70,23 @@ A scalar, auto-vectorised row minimum (`.min()` on four lanes) is enough for thi
 (step 3b) adds on top. Oracle tests: random, integer-tie, duplicate-taxon and degenerate matrices give
 bit-identical trees (identifiers, branch-length bits, labels).
 
+## After step 2b (bit-planes, tiled pair loop; scalar popcount)
+
+| Case | Distances before | Distances after | `nj()` total before → after |
+|---|---|---|---|
+| DNA n=1000 `pdiff` | 153.9 ms | 20.9 ms (7×) | 1438 → 64.7 ms |
+| DNA n=1000 `jc` | 155.7 ms | 25.3 ms (6×) | 1438 → 69.4 ms |
+| DNA n=1000 `k2p` | 802.3 ms | 27.0 ms (30×) | 2085 → 70.8 ms |
+| DNA n=1000 `tn` | 940.6 ms | 29.7 ms (32×) | 2224 → 73.6 ms |
+| DNA n=1000 `tamura` | 837.9 ms | 26.3 ms (32×) | 2121 → 70.2 ms |
+| DNA n=2000 `k2p` | 3177.6 ms | 105.6 ms (30×) | 13482 → 444.5 ms |
+| protein n=1000 `poisson` | 78.7 ms | 65.7 ms (unchanged path) | 1364 → 109.6 ms |
+| DNA n=200 `k2p`, 20 bootstrap | — | — | 0.91 s → 0.04 s |
+
+The plane kernel is exact: every pair-count table equals the histogram, and the distance matrix equals a plain
+per-pair loop bit for bit (block sizes 1–50 around the 16-row block, lengths around the 64-column word boundary,
+both alphabets, with and without rate variation). Protein distances still run through the byte kernel.
+
 ## Commits
 
 - `perf: add progress log and perf_probe example` — this file, `nj/examples/perf_probe.rs`, baseline above.
@@ -77,3 +94,5 @@ bit-identical trees (identifiers, branch-length bits, labels).
   `nj/src/nj_reference.rs` (`cfg(test)`), four oracle tests.
 - `perf(models): treat N/X as missing; DNA models consume a 4×4 pair-count table` — `nj/src/counts.rs`,
   `AlphabetEncoding::N_STATES`, `from_counts` on `Kimura2P`/`TajimaNei`/`Tamura`, policy tests, CHANGELOG.
+- `perf(distances): bit-plane pair counts and a tiled pair loop` — `nj/src/prepared.rs`, `ModelCalculation::distance_prepared`,
+  `DistMat::from_prepared` (row blocks written in place; no `(i, j)` / result vectors), bit-exactness tests.

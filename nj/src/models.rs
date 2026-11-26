@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::alphabet::{AlphabetEncoding, DNA, DnaSymbol, Protein, ProteinSymbol};
 use crate::counts::DnaCounts;
+use crate::prepared::Prepared;
 
 /// Among-site rate-variation parameters applied on top of a substitution model.
 ///
@@ -82,6 +83,15 @@ fn corrected_term(coef: f64, arg: f64, gamma_shape: Option<f64>) -> f64 {
 pub trait ModelCalculation<A: AlphabetEncoding> {
     /// Computes the pairwise distance between two aligned sequences.
     fn distance(s1: &[A::Symbol], s2: &[A::Symbol], rates: RateHet) -> f64;
+
+    /// Distance between sequences `i` and `j` of a prepared alignment.
+    ///
+    /// The default works on the symbol slices. DNA models override it to read the
+    /// pair counts from the bit-planes, which gives the same result (the counts are
+    /// exact integers) without a pass over the symbols.
+    fn distance_prepared(data: &Prepared<'_, A>, i: usize, j: usize, rates: RateHet) -> f64 {
+        Self::distance(data.sequence(i), data.sequence(j), rates)
+    }
 }
 
 /// Computes the pairwise distance between two aligned sequences using model `M`,
@@ -191,15 +201,27 @@ fn count_diff_comparable(a: &[u8], b: &[u8], n_states: u8) -> (usize, usize) {
 /// Does not correct for multiple substitutions at the same site.
 pub struct PDiff;
 
+impl PDiff {
+    /// p-distance from the counts of differing and comparable columns.
+    fn from_diff(n_diff: usize, n_comparable: usize) -> f64 {
+        if n_comparable == 0 {
+            return 0.0;
+        }
+        n_diff as f64 / n_comparable as f64
+    }
+}
+
 impl ModelCalculation<DNA> for PDiff {
     fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], _rates: RateHet) -> f64 {
         // Raw p-distance has no log-correction step, so rate-variation
         // parameters do not apply and are ignored.
         let (n_diff, n_comparable) = diff_and_comparable::<DNA>(s1, s2);
-        if n_comparable == 0 {
-            return 0.0;
-        }
-        n_diff as f64 / n_comparable as f64
+        Self::from_diff(n_diff, n_comparable)
+    }
+
+    fn distance_prepared(data: &Prepared<'_, DNA>, i: usize, j: usize, _rates: RateHet) -> f64 {
+        let c = data.dna_counts(i, j);
+        Self::from_diff(c.n_diff(), c.n_comparable())
     }
 }
 
@@ -208,10 +230,7 @@ impl ModelCalculation<Protein> for PDiff {
         // Raw p-distance has no log-correction step, so rate-variation
         // parameters do not apply and are ignored.
         let (n_diff, n_comparable) = diff_and_comparable::<Protein>(s1, s2);
-        if n_comparable == 0 {
-            return 0.0;
-        }
-        n_diff as f64 / n_comparable as f64
+        Self::from_diff(n_diff, n_comparable)
     }
 }
 
@@ -224,9 +243,9 @@ impl ModelCalculation<Protein> for PDiff {
 /// [`f64::INFINITY`] when `p ≥ 0.75` (the formula is undefined at saturation).
 pub struct JukesCantor;
 
-impl ModelCalculation<DNA> for JukesCantor {
-    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
-        let (n_diff, n_comparable) = diff_and_comparable::<DNA>(s1, s2);
+impl JukesCantor {
+    /// Distance from the counts of differing and comparable columns.
+    fn from_diff(n_diff: usize, n_comparable: usize, rates: RateHet) -> f64 {
         if n_comparable == 0 {
             return 0.0;
         }
@@ -238,6 +257,18 @@ impl ModelCalculation<DNA> for JukesCantor {
         } else {
             scale * corrected_term(0.75, arg, rates.gamma_shape)
         }
+    }
+}
+
+impl ModelCalculation<DNA> for JukesCantor {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
+        let (n_diff, n_comparable) = diff_and_comparable::<DNA>(s1, s2);
+        Self::from_diff(n_diff, n_comparable, rates)
+    }
+
+    fn distance_prepared(data: &Prepared<'_, DNA>, i: usize, j: usize, rates: RateHet) -> f64 {
+        let c = data.dna_counts(i, j);
+        Self::from_diff(c.n_diff(), c.n_comparable(), rates)
     }
 }
 
@@ -277,6 +308,10 @@ impl Kimura2P {
 impl ModelCalculation<DNA> for Kimura2P {
     fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
         Self::from_counts(&DnaCounts::from_symbols(s1, s2), rates)
+    }
+
+    fn distance_prepared(data: &Prepared<'_, DNA>, i: usize, j: usize, rates: RateHet) -> f64 {
+        Self::from_counts(&data.dna_counts(i, j), rates)
     }
 }
 
@@ -399,6 +434,10 @@ impl ModelCalculation<DNA> for TajimaNei {
     fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
         Self::from_counts(&DnaCounts::from_symbols(s1, s2), rates)
     }
+
+    fn distance_prepared(data: &Prepared<'_, DNA>, i: usize, j: usize, rates: RateHet) -> f64 {
+        Self::from_counts(&data.dna_counts(i, j), rates)
+    }
 }
 
 /// Tamura (1992) three-parameter distance for DNA.
@@ -447,6 +486,10 @@ impl Tamura {
 impl ModelCalculation<DNA> for Tamura {
     fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
         Self::from_counts(&DnaCounts::from_symbols(s1, s2), rates)
+    }
+
+    fn distance_prepared(data: &Prepared<'_, DNA>, i: usize, j: usize, rates: RateHet) -> f64 {
+        Self::from_counts(&data.dna_counts(i, j), rates)
     }
 }
 
