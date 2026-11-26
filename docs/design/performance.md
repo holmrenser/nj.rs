@@ -23,7 +23,13 @@ active-set bit, rebuilds the flat triangular index and branches. No vector width
 - Keep active rows contiguous (swap-remove the joined row); scan each row as a slice with a row-minimum reduction.
 - Keep multiply and subtract separate (no `mul_add`) so results are bit-identical at every instruction-set level.
 - Keep today's tie-breaking (first minimum by original `(i, j)`): record per-row minima, rescan only rows equal to
-  the global minimum. This matters for alignments with duplicate sequences.
+  the global minimum and compare original ids, since slot order no longer follows them. This matters for
+  alignments with duplicate sequences.
+- Keep the row-sum updates bit-identical to today's. `update_distances` accumulates `S_i` and `S_k` one `k` at a
+  time in ascending original index, so the rounding depends on that order. After a swap-remove the slot order
+  differs, so visit `k` in ascending original id (through a sorted list of active ids, O(m) per iteration). Without
+  this the `Q` values can differ in the last bit from the oracle, which changes which of several near-equal pairs
+  is chosen, most visibly with duplicate sequences.
 - Keep the current implementation under `cfg(test)` as the oracle. Keep f64.
 - **Scope:** exact unpruned NJ for n ≲ 10⁴ (matrix `4·n²` bytes: 0.4 GB at 10⁴, 40 GB at 10⁵). Once the matrix
   outgrows the cache the loop is bandwidth-bound and SIMD adds nothing; the way beyond is pruning
