@@ -27,9 +27,20 @@ Takes a multiple sequence alignment and returns a Newick tree. The alphabet (DNA
 | `Tamura` | ✓ | | ✓ |
 | `Poisson` | | ✓ | ✓ |
 | `KimuraProtein` | | ✓ | ✓ |
+| `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` (ML distance, empirical matrix) | | ✓ | ✓ |
 | `Custom` (ML distance, your rate matrix) | | ✓ | ✓ |
 
-**Custom protein matrices.** `Custom` is the maximum-likelihood distance under a reversible rate matrix you supply, such as WAG, LG or JTT: for every pair of sequences it fits the single distance `t` that maximises `Σ F_ab ln P_ab(t)` (`F_ab`: columns with residues `a` and `b`; `P(t) = exp(Qt)`), so the matrix is fixed and only `t` is estimated. Gamma rates and invariant sites enter the likelihood, and gaps and `X` are dropped per pair. Pass the matrix as text in PAML layout in the `matrix` option (CLI: `--matrix FILE`): the lower triangle of the symmetric exchangeability matrix by rows (1, 2, …, 19 numbers), then the 20 amino-acid frequencies, in the order `ARNDCQEGHILKMFPSTWYV`; anything after those numbers is ignored. `matrix` is required for `Custom` and an error for any other model. nj.rs does not ship the published matrices; the PAML-format files distributed by the authors of each matrix can be passed as they are. Cost: about 5–10 µs per pair (n = 1000: several seconds), against milliseconds for the closed-form models. Theory and solver: [`docs/design/substitution-models.md`](docs/design/substitution-models.md), [`docs/theory/distance-estimation.md`](docs/theory/distance-estimation.md).
+**Empirical protein matrices (maximum likelihood).** `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff` and `DayhoffDcmut` give, for every pair of sequences, the distance `t` that maximises the likelihood of its aligned residue pairs under the named replacement matrix, with gamma rates and invariant sites if requested. They differ from the closed-form `Poisson` and `KimuraProtein` in using the matrix's unequal exchange rates and residue frequencies. `JttDcmut` and `DayhoffDcmut` are the versions recomputed by Kosiol and Goldman, who recommend them over the originals. Please cite the matrix you use:
+
+- **LG**: Le SQ, Gascuel O (2008) An improved general amino acid replacement matrix. *Mol Biol Evol* 25:1307–1320. [doi:10.1093/molbev/msn067](https://doi.org/10.1093/molbev/msn067)
+- **WAG**: Whelan S, Goldman N (2001) A general empirical model of protein evolution derived from multiple protein families using a maximum-likelihood approach. *Mol Biol Evol* 18:691–699. [doi:10.1093/oxfordjournals.molbev.a003851](https://doi.org/10.1093/oxfordjournals.molbev.a003851)
+- **JTT**: Jones DT, Taylor WR, Thornton JM (1992) The rapid generation of mutation data matrices from protein sequences. *Comput Appl Biosci* 8:275–282. [doi:10.1093/bioinformatics/8.3.275](https://doi.org/10.1093/bioinformatics/8.3.275)
+- **Dayhoff**: Dayhoff MO, Schwartz RM, Orcutt BC (1978) A model of evolutionary change in proteins. In: *Atlas of Protein Sequence and Structure*, Vol. 5, pp. 345–352. National Biomedical Research Foundation, Washington DC
+- **JTT-DCMut, DCMut-Dayhoff**: Kosiol C, Goldman N (2005) Different versions of the Dayhoff rate matrix. *Mol Biol Evol* 22:193–199. [doi:10.1093/molbev/msi005](https://doi.org/10.1093/molbev/msi005)
+
+`JttDcmut` and `DayhoffDcmut` reproduce the distances of PHYLIP 3.697 `protdist` (JTT and PAM models) to its printed precision, with and without gamma rates. The data files, their sources and checksums are in [`nj/data/matrices/`](nj/data/matrices/README.md); they were taken from the list at <http://giphy.pasteur.fr/empirical-models-of-amino-acid-substitution/>.
+
+**Custom protein matrices.** `Custom` is the same maximum-likelihood distance under a reversible rate matrix you supply (another matrix, or one of the above from its authors): for every pair of sequences it fits the single distance `t` that maximises `Σ F_ab ln P_ab(t)` (`F_ab`: columns with residues `a` and `b`; `P(t) = exp(Qt)`), so the matrix is fixed and only `t` is estimated. Gamma rates and invariant sites enter the likelihood, and gaps and `X` are dropped per pair. Pass the matrix as text in PAML layout in the `matrix` option (CLI: `--matrix FILE`): the lower triangle of the symmetric exchangeability matrix by rows (1, 2, …, 19 numbers), then the 20 amino-acid frequencies, in the order `ARNDCQEGHILKMFPSTWYV`; anything after those numbers is ignored. `matrix` is required for `Custom` and an error for any other model. PAML-format matrix files can be passed as they are. Cost: about 5–10 µs per pair (n = 1000: several seconds), against milliseconds for the closed-form models. Theory and solver: [`docs/design/substitution-models.md`](docs/design/substitution-models.md), [`docs/theory/distance-estimation.md`](docs/theory/distance-estimation.md).
 
 Using a model that does not match the alphabet returns an error. `gamma_shape` (α) must be `> 0` and `p_invar` must be in `[0, 1)`; they combine as `+I+Γ`.
 
@@ -54,7 +65,7 @@ nj -t 4 --n-bootstrap-samples 1000 sequences.fasta > tree.nwk
 | `[FASTA]` | Input alignment (stdin if omitted) |
 | `-o, --output <FILE>` | Write output to a file instead of stdout |
 | `-b, --n-bootstrap-samples <N>` | Bootstrap replicates, `0` to disable (default `100`) |
-| `-m, --substitution-model <MODEL>` | `p-diff` (default), `jukes-cantor`, `kimura2-p`, `tajima-nei`, `tamura`, `poisson`, `kimura-protein`, `custom` |
+| `-m, --substitution-model <MODEL>` | `p-diff` (default), `jukes-cantor`, `kimura2-p`, `tajima-nei`, `tamura`, `poisson`, `kimura-protein`, `lg`, `wag`, `jtt`, `jtt-dcmut`, `dayhoff`, `dayhoff-dcmut`, `custom` |
 | `-a, --alphabet <ALPHABET>` | Override alphabet auto-detection |
 | `--matrix <FILE>` | Rate matrix (PAML layout) for `-m custom` |
 | `-g, --gamma-shape <ALPHA>` | Gamma rate-heterogeneity shape |

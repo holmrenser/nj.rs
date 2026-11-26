@@ -14,6 +14,12 @@ SubstitutionModel = Literal[
     "Tamura",
     "Poisson",
     "KimuraProtein",
+    "Lg",
+    "Wag",
+    "Jtt",
+    "JttDcmut",
+    "Dayhoff",
+    "DayhoffDcmut",
     "Custom",
 ]
 Alphabet = Literal["DNA", "Protein"]
@@ -108,7 +114,9 @@ def nj(
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
             ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``. Protein: ``"PDiff"``,
-            ``"Poisson"``, ``"KimuraProtein"``, ``"Custom"`` (needs ``matrix``).
+            ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
+            ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
+            ``"Custom"`` (needs ``matrix``).
             Alphabet is auto-detected; passing an incompatible model raises
             ``ValueError``.
         n_bootstrap_samples: Number of bootstrap replicates used to annotate
@@ -203,7 +211,9 @@ def distance_matrix(
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
             ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``. Protein: ``"PDiff"``,
-            ``"Poisson"``, ``"KimuraProtein"``, ``"Custom"`` (needs ``matrix``).
+            ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
+            ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
+            ``"Custom"`` (needs ``matrix``).
             Alphabet is auto-detected; passing an incompatible model raises
             ``ValueError``.
         matrix: Rate matrix for ``"Custom"`` (and only then), as PAML-layout text;
@@ -257,7 +267,9 @@ def average_distance(
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
             ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``. Protein: ``"PDiff"``,
-            ``"Poisson"``, ``"KimuraProtein"``, ``"Custom"`` (needs ``matrix``).
+            ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
+            ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
+            ``"Custom"`` (needs ``matrix``).
             Alphabet is auto-detected; passing an incompatible model raises
             ``ValueError``.
         matrix: Rate matrix for ``"Custom"`` (and only then), as PAML-layout text;

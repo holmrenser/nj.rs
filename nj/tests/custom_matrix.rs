@@ -219,3 +219,83 @@ fn saturated_pairs_are_capped_in_nj_and_infinite_in_the_raw_matrix() {
             .any(|e| e.contains("saturated"))
     );
 }
+
+const BUILTINS: [(SubstitutionModel, &str); 6] = [
+    (
+        SubstitutionModel::Lg,
+        include_str!("../data/matrices/LG.dat"),
+    ),
+    (
+        SubstitutionModel::Wag,
+        include_str!("../data/matrices/WAG.dat"),
+    ),
+    (
+        SubstitutionModel::Jtt,
+        include_str!("../data/matrices/JTT.dat"),
+    ),
+    (
+        SubstitutionModel::JttDcmut,
+        include_str!("../data/matrices/DCMut-JTT.dat"),
+    ),
+    (
+        SubstitutionModel::Dayhoff,
+        include_str!("../data/matrices/Dayhoff.dat"),
+    ),
+    (
+        SubstitutionModel::DayhoffDcmut,
+        include_str!("../data/matrices/DCMut-Dayhoff.dat"),
+    ),
+];
+
+#[test]
+fn builtin_models_equal_custom_with_the_same_file() {
+    // The embedded matrix and the same file passed at run time must give identical distances.
+    for (model, text) in BUILTINS {
+        let builtin = distance_matrix(dist_conf(family(6), model.clone(), None)).unwrap();
+        let custom =
+            distance_matrix(dist_conf(family(6), SubstitutionModel::Custom, Some(text))).unwrap();
+        assert_eq!(builtin.matrix, custom.matrix, "{model:?}");
+        assert!(
+            builtin.matrix[0][5] > 0.0 && builtin.matrix[0][5].is_finite(),
+            "{model:?}"
+        );
+    }
+}
+
+#[test]
+fn builtin_models_run_nj_with_bootstrap() {
+    for (model, _) in BUILTINS {
+        let mut conf = nj_conf(family(7), None, 10);
+        conf.substitution_model = model.clone();
+        conf.gamma_shape = Some(1.0);
+        let result = run_nj(conf, None).unwrap();
+        for i in 0..7 {
+            assert!(
+                result.newick.contains(&format!("s{i}:")),
+                "{model:?}: {}",
+                result.newick
+            );
+        }
+        assert!(
+            !result.newick.contains("NaN") && !result.newick.contains("inf"),
+            "{model:?}"
+        );
+    }
+}
+
+#[test]
+fn builtin_models_are_protein_only_and_take_no_matrix() {
+    let dna = vec![seq("a", "ACGTACGTAC"), seq("b", "ACGTACGTAA")];
+    for (model, text) in BUILTINS {
+        let err = distance_matrix(dist_conf(dna.clone(), model.clone(), None)).unwrap_err();
+        assert!(
+            matches!(err, NJError::IncompatibleModel { .. }),
+            "{model:?}: {err:?}"
+        );
+        let err = distance_matrix(dist_conf(family(3), model.clone(), Some(text))).unwrap_err();
+        assert!(
+            matches!(err, NJError::InvalidMatrix { .. }),
+            "{model:?}: {err:?}"
+        );
+    }
+}

@@ -233,8 +233,9 @@ sequence: string, };
  * | `Tamura` | DNA only | `-h · ln(1 - P/h - Q) - 0.5(1-h)·ln(1-2Q)` |
  * | `Poisson` | Protein only | `-ln(1 - p)` |
  * | `KimuraProtein` | Protein only | `-ln(1 - p - 0.2 p²)` |
+ * | `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` | Protein only | ML distance under the named empirical matrix |
  * | `Custom` | Protein only (for now) | ML distance under the matrix in the `matrix` option |
  *
  * Model–alphabet compatibility is enforced at runtime in [`crate::nj`].
  */
-export type SubstitutionModel = "PDiff" | "JukesCantor" | "Kimura2P" | "TajimaNei" | "Tamura" | "Poisson" | "KimuraProtein" | "Custom";
+export type SubstitutionModel = "PDiff" | "JukesCantor" | "Kimura2P" | "TajimaNei" | "Tamura" | "Poisson" | "KimuraProtein" | "Lg" | "Wag" | "Jtt" | "JttDcmut" | "Dayhoff" | "DayhoffDcmut" | "Custom";

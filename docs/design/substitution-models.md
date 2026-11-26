@@ -1,7 +1,7 @@
 # Design: generalised substitution models and ML distances
 
-Status: agreed 2026-11-25; the protein ML engine and the `Custom` model are implemented on branch `feat/protein-ml`
-(§6). Built-in matrices wait on §5.6; the DNA presets (K2P/HKY/GTR as ML) are not started. Why ML distances belong in a distance method, how other tools do it, and the statistical
+Status: agreed 2026-11-25; the protein ML engine, the `Custom` model and six built-in matrices are implemented on branch
+`feat/protein-ml` (§6). The DNA presets (K2P/HKY/GTR as ML) are not started. Why ML distances belong in a distance method, how other tools do it, and the statistical
 guarantees: [`theory/distance-estimation.md`](../theory/distance-estimation.md). Performance work (NJ restructure,
 packed pair counts, SIMD) and the `Prepared` alignment it requires: [`performance.md`](performance.md).
 
@@ -23,7 +23,7 @@ README, `CLAUDE.md`, Python `Literal` and docstrings, changelog, generated TS), 
 | Gaps, `N`, `X`, ambiguity | Dropped per pair in **every** model, existing ones included |
 | Saturated pairs | Replaced by `max_distance` (**default 10.0** substitutions/site) with a warning; never abort |
 | Solver | Bracketed, safeguarded Newton; `t_max = 10`; `ℓ(t̂) > ℓ(∞)` required |
-| Matrix sourcing and licence | **Open** (§5.6); blocks only the protein steps |
+| Matrix sourcing and licence | Source chosen by the maintainer, caveats recorded (§5.6) |
 
 Two behaviour changes need changelog entries: `N`/`X` no longer count as differences, and saturated distances
 become finite with a warning instead of `NaN`/`inf` in the output.
@@ -145,13 +145,18 @@ nonzero entries, ≈4 iterations). The implementation measures 4.5–9.5 µs per
 whole `PDiff` run (almost all NJ; measured), times (B+1) with bootstrap. Warm starts did not reduce iterations.
 Confirm with a criterion benchmark in the repo before the protein step.
 
-### 5.6 Matrix data and licence (open)
+### 5.6 Matrix data and licence
 
-nj.rs is MIT. PAML, the usual source of `.dat` files, is GPL-3 (earlier releases academic-only) according to
-Debian metadata; the terms of the individual files were not established. Until decided: do not copy `.dat`
-files from PAML or IQ-TREE. Prefer the original publications or the authors' own distribution, record
-provenance and terms in each data file, and check invariants (frequencies sum to 1, rows of `Q` sum to 0, mean
-rate 1). This is for the maintainer to settle; it is not legal advice.
+nj.rs is MIT. PAML, the usual source of `.dat` files, is GPL-3 (earlier releases academic-only) according to Debian
+metadata; the terms of the individual files were not established, so no file was copied from PAML or IQ-TREE. The
+authors' own servers (`ebi.ac.uk/goldman-srv`, `atgc.lirmm.fr`) could not be reached from the development sandbox. The
+maintainer chose the list at `giphy.pasteur.fr/empirical-models-of-amino-acid-substitution/` as the source (2026-11-26):
+it gives PAML-layout files with, for each, the reference and the origin of the data, and states no terms of use. The
+six files (LG, WAG, JTT, JTT-DCMut, Dayhoff, DCMut-Dayhoff) are embedded unmodified in `nj/data/matrices/`, with
+references, stated data sources, SHA-256 sums and the licence caveat in that directory's `README.md`. Invariants are
+tested for every matrix (frequencies sum to 1, `P(t)` is stochastic and reversible, mean rate 1, residue order checked
+against chemically conservative and dissimilar pairs). The JTT file's stated source is the GPL-licensed MrBayes
+(`src/model.c`); whether that matters for an MIT crate is for the maintainer to settle; this is not legal advice.
 
 ## 6. Plan
 
@@ -165,8 +170,8 @@ rate 1). This is for the maintainer to settle; it is not legal advice.
    ([`performance.md`](performance.md), [`performance-log.md`](performance-log.md)).
 4. `ReversibleModel` and solver (§5.4), gamma and `p_inv`. **Done** (`reversible.rs`, `ml.rs`), exposed for protein through the
    `Custom` model. **Open:** DNA presets (JC, K2P, HKY/F84, GTR with explicit parameters) and a DNA `Custom`.
-5. Protein matrices: `Custom` accepts any matrix as PAML text. **Open:** built-in LG, WAG, JTT, Dayhoff (§5.6): the engine
-   embeds a matrix with one `protein_matrix!` line once its data file is cleared.
+5. Protein matrices. **Done:** `Custom` takes any matrix as PAML text, and LG, WAG, JTT, JTT-DCMut, Dayhoff and DCMut-Dayhoff
+   are built in (§5.6): one data file and one `protein_matrix!` line each.
 6. Later: empirical GTR, estimating exchangeabilities, set-likelihood for partial codes, NJ*.
 
 ## 7. Validation
@@ -179,7 +184,13 @@ rate 1). This is for the maintainer to settle; it is not legal advice.
 - Missing data: appending a column with a gap, `N` or `X` in either sequence changes no distance.
 - Solver against an independent reference: a dense grid maximum of the full (unmerged) likelihood on 62,500 simulated pairs
   (K=4 and 20, high divergence, short sequences), with no disagreement (`ml::tests`, extensive run `--ignored`).
-- Cross-check against a reference tool (PHYLIP `dnadist`/`protdist` or PAML [Yang 2007]) on a small alignment.
+- **Cross-check against PHYLIP 3.697 `protdist` (done).** `JttDcmut` and `DayhoffDcmut` reproduce `protdist`'s JTT and PAM
+  distances to its printed precision (six decimals, ≤ 1·10⁻⁵ relative) on an 8-taxon, 400-residue alignment with up to 53%
+  of columns resampled, for uniform rates and gamma shapes 1 and 0.5, over distances up to 9.6 substitutions per site.
+  The one pair whose `protdist` distance is 12.6 lies beyond `t_max` and is reported saturated (§5.3). The original `Jtt`
+  and `Dayhoff` files differ from `protdist` by 0.2–0.5%, which is the size of the data-version differences Kosiol and
+  Goldman (2005) report, so `protdist` evidently uses the recomputed matrices. A five-taxon excerpt is kept as a
+  regression test (`nj/tests/protdist_reference.rs`). A PAML cross-check is still open.
 
 ## References
 

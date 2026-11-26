@@ -81,7 +81,6 @@ impl DistanceModel<Protein> for CustomProtein {
 }
 
 /// Defines a zero-sized [`ProteinMatrix`] from PAML-layout text, parsed on first use.
-#[allow(unused_macros)]
 macro_rules! protein_matrix {
     ($(#[$meta:meta])* $name:ident, $text:expr) => {
         $(#[$meta])*
@@ -99,8 +98,38 @@ macro_rules! protein_matrix {
         }
     };
 }
-#[allow(unused_imports)]
-pub(crate) use protein_matrix;
+
+// The built-in matrices. Provenance, citations and checksums: `nj/data/matrices/README.md`.
+protein_matrix!(
+    /// LG: Le SQ, Gascuel O (2008) *Mol Biol Evol* 25:1307–1320, doi:10.1093/molbev/msn067.
+    Lg,
+    include_str!("../data/matrices/LG.dat")
+);
+protein_matrix!(
+    /// WAG: Whelan S, Goldman N (2001) *Mol Biol Evol* 18:691–699, doi:10.1093/oxfordjournals.molbev.a003851.
+    Wag,
+    include_str!("../data/matrices/WAG.dat")
+);
+protein_matrix!(
+    /// JTT: Jones DT, Taylor WR, Thornton JM (1992) *Comput Appl Biosci* 8:275–282, doi:10.1093/bioinformatics/8.3.275.
+    Jtt,
+    include_str!("../data/matrices/JTT.dat")
+);
+protein_matrix!(
+    /// JTT recomputed by Kosiol C, Goldman N (2005) *Mol Biol Evol* 22:193–199, doi:10.1093/molbev/msi005.
+    JttDcmut,
+    include_str!("../data/matrices/DCMut-JTT.dat")
+);
+protein_matrix!(
+    /// Dayhoff MO, Schwartz RM, Orcutt BC (1978) *Atlas of Protein Sequence and Structure* 5:345–352.
+    Dayhoff,
+    include_str!("../data/matrices/Dayhoff.dat")
+);
+protein_matrix!(
+    /// Dayhoff recomputed by Kosiol C, Goldman N (2005) *Mol Biol Evol* 22:193–199, doi:10.1093/molbev/msi005.
+    DayhoffDcmut,
+    include_str!("../data/matrices/DCMut-Dayhoff.dat")
+);
 
 #[cfg(test)]
 mod tests {
@@ -245,6 +274,211 @@ mod tests {
                 result.newick
             );
         }
+    }
+
+    fn builtin_matrices() -> Vec<(&'static str, &'static ReversibleModel, &'static str)> {
+        vec![
+            ("LG", Lg::model(), include_str!("../data/matrices/LG.dat")),
+            (
+                "WAG",
+                Wag::model(),
+                include_str!("../data/matrices/WAG.dat"),
+            ),
+            (
+                "JTT",
+                Jtt::model(),
+                include_str!("../data/matrices/JTT.dat"),
+            ),
+            (
+                "JTT-DCMut",
+                JttDcmut::model(),
+                include_str!("../data/matrices/DCMut-JTT.dat"),
+            ),
+            (
+                "Dayhoff",
+                Dayhoff::model(),
+                include_str!("../data/matrices/Dayhoff.dat"),
+            ),
+            (
+                "DCMut",
+                DayhoffDcmut::model(),
+                include_str!("../data/matrices/DCMut-Dayhoff.dat"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_builtin_matrices_are_valid_reversible_models() {
+        for (name, model, text) in builtin_matrices() {
+            assert_eq!(model.n_states(), 20, "{name}");
+            let pi = model.frequencies();
+            assert!(
+                (pi.iter().sum::<f64>() - 1.0).abs() < 1e-12,
+                "{name}: frequencies sum to one"
+            );
+            assert!(
+                pi.iter().all(|&f| f > 0.005 && f < 0.2),
+                "{name}: frequencies are plausible"
+            );
+
+            // The frequencies are the 20 numbers after the 190 exchangeabilities in the file
+            // (renormalised, since the files give six digits).
+            let numbers: Vec<f64> = text
+                .split_whitespace()
+                .take(210)
+                .map(|t| t.parse().unwrap())
+                .collect();
+            let file_pi = &numbers[190..];
+            let total: f64 = file_pi.iter().sum();
+            assert!(
+                (total - 1.0).abs() < 1e-3,
+                "{name}: file frequencies sum to {total}"
+            );
+            for a in 0..20 {
+                assert!(
+                    (pi[a] - file_pi[a] / total).abs() < 1e-12,
+                    "{name}: frequency {a}"
+                );
+            }
+
+            for &t in &[0.02, 0.5, 3.0] {
+                let p = model.transition_matrix(t, RateHet::NONE);
+                for a in 0..20 {
+                    let row: f64 = (0..20).map(|b| p[a * 20 + b]).sum();
+                    assert!((row - 1.0).abs() < 1e-11, "{name}: row {a} at t={t}");
+                    for b in 0..20 {
+                        assert!(p[a * 20 + b] > -1e-13, "{name}: P non-negative");
+                        let (l, r) = (pi[a] * p[a * 20 + b], pi[b] * p[b * 20 + a]);
+                        assert!(
+                            (l - r).abs() < 1e-12,
+                            "{name}: detailed balance ({a},{b}) at t={t}"
+                        );
+                    }
+                }
+            }
+            // One substitution per site per unit time.
+            let t = 1e-6;
+            let p = model.transition_matrix(t, RateHet::NONE);
+            let moved: f64 = (0..20).map(|a| pi[a] * (1.0 - p[a * 20 + a])).sum();
+            assert!(
+                (moved / t - 1.0).abs() < 1e-4,
+                "{name}: mean rate {}",
+                moved / t
+            );
+            // All eigenvalues are negative apart from the stationary one.
+            assert_eq!(
+                model.eigenvalues().iter().filter(|&&l| l == 0.0).count(),
+                1,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_builtin_matrices_use_the_amino_acid_order_of_the_alphabet() {
+        // Exchangeabilities are proportional to P_ab(t) / π_b for small t. Conservative
+        // replacements (similar size and chemistry) are the most exchangeable pairs in every
+        // empirical matrix and clearly dissimilar pairs are among the least. A matrix in another
+        // residue order than `ARNDCQEGHILKMFPSTWYV` would fail this with probability ≈ 1 − 10⁻⁷.
+        let idx = |c: char| {
+            b"ARNDCQEGHILKMFPSTWYV"
+                .iter()
+                .position(|&x| x as char == c)
+                .unwrap()
+        };
+        let conservative = [
+            "IV", "IL", "LM", "IM", "DE", "ND", "QE", "KR", "FY", "ST", "AS", "FL",
+        ];
+        let dissimilar = ["WD", "CD", "PW"];
+        for (name, model, _) in builtin_matrices() {
+            let p = model.transition_matrix(1e-4, RateHet::NONE);
+            let pi = model.frequencies();
+            let s = |a: usize, b: usize| p[a * 20 + b] / pi[b];
+            let mut all: Vec<f64> = (0..20)
+                .flat_map(|a| ((a + 1)..20).map(move |b| (a, b)))
+                .map(|(a, b)| s(a, b))
+                .collect();
+            all.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            let (median, q75) = (all[all.len() / 2], all[all.len() * 3 / 4]);
+            for pair in conservative {
+                let (a, b) = (
+                    idx(pair.chars().next().unwrap()),
+                    idx(pair.chars().nth(1).unwrap()),
+                );
+                assert!(
+                    s(a, b) > q75,
+                    "{name}: {pair} should be among the most exchangeable pairs"
+                );
+            }
+            for pair in dissimilar {
+                let (a, b) = (
+                    idx(pair.chars().next().unwrap()),
+                    idx(pair.chars().nth(1).unwrap()),
+                );
+                assert!(
+                    s(a, b) < median,
+                    "{name}: {pair} should be below the median"
+                );
+            }
+            // W and C are among the rarest residues, L and A among the commonest.
+            assert!(
+                pi[idx('W')] < 0.02 && pi[idx('C')] < 0.04,
+                "{name}: W/C frequencies"
+            );
+            assert!(
+                pi[idx('L')] > 0.07 && pi[idx('A')] > 0.06,
+                "{name}: L/A frequencies"
+            );
+        }
+    }
+
+    #[test]
+    fn test_builtin_matrices_differ_from_each_other() {
+        // Guard against two models silently loading the same file.
+        let all = builtin_matrices();
+        for i in 0..all.len() {
+            for j in (i + 1)..all.len() {
+                let (a, b) = (
+                    all[i].1.transition_matrix(0.5, RateHet::NONE),
+                    all[j].1.transition_matrix(0.5, RateHet::NONE),
+                );
+                let diff: f64 = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum();
+                assert!(
+                    diff > 1e-3,
+                    "{} and {} are indistinguishable",
+                    all[i].0,
+                    all[j].0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_builtin_distances_are_finite_ordered_and_matrix_dependent() {
+        let msa = alignment(6, 400, 4);
+        let prepared = Prepared::new(&msa);
+        let mut seen = Vec::new();
+        for (name, _, _) in builtin_matrices() {
+            let d = match name {
+                "LG" => ProteinMl::<Lg>::distance_prepared(&prepared, 0, 5, RateHet::NONE),
+                "WAG" => ProteinMl::<Wag>::distance_prepared(&prepared, 0, 5, RateHet::NONE),
+                "JTT" => ProteinMl::<Jtt>::distance_prepared(&prepared, 0, 5, RateHet::NONE),
+                "JTT-DCMut" => {
+                    ProteinMl::<JttDcmut>::distance_prepared(&prepared, 0, 5, RateHet::NONE)
+                }
+                "Dayhoff" => {
+                    ProteinMl::<Dayhoff>::distance_prepared(&prepared, 0, 5, RateHet::NONE)
+                }
+                _ => ProteinMl::<DayhoffDcmut>::distance_prepared(&prepared, 0, 5, RateHet::NONE),
+            };
+            assert!(d.is_finite() && d > 0.0, "{name}: {d}");
+            seen.push(d);
+        }
+        // The matrices give different (but comparable) distances for the same pair.
+        let (lo, hi) = seen
+            .iter()
+            .fold((f64::MAX, 0.0f64), |(l, h), &d| (l.min(d), h.max(d)));
+        assert!(hi > lo * 1.0001 && hi < lo * 1.5, "distances {seen:?}");
     }
 
     #[test]

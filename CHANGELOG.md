@@ -9,13 +9,20 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 ## [Unreleased]
 
 ### Added
+- **Empirical protein models with maximum-likelihood distances: `Lg`, `Wag`, `Jtt`, `JttDcmut`,
+  `Dayhoff`, `DayhoffDcmut`** (CLI `lg`, `wag`, `jtt`, `jtt-dcmut`, `dayhoff`, `dayhoff-dcmut`).
+  For each pair the distance is the `t` that maximises the likelihood of its aligned residue
+  pairs under the matrix, with optional gamma rates and invariant sites. The matrices come from
+  the list at giphy.pasteur.fr; references, sources and checksums are in
+  `nj/data/matrices/README.md`. `JttDcmut` and `DayhoffDcmut` agree with PHYLIP
+  `protdist` (JTT and PAM) to its printed precision.
 - **`Custom` model: maximum-likelihood protein distances under your own rate matrix.** Pass the
   exchangeabilities and frequencies of a reversible model (WAG, LG, JTT, …) as PAML-layout
   text in the new `matrix` option (CLI `--matrix FILE`, Python `matrix=`, config field
   `matrix`); each pair's distance is the `t` that maximises the likelihood of its aligned
   residue pairs, with gamma rates and invariant sites. Saturated pairs are capped by
-  `max_distance` like every other model. No matrix data ships with nj.rs. About 5–10 µs per
-  pair, so n = 1000 takes several seconds. New `NJError::InvalidMatrix` (`ValueError` in
+  `max_distance` like every other model. About 5–10 µs per pair for the ML models, so
+  n = 1000 takes several seconds. New `NJError::InvalidMatrix` (`ValueError` in
   Python).
 - `max_distance` option (default 10.0 substitutions per site) on `NJConfig`, the
   CLI (`--max-distance`) and the Python `nj()` function: the distance given to a

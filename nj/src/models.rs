@@ -481,6 +481,7 @@ impl ModelCalculation<DNA> for Tamura {
 /// | `Tamura` | DNA only | `-h · ln(1 - P/h - Q) - 0.5(1-h)·ln(1-2Q)` |
 /// | `Poisson` | Protein only | `-ln(1 - p)` |
 /// | `KimuraProtein` | Protein only | `-ln(1 - p - 0.2 p²)` |
+/// | `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` | Protein only | ML distance under the named empirical matrix |
 /// | `Custom` | Protein only (for now) | ML distance under the matrix in the `matrix` option |
 ///
 /// Model–alphabet compatibility is enforced at runtime in [`crate::nj`].
@@ -502,6 +503,18 @@ pub enum SubstitutionModel {
     Poisson,
     /// Kimura (1983): empirical protein distance (`Poisson` plus a `0.2 p²` term).
     KimuraProtein,
+    /// Maximum-likelihood distance under the LG matrix (Le & Gascuel 2008).
+    Lg,
+    /// Maximum-likelihood distance under the WAG matrix (Whelan & Goldman 2001).
+    Wag,
+    /// Maximum-likelihood distance under the JTT matrix (Jones, Taylor & Thornton 1992).
+    Jtt,
+    /// Maximum-likelihood distance under JTT as recomputed by Kosiol & Goldman (2005), "JTT-DCMut".
+    JttDcmut,
+    /// Maximum-likelihood distance under the Dayhoff matrix (Dayhoff, Schwartz & Orcutt 1978).
+    Dayhoff,
+    /// Maximum-likelihood distance under Dayhoff as recomputed by Kosiol & Goldman (2005), "DCMut".
+    DayhoffDcmut,
     /// Maximum-likelihood distance under a user-supplied reversible protein rate matrix
     /// (e.g. WAG, LG, JTT): the exchangeabilities and frequencies are given in the
     /// `matrix` option, PAML layout. Only the distance of each pair is fitted.

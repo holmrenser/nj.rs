@@ -232,7 +232,15 @@ macro_rules! dispatch_run {
                     Sm::Kimura2P => $run(msa, &Static::<$crate::models::Kimura2P>::new(), $($arg),*).map_err(fail),
                     Sm::TajimaNei => $run(msa, &Static::<$crate::models::TajimaNei>::new(), $($arg),*).map_err(fail),
                     Sm::Tamura => $run(msa, &Static::<$crate::models::Tamura>::new(), $($arg),*).map_err(fail),
-                    Sm::Poisson | Sm::KimuraProtein | Sm::Custom => Err($crate::error::NJError::IncompatibleModel {
+                    Sm::Poisson
+                    | Sm::KimuraProtein
+                    | Sm::Lg
+                    | Sm::Wag
+                    | Sm::Jtt
+                    | Sm::JttDcmut
+                    | Sm::Dayhoff
+                    | Sm::DayhoffDcmut
+                    | Sm::Custom => Err($crate::error::NJError::IncompatibleModel {
                         model,
                         alphabet: $crate::alphabet::Alphabet::DNA,
                     }),
@@ -244,6 +252,12 @@ macro_rules! dispatch_run {
                     Sm::Poisson => $run(msa, &Static::<$crate::models::Poisson>::new(), $($arg),*).map_err(fail),
                     Sm::KimuraProtein => $run(msa, &Static::<$crate::models::KimuraProtein>::new(), $($arg),*).map_err(fail),
                     Sm::PDiff => $run(msa, &Static::<$crate::models::PDiff>::new(), $($arg),*).map_err(fail),
+                    Sm::Lg => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::Lg>>::new(), $($arg),*).map_err(fail),
+                    Sm::Wag => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::Wag>>::new(), $($arg),*).map_err(fail),
+                    Sm::Jtt => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::Jtt>>::new(), $($arg),*).map_err(fail),
+                    Sm::JttDcmut => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::JttDcmut>>::new(), $($arg),*).map_err(fail),
+                    Sm::Dayhoff => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::Dayhoff>>::new(), $($arg),*).map_err(fail),
+                    Sm::DayhoffDcmut => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::DayhoffDcmut>>::new(), $($arg),*).map_err(fail),
                     Sm::Custom => {
                         let text = matrix.expect("validate_matrix guarantees the matrix for Custom");
                         let custom = $crate::empirical::CustomProtein::from_paml(text)

@@ -445,3 +445,22 @@ class TestCustomMatrix:
         dna = [{"identifier": "a", "sequence": "ACGTACGT"}, {"identifier": "b", "sequence": "ACGTACGA"}]
         with pytest.raises(ValueError):
             nj(dna, substitution_model="Custom", matrix=EQUAL_RATES_MATRIX)
+
+
+class TestBuiltinMatrices:
+    @pytest.mark.parametrize("model", ["Lg", "Wag", "Jtt", "JttDcmut", "Dayhoff", "DayhoffDcmut"])
+    def test_runs_and_is_finite(self, model):
+        result = distance_matrix(PROTEINS, substitution_model=model)
+        assert result["matrix"][0][1] > 0
+        assert math.isfinite(result["matrix"][0][2])
+        tree = nj(PROTEINS, substitution_model=model, n_bootstrap_samples=5)
+        assert tree["newick"].endswith(";")
+
+    def test_builtin_rejects_a_matrix(self):
+        with pytest.raises(ValueError, match="InvalidMatrix"):
+            nj(PROTEINS, substitution_model="Lg", matrix=EQUAL_RATES_MATRIX)
+
+    def test_builtin_on_dna_raises(self):
+        dna = [{"identifier": "a", "sequence": "ACGTACGT"}, {"identifier": "b", "sequence": "ACGTACGA"}]
+        with pytest.raises(ValueError):
+            nj(dna, substitution_model="Wag")

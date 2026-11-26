@@ -397,6 +397,24 @@ mod main_tests {
         assert!(run(base_args(fixture("simple_protein.fasta"))).is_ok());
     }
 
+    #[test]
+    fn test_run_protein_builtin_matrices_succeed() {
+        for model in [
+            SubstitutionModel::Lg,
+            SubstitutionModel::Wag,
+            SubstitutionModel::Jtt,
+            SubstitutionModel::JttDcmut,
+            SubstitutionModel::Dayhoff,
+            SubstitutionModel::DayhoffDcmut,
+        ] {
+            let args = Args {
+                substitution_model: model.clone(),
+                ..base_args(fixture("simple_protein.fasta"))
+            };
+            assert!(run(args).is_ok(), "{model:?}");
+        }
+    }
+
     fn matrix_file(content: &str) -> PathBuf {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!("nj_test_{}_{}.dat", std::process::id(), n));

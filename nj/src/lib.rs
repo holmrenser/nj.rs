@@ -48,6 +48,7 @@
 //! | `Tamura` | ✓ | — |
 //! | `Poisson` | — | ✓ |
 //! | `KimuraProtein` | — | ✓ |
+//! | `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` (ML, empirical matrix) | — | ✓ |
 //! | `Custom` (ML, rate matrix in [`NJConfig::matrix`]) | — | ✓ |
 //!
 //! Providing an incompatible model returns an `Err` from [`nj`].
