@@ -18,7 +18,7 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 | 2b | `Prepared` alignment, bit-planes for DNA, tiled parallel pair loop | done (scalar popcount) |
 | 2c | Bootstrap: fuse column gather with packing | pending: decide after SIMD, when counting is cheaper and the gather+pack share is known |
 | 3a | `fearless_simd` on stable: port the byte kernel, remove nightly and the `simd` gate | done |
-| 3b | SIMD NJ row-minimum | pending |
+| 3b | SIMD NJ row-minimum | done |
 | 3c | SIMD popcount loop over the planes | pending |
 | 4 | ML solver SIMD | blocked: the ML solver does not exist yet (`substitution-models.md` plan step 4) |
 
@@ -103,6 +103,18 @@ both alphabets, with and without rate variation). Protein distances still run th
 |---|---|---|
 | protein n=1000 L=500 `poisson` | 65.7 ms (scalar byte kernel) | 10.3 ms (6.4×) |
 
+## After step 3b (SIMD row minimum)
+
+| Case | NJ stage, scalar rows | NJ stage, SIMD rows |
+|---|---|---|
+| DNA n=500 | 5.8 ms | 2.8 ms |
+| DNA n=1000 | 44.1 ms | 20.5 ms (2.1×; 63× vs baseline) |
+| DNA n=2000 | 329 ms | 157 ms (2.1×; 65× vs baseline) |
+
+The whole row loop is one dispatched kernel (`kernels::row_minima`), so dispatch costs once per NJ iteration, not
+per row. It is bit-identical to the scalar reference at every level, and the NJ oracle tests (bit-identical trees)
+also pass on x86 SSE4.2 and AVX2 under emulation.
+
 ## Commits
 
 - `perf: add progress log and perf_probe example` — this file, `nj/examples/perf_probe.rs`, baseline above.
@@ -114,3 +126,4 @@ both alphabets, with and without rate variation). Protein distances still run th
   `DistMat::from_prepared` (row blocks written in place; no `(i, j)` / result vectors), bit-exactness tests.
 - `perf(simd): port the byte kernel to fearless_simd and drop nightly` — `nj/src/kernels.rs`, `fearless_simd` dependency,
   `simd` feature is a no-op, CI/release on stable, `rust-version = "1.89"`.
+- `perf(nj): SIMD row-minimum kernel` — `kernels::row_minima` (+ scalar reference and per-level test), used by `select_min_q_pair`.

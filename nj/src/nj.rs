@@ -30,7 +30,7 @@
 //! The straightforward implementation is kept under `cfg(test)` in
 //! `nj_reference.rs`; the tests require bit-identical trees.
 
-use crate::{distance_matrix::DistMat, tree::TreeNode};
+use crate::{distance_matrix::DistMat, kernels, tree::TreeNode};
 
 /// Index of the pair `(a, b)`, `a != b`, in the packed lower triangle.
 #[inline(always)]
@@ -58,29 +58,6 @@ fn compute_branch_lengths(d_ij: f64, s_i: f64, s_j: f64, active_count: usize) ->
     (li, lj)
 }
 
-/// Minimum over `t` of `scale·d[t] − (s_i + s[t])`: the Q criterion for one row.
-///
-/// Every element is computed with the same two separately rounded operations as the
-/// scalar reference (no fused multiply-add), and `min` is exact, so the result does
-/// not depend on how the loop is vectorised.
-#[inline]
-fn row_min_q(d: &[f64], s: &[f64], scale: f64, s_i: f64) -> f64 {
-    debug_assert_eq!(d.len(), s.len());
-    let mut m = [f64::INFINITY; 4];
-    let (cd, cs) = (d.chunks_exact(4), s.chunks_exact(4));
-    let (rd, rs) = (cd.remainder(), cs.remainder());
-    for (x, y) in cd.zip(cs) {
-        for l in 0..4 {
-            m[l] = m[l].min(scale * x[l] - (s_i + y[l]));
-        }
-    }
-    let mut r = m[0].min(m[1]).min(m[2].min(m[3]));
-    for (x, y) in rd.iter().zip(rs) {
-        r = r.min(scale * x - (s_i + y));
-    }
-    r
-}
-
 /// Mutable state for a single NJ run.
 ///
 /// Owns the partial tree nodes and works on the distance matrix in place. Slots
@@ -100,6 +77,8 @@ pub struct NJState<'a> {
     row_sums: Vec<f64>,
     /// Partial trees, by slot.
     nodes: Vec<Option<TreeNode>>,
+    /// Scratch: the Q minimum of every row, reused across iterations.
+    row_min: Vec<f64>,
     next_internal: usize,
 }
 
@@ -130,6 +109,7 @@ impl<'a> NJState<'a> {
             active_sorted: (0..n).collect(),
             row_sums,
             nodes,
+            row_min: vec![f64::INFINITY; n],
             next_internal: n, // internal nodes get identifiers starting after the leaves
         }
     }
@@ -175,27 +155,24 @@ impl<'a> NJState<'a> {
     /// `Q(i,j) = (m-2)·d(i,j) - (S_i + S_j)`. Each row's minimum is found with one
     /// pass over its slice; only rows whose minimum equals the global one are
     /// rescanned, and among equal Q values the smallest original `(i, j)` wins.
-    fn select_min_q_pair(&self) -> Option<(usize, usize)> {
+    fn select_min_q_pair(&mut self) -> Option<(usize, usize)> {
         if self.m < 2 {
             return None;
         }
-        let scale = (self.m - 2) as f64;
+        let m = self.m;
+        let scale = (m - 2) as f64;
+        let best = kernels::row_minima(
+            &self.dist.data,
+            &self.row_sums,
+            m,
+            scale,
+            &mut self.row_min[..m],
+        );
+
         let (data, s) = (&self.dist.data, &self.row_sums);
-
-        let mut best = f64::INFINITY;
-        let mut row_min = vec![f64::INFINITY; self.m];
-        for r in 1..self.m {
-            let start = r * (r - 1) / 2;
-            let q = row_min_q(&data[start..start + r], &s[..r], scale, s[r]);
-            row_min[r] = q;
-            if q < best {
-                best = q;
-            }
-        }
-
         let mut pick: Option<(usize, usize, usize, usize)> = None; // (hi_orig, lo_orig, slot_hi, slot_lo)
-        for r in 1..self.m {
-            if row_min[r] != best {
+        for r in 1..m {
+            if self.row_min[r] != best {
                 continue;
             }
             let start = r * (r - 1) / 2;

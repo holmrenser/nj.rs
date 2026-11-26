@@ -76,6 +76,94 @@ fn count_diff_comparable_impl<S: Simd>(simd: S, a: &[u8], b: &[u8], n_states: u8
     (n_diff + rd, n_comparable + rc)
 }
 
+
+/// Scalar reference for [`row_minima`]: for every row `r` in `1..m` of the packed lower
+/// triangle `data` (row `r` is `data[r(r-1)/2 .. r(r-1)/2 + r]`), the minimum over `t < r`
+/// of the Q criterion `scale·d[r][t] − (s[r] + s[t])`; returns the minimum over all rows.
+///
+/// `out[0]` is set to `+inf` (row 0 has no entries) and `out[r]` to row `r`'s minimum.
+/// Every element is computed with the same two separately rounded operations and `min`
+/// is exact, so the result does not depend on how a kernel vectorises the loop.
+pub(crate) fn row_minima_scalar(data: &[f64], s: &[f64], m: usize, scale: f64, out: &mut [f64]) -> f64 {
+    let mut best = f64::INFINITY;
+    out[0] = f64::INFINITY;
+    for r in 1..m {
+        let start = r * (r - 1) / 2;
+        let (d, sr) = (&data[start..start + r], s[r]);
+        let mut lanes = [f64::INFINITY; 4];
+        let (cd, cs) = (d.chunks_exact(4), s[..r].chunks_exact(4));
+        let (rd, rs) = (cd.remainder(), cs.remainder());
+        for (x, y) in cd.zip(cs) {
+            for l in 0..4 {
+                lanes[l] = lanes[l].min(scale * x[l] - (sr + y[l]));
+            }
+        }
+        let mut q = lanes[0].min(lanes[1]).min(lanes[2].min(lanes[3]));
+        for (x, y) in rd.iter().zip(rs) {
+            q = q.min(scale * x - (sr + y));
+        }
+        out[r] = q;
+        best = best.min(q);
+    }
+    best
+}
+
+/// SIMD version of [`row_minima_scalar`] (same contract and bit-identical results).
+#[inline]
+pub(crate) fn row_minima(data: &[f64], s: &[f64], m: usize, scale: f64, out: &mut [f64]) -> f64 {
+    row_minima_at(Level::new(), data, s, m, scale, out)
+}
+
+#[inline]
+pub(crate) fn row_minima_at(level: Level, data: &[f64], s: &[f64], m: usize, scale: f64, out: &mut [f64]) -> f64 {
+    dispatch!(level, simd => row_minima_impl(simd, data, s, m, scale, out))
+}
+
+/// One pass over each row slice with two independent minimum accumulators. The
+/// multiply and the subtract stay separate operations (no fused multiply-add), so every
+/// element rounds exactly as in the scalar reference.
+#[simd]
+fn row_minima_impl<S: Simd>(simd: S, data: &[f64], s: &[f64], m: usize, scale: f64, out: &mut [f64]) -> f64 {
+    let w = S::f64s::LEN;
+    let scale_v = S::f64s::splat(simd, scale);
+    let inf = S::f64s::splat(simd, f64::INFINITY);
+
+    let mut best = f64::INFINITY;
+    out[0] = f64::INFINITY;
+    for r in 1..m {
+        let start = r * (r - 1) / 2;
+        let d = &data[start..start + r];
+        let sr = s[r];
+        let sr_v = S::f64s::splat(simd, sr);
+
+        let (mut m0, mut m1) = (inf, inf);
+        let mut t = 0usize;
+        while t + 2 * w <= r {
+            let q0 = S::f64s::from_slice(simd, &d[t..t + w]) * scale_v
+                - (sr_v + S::f64s::from_slice(simd, &s[t..t + w]));
+            let q1 = S::f64s::from_slice(simd, &d[t + w..t + 2 * w]) * scale_v
+                - (sr_v + S::f64s::from_slice(simd, &s[t + w..t + 2 * w]));
+            m0 = m0.min(q0);
+            m1 = m1.min(q1);
+            t += 2 * w;
+        }
+        while t + w <= r {
+            let q = S::f64s::from_slice(simd, &d[t..t + w]) * scale_v
+                - (sr_v + S::f64s::from_slice(simd, &s[t..t + w]));
+            m0 = m0.min(q);
+            t += w;
+        }
+        let mut q = m0.min(m1).reduce_min();
+        while t < r {
+            q = q.min(scale * d[t] - (sr + s[t]));
+            t += 1;
+        }
+        out[r] = q;
+        best = best.min(q);
+    }
+    best
+}
+
 #[cfg(test)]
 pub(crate) mod testing {
     //! Every instruction-set level that can run on this machine, plus the scalar fallback.
@@ -141,6 +229,28 @@ mod tests {
                         want,
                         "level {name}, len {len}, n_states {n_states}"
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_row_minima_match_scalar_at_every_level() {
+        let mut rng = Rng(0x5EED_0002);
+        for m in [1usize, 2, 3, 4, 5, 9, 17, 18, 40, 41, 130] {
+            let data: Vec<f64> = (0..m * m.saturating_sub(1) / 2)
+                .map(|_| 0.05 + (rng.next() >> 11) as f64 / (1u64 << 53) as f64)
+                .collect();
+            let s: Vec<f64> = (0..m).map(|_| 5.0 + (rng.next() >> 11) as f64 / (1u64 << 53) as f64 * 40.0).collect();
+            let scale = m.saturating_sub(2) as f64;
+            let mut want = vec![0.0; m];
+            let want_best = row_minima_scalar(&data, &s, m, scale, &mut want);
+            for (name, level) in levels() {
+                let mut got = vec![0.0; m];
+                let got_best = row_minima_at(level, &data, &s, m, scale, &mut got);
+                assert_eq!(got_best.to_bits(), want_best.to_bits(), "level {name}, m {m}: best");
+                for r in 0..m {
+                    assert_eq!(got[r].to_bits(), want[r].to_bits(), "level {name}, m {m}, row {r}");
                 }
             }
         }

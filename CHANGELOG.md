@@ -47,9 +47,10 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   pair-count table: `Kimura2P`, `TajimaNei` and `Tamura` are about 30× faster, `PDiff`
   and `JukesCantor` about 6×, with identical results. The parallel pair loop writes rows
   in blocks straight into the matrix instead of materialising every `(i, j)` pair and result.
-- Neighbor-joining is about 30× faster: the active rows of the matrix are kept
+- Neighbor-joining is about 60× faster: the active rows of the matrix are kept
   contiguous instead of testing an active-set bit and rebuilding the triangular
-  index for every element (n=1000: 1.3 s to 44 ms; n=2000: 10.3 s to 0.33 s). The
+  index for every element, and the row minimum is a SIMD kernel (n=1000: 1.3 s to
+  20 ms; n=2000: 10.3 s to 0.16 s). The
   Q criterion is now computed as `(m−2)·d − (S_i + S_j)`, which is symmetric in the
   two nodes; the value can differ from `(m−2)·d − S_i − S_j` in the last bit, so
   which of two pairs that tie to within rounding is joined first may change.
