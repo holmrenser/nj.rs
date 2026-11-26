@@ -58,10 +58,12 @@ pub mod error;
 pub mod event;
 pub mod fasta;
 mod kernels;
+pub mod ml;
 pub mod models;
 pub mod msa;
 pub mod nj;
 pub mod prepared;
+pub mod reversible;
 #[cfg(test)]
 mod nj_reference;
 pub mod tree;

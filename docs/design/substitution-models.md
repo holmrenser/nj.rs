@@ -39,8 +39,10 @@ P(t) = Π^-½ R e^{Λt} Rᵀ Π^½
 d̂ = argmax ℓ(t)
 ```
 
-Only nonzero `F_ab` are visited. JC and Poisson are special cases and must reproduce their closed forms exactly;
-K2P, Tajima–Nei and Tamura keep their closed forms (they estimate extra parameters per pair).
+Only nonzero `F_ab` are visited. The equal-rates model reproduces the closed form for any `K`: Jukes–Cantor for `K=4`,
+and `−(19/20)·ln(1 − 20p/19)` for `K=20`. The library's `Poisson`, `−ln(1 − p)`, is the `K → ∞` limit and differs from
+the 20-state form by about 0.5% at `p = 0.18`, so it is not an ML special case. K2P, Tajima–Nei and Tamura keep their
+closed forms (they estimate extra parameters per pair).
 
 **Rate variation, closed form** [Waddell & Steel 1997; Gu & Li 1996]: gamma (shape `α`) replaces `e^{λt}` by
 `(1 − λt/α)^{-α}`; invariant sites (`p_inv`) mix `P` with the identity. `Q` is normalised on the variable sites, so
@@ -127,7 +129,8 @@ sums become `NaN` in the NJ update. Instead:
   interior global maximum.
 - Do not assume unimodality: in 19,200 random trials (K=4 and 20, L=100) 16 had two interior maxima, always
   with the second at `t ≥ 11`, beyond `t_max`, with a gain over `ℓ(∞)` of at most 0.013 log-likelihood units.
-- Tolerance `|Δt| ≤ 1e-8`, at least three orders below the standard error (`≈ √(t/L)`) for `L ≤ 10⁷`, `t ≥ 10⁻³`.
+- Tolerance `|Δt| ≤ 10⁻¹² + 10⁻⁹·t`, far below the standard error (`≈ √(t/L)`). Accuracy at very small `t` is limited by
+  cancellation in the eigen-expansion of `P_ab(t)` (about 4·10⁻⁹ relative at `t = 10⁻⁶`).
   `t_max = 10`: Jukes–Cantor at `p = 0.7499` is already 6.7.
 - Cost control: one `exp(λt)` vector per iteration, shortcut for identical pairs.
 
@@ -163,7 +166,7 @@ rate 1). This is for the maintainer to settle; it is not legal advice.
 ## 7. Validation
 
 - Recover a known `t` from `F = Π·exp(Qt)` for random `Q` (DNA and protein, with gamma and `p_inv`); ML equals
-  closed form for JC and Poisson; `α → ∞` and `p_inv → 0` reproduce the uncorrected result.
+  the closed form for JC and the 20-state equal-rates model, also with gamma and `p_inv`; `α → ∞` and `p_inv → 0` reproduce the uncorrected result.
 - `d ≥ 0`, symmetry, identical sequences give `0`.
 - Saturation: a saturated `JukesCantor` pair yields no `NaN`/`inf` in the Newick; a constructed count matrix with
   two interior maxima exercises the bracket scan and the `ℓ(t̂) > ℓ(∞)` check.
