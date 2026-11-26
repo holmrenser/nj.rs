@@ -464,3 +464,48 @@ class TestBuiltinMatrices:
         dna = [{"identifier": "a", "sequence": "ACGTACGT"}, {"identifier": "b", "sequence": "ACGTACGA"}]
         with pytest.raises(ValueError):
             nj(dna, substitution_model="Wag")
+
+
+HKY = [1.0, 4.0, 1.0, 1.0, 4.0, 1.0]
+DNA = [
+    {"identifier": "a", "sequence": "ACGTACGTACGTAAGTACGTACGTACCTACGTACGT"},
+    {"identifier": "b", "sequence": "ACGTACGTACGAAAGTACGTACGTACCTACGTACGA"},
+    {"identifier": "c", "sequence": "ACGAACGTACGAAAGTACGTACGTACCTACGTTCGA"},
+    {"identifier": "d", "sequence": "TCGAACGAACGAAAGTACTTACGTACCTACGTTCGA"},
+]
+
+
+class TestGtr:
+    def test_equal_rates_and_frequencies_match_jukes_cantor(self):
+        gtr = distance_matrix(DNA, substitution_model="Gtr", gtr_rates=[1] * 6, base_frequencies=[0.25] * 4)
+        jc = distance_matrix(DNA, substitution_model="JukesCantor")
+        for i in range(4):
+            for j in range(4):
+                assert gtr["matrix"][i][j] == pytest.approx(jc["matrix"][i][j], abs=1e-8)
+
+    def test_pooled_frequencies_are_the_default(self):
+        a = distance_matrix(DNA, substitution_model="Gtr", gtr_rates=HKY)
+        b = distance_matrix(DNA, substitution_model="Gtr", gtr_rates=HKY, base_frequencies=[0.25] * 4)
+        assert a["matrix"] != b["matrix"]
+        assert all(math.isfinite(x) for row in a["matrix"] for x in row)
+
+    def test_nj_with_bootstrap_and_rate_variation(self):
+        tree = nj(DNA, substitution_model="Gtr", gtr_rates=HKY, gamma_shape=0.5, p_invar=0.1, n_bootstrap_samples=10)
+        assert tree["newick"].endswith(";")
+        assert average_distance(DNA, substitution_model="Gtr", gtr_rates=HKY) > 0
+
+    def test_missing_rates_raise(self):
+        with pytest.raises(ValueError, match="gtr_rates"):
+            nj(DNA, substitution_model="Gtr")
+
+    def test_wrong_number_of_rates_raises(self):
+        with pytest.raises(ValueError, match="6 exchangeabilities"):
+            nj(DNA, substitution_model="Gtr", gtr_rates=[1.0, 2.0])
+
+    def test_rates_with_another_model_raise(self):
+        with pytest.raises(ValueError, match="only used with the 'Gtr' model"):
+            nj(DNA, substitution_model="Kimura2P", gtr_rates=HKY)
+
+    def test_gtr_on_protein_raises(self):
+        with pytest.raises(ValueError):
+            nj(PROTEINS, substitution_model="Gtr", gtr_rates=HKY)

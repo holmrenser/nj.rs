@@ -86,6 +86,16 @@ pub struct DistConfig {
     /// [`crate::reversible::ReversibleModel::from_paml`].
     #[serde(default)]
     pub matrix: Option<String>,
+    /// Exchangeabilities of the [`SubstitutionModel::Gtr`] model, relative values in the order
+    /// `AC, AG, AT, CG, CT, GT` (six numbers, only their ratios matter). Required for `Gtr` and
+    /// only then. HKY85 is `[1, κ, 1, 1, κ, 1]`; all equal is F81. See [`crate::gtr`].
+    #[serde(default)]
+    pub gtr_rates: Option<Vec<f64>>,
+    /// Base frequencies `A, C, G, T` for the [`SubstitutionModel::Gtr`] model (four positive
+    /// numbers, renormalised to sum to one). When `None`, the frequencies are pooled over all
+    /// unambiguous bases of the alignment. Only used with `Gtr`.
+    #[serde(default)]
+    pub base_frequencies: Option<Vec<f64>>,
 }
 
 /// Full configuration for a single Neighbor-Joining run.
@@ -144,6 +154,16 @@ pub struct NJConfig {
     /// [`crate::reversible::ReversibleModel::from_paml`].
     #[serde(default)]
     pub matrix: Option<String>,
+    /// Exchangeabilities of the [`SubstitutionModel::Gtr`] model, relative values in the order
+    /// `AC, AG, AT, CG, CT, GT` (six numbers, only their ratios matter). Required for `Gtr` and
+    /// only then. HKY85 is `[1, κ, 1, 1, κ, 1]`; all equal is F81. See [`crate::gtr`].
+    #[serde(default)]
+    pub gtr_rates: Option<Vec<f64>>,
+    /// Base frequencies `A, C, G, T` for the [`SubstitutionModel::Gtr`] model (four positive
+    /// numbers, renormalised to sum to one). When `None`, the frequencies are pooled over all
+    /// unambiguous bases of the alignment. Only used with `Gtr`.
+    #[serde(default)]
+    pub base_frequencies: Option<Vec<f64>>,
     /// Distance (substitutions per site) assigned to any pair whose distance is not
     /// finite, i.e. the sequences are saturated and the model has no finite estimate.
     /// Must be finite and positive; `None` uses [`DEFAULT_MAX_DISTANCE`] (10.0).

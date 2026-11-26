@@ -57,6 +57,8 @@ fn distances(model: SubstitutionModel, gamma_shape: Option<f64>) -> Vec<f64> {
         gamma_shape,
         p_invar: None,
         matrix: None,
+        gtr_rates: None,
+        base_frequencies: None,
     })
     .unwrap();
     (0..SEQUENCES.len())

@@ -34,6 +34,17 @@ impl DnaCounts {
         Self::from_bytes(DNA::as_bytes(s1), DNA::as_bytes(s2))
     }
 
+    /// The table as row-major `f64` (`[a * 4 + b]`), the form the ML solver takes.
+    pub fn to_f64(&self) -> [f64; 16] {
+        let mut out = [0.0; 16];
+        for a in 0..4 {
+            for b in 0..4 {
+                out[a * 4 + b] = self.f[a][b] as f64;
+            }
+        }
+        out
+    }
+
     /// Number of columns where both sequences have a base.
     pub fn n_comparable(&self) -> usize {
         self.f.iter().flatten().map(|&c| c as usize).sum()

@@ -207,21 +207,22 @@ where
 /// Dispatches to a generic runner based on the runtime alphabet and substitution
 /// model, enforcing the model–alphabet compatibility table in a single place.
 ///
-/// `$matrix` is the `matrix` option (`Option<&str>`): required for, and only for, the `Custom`
-/// model, whose rate matrix is parsed here. `$pairs` is consumed to build the typed [`MSA`];
+/// `$opts` is a [`ModelOptions`](crate::validate::ModelOptions): the `matrix` of the `Custom` model
+/// and the `gtr_rates` / `base_frequencies` of `Gtr`, each required for, and only for, its model.
+/// The models that need them are built here (`Gtr` pools its base frequencies from the alignment). `$pairs` is consumed to build the typed [`MSA`];
 /// `$run` is the generic runner (`run_nj`, `run_distance_matrix`, `run_average_distance`), called
 /// as `$run(msa, &model, args…)` with the model as a value (the stateless models through
 /// [`Static`](crate::models::Static)). Each runner returns `Result<_, String>`, mapped here to
 /// [`NJError::AlgorithmFailure`]; unsupported (alphabet, model) pairs yield
 /// [`NJError::IncompatibleModel`].
 macro_rules! dispatch_run {
-    ($alphabet:expr, $model:expr, $matrix:expr, $pairs:expr, $run:ident ( $($arg:expr),* $(,)? )) => {{
+    ($alphabet:expr, $model:expr, $opts:expr, $pairs:expr, $run:ident ( $($arg:expr),* $(,)? )) => {{
         use $crate::config::SubstitutionModel as Sm;
         use $crate::models::Static;
         let alphabet = $alphabet;
         let model = $model;
-        let matrix: Option<&str> = $matrix;
-        $crate::validate::validate_matrix(&model, matrix)?;
+        let opts: $crate::validate::ModelOptions<'_> = $opts;
+        $crate::validate::validate_model_options(&model, &opts)?;
         let fail = $crate::error::NJError::AlgorithmFailure;
         match alphabet {
             $crate::alphabet::Alphabet::DNA => {
@@ -232,6 +233,12 @@ macro_rules! dispatch_run {
                     Sm::Kimura2P => $run(msa, &Static::<$crate::models::Kimura2P>::new(), $($arg),*).map_err(fail),
                     Sm::TajimaNei => $run(msa, &Static::<$crate::models::TajimaNei>::new(), $($arg),*).map_err(fail),
                     Sm::Tamura => $run(msa, &Static::<$crate::models::Tamura>::new(), $($arg),*).map_err(fail),
+                    Sm::Gtr => {
+                        let rates = opts.gtr_rates.expect("validate_model_options guarantees gtr_rates for Gtr");
+                        let gtr = $crate::gtr::Gtr::from_alignment(rates, opts.base_frequencies, &msa)
+                            .map_err(|reason| $crate::error::NJError::InvalidMatrix { reason })?;
+                        $run(msa, &gtr, $($arg),*).map_err(fail)
+                    }
                     Sm::Poisson
                     | Sm::KimuraProtein
                     | Sm::Lg
@@ -259,12 +266,12 @@ macro_rules! dispatch_run {
                     Sm::Dayhoff => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::Dayhoff>>::new(), $($arg),*).map_err(fail),
                     Sm::DayhoffDcmut => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::DayhoffDcmut>>::new(), $($arg),*).map_err(fail),
                     Sm::Custom => {
-                        let text = matrix.expect("validate_matrix guarantees the matrix for Custom");
+                        let text = opts.matrix.expect("validate_model_options guarantees the matrix for Custom");
                         let custom = $crate::empirical::CustomProtein::from_paml(text)
                             .map_err(|reason| $crate::error::NJError::InvalidMatrix { reason })?;
                         $run(msa, &custom, $($arg),*).map_err(fail)
                     }
-                    Sm::JukesCantor | Sm::Kimura2P | Sm::TajimaNei | Sm::Tamura => {
+                    Sm::JukesCantor | Sm::Kimura2P | Sm::TajimaNei | Sm::Tamura | Sm::Gtr => {
                         Err($crate::error::NJError::IncompatibleModel {
                             model,
                             alphabet: $crate::alphabet::Alphabet::Protein,

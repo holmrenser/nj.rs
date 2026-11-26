@@ -84,6 +84,16 @@ mod cli {
         #[arg(long, value_name = "FILE")]
         pub matrix: Option<PathBuf>,
 
+        /// GTR exchangeabilities for `--substitution-model gtr` (and only then): six comma-separated
+        /// relative values in the order AC,AG,AT,CG,CT,GT. HKY85 is `1,K,1,1,K,1`; all equal is F81.
+        #[arg(long, value_name = "AC,AG,AT,CG,CT,GT", value_delimiter = ',', num_args = 1..)]
+        pub gtr_rates: Option<Vec<f64>>,
+
+        /// Base frequencies A,C,G,T (comma-separated) for the gtr model. Default: pooled over
+        /// the alignment.
+        #[arg(long, value_name = "A,C,G,T", value_delimiter = ',', num_args = 1..)]
+        pub base_frequencies: Option<Vec<f64>>,
+
         /// Distance (substitutions per site) given to pairs whose distance is not finite
         /// because the sequences are saturated for the model. Default: 10.
         #[arg(long, value_name = "D")]
@@ -138,6 +148,8 @@ mod cli {
             gamma_shape: args.gamma_shape,
             p_invar: args.p_invar,
             matrix,
+            gtr_rates: args.gtr_rates,
+            base_frequencies: args.base_frequencies,
             max_distance: args.max_distance,
         };
 
@@ -263,6 +275,8 @@ mod main_tests {
             gamma_shape: None,
             p_invar: None,
             matrix: None,
+            gtr_rates: None,
+            base_frequencies: None,
             max_distance: None,
             verbose: false,
         }
@@ -413,6 +427,50 @@ mod main_tests {
             };
             assert!(run(args).is_ok(), "{model:?}");
         }
+    }
+
+    #[test]
+    fn test_run_dna_gtr_succeeds_with_and_without_frequencies() {
+        let args = Args {
+            substitution_model: SubstitutionModel::Gtr,
+            gtr_rates: Some(vec![1.0, 4.0, 1.0, 1.0, 4.0, 1.0]),
+            distance_matrix: true,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(args).is_ok());
+        let args = Args {
+            substitution_model: SubstitutionModel::Gtr,
+            gtr_rates: Some(vec![1.0, 4.0, 1.0, 1.0, 4.0, 1.0]),
+            base_frequencies: Some(vec![0.3, 0.2, 0.2, 0.3]),
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(args).is_ok());
+    }
+
+    #[test]
+    fn test_run_gtr_option_errors() {
+        let missing = Args {
+            substitution_model: SubstitutionModel::Gtr,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(missing).unwrap_err().contains("gtr_rates"));
+        let wrong_length = Args {
+            substitution_model: SubstitutionModel::Gtr,
+            gtr_rates: Some(vec![1.0, 2.0]),
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(wrong_length).unwrap_err().contains("6 exchangeabilities"));
+        let stray = Args {
+            gtr_rates: Some(vec![1.0; 6]),
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(stray).unwrap_err().contains("only used with the 'Gtr' model"));
+        let protein = Args {
+            substitution_model: SubstitutionModel::Gtr,
+            gtr_rates: Some(vec![1.0; 6]),
+            ..base_args(fixture("simple_protein.fasta"))
+        };
+        assert!(run(protein).is_err());
     }
 
     fn matrix_file(content: &str) -> PathBuf {

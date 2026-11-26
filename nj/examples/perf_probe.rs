@@ -87,6 +87,8 @@ fn main() {
             gamma_shape: None,
             p_invar: None,
             matrix: None,
+            gtr_rates: None,
+            base_frequencies: None,
         })
         .unwrap();
     });
@@ -102,6 +104,8 @@ fn main() {
         gamma_shape: None,
         p_invar: None,
         matrix: None,
+        gtr_rates: None,
+        base_frequencies: None,
     };
     let t_all = best(reps, || {
         let _ = run_nj(conf(0), None).unwrap();

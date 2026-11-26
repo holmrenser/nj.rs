@@ -481,6 +481,7 @@ impl ModelCalculation<DNA> for Tamura {
 /// | `Tamura` | DNA only | `-h · ln(1 - P/h - Q) - 0.5(1-h)·ln(1-2Q)` |
 /// | `Poisson` | Protein only | `-ln(1 - p)` |
 /// | `KimuraProtein` | Protein only | `-ln(1 - p - 0.2 p²)` |
+/// | `Gtr` | DNA only | ML distance under explicit GTR rates (`gtr_rates`, `base_frequencies`) |
 /// | `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` | Protein only | ML distance under the named empirical matrix |
 /// | `Custom` | Protein only (for now) | ML distance under the matrix in the `matrix` option |
 ///
@@ -503,6 +504,10 @@ pub enum SubstitutionModel {
     Poisson,
     /// Kimura (1983): empirical protein distance (`Poisson` plus a `0.2 p²` term).
     KimuraProtein,
+    /// General time-reversible (GTR) model for DNA: maximum-likelihood distance under explicit
+    /// exchangeabilities (`gtr_rates`) and base frequencies (`base_frequencies`, pooled from the
+    /// alignment when omitted). HKY85, F81 and Tamura–Nei are special cases.
+    Gtr,
     /// Maximum-likelihood distance under the LG matrix (Le & Gascuel 2008).
     Lg,
     /// Maximum-likelihood distance under the WAG matrix (Whelan & Goldman 2001).
