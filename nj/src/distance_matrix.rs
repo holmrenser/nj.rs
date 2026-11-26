@@ -9,7 +9,7 @@
 
 use crate::MSA;
 use crate::alphabet::AlphabetEncoding;
-use crate::models::{ModelCalculation, RateHet};
+use crate::models::{DistanceModel, ModelCalculation, RateHet, Static};
 use crate::prepared::Prepared;
 use crate::nj::NJState;
 use crate::tree::TreeNode;
@@ -117,8 +117,19 @@ impl DistMat {
         A: AlphabetEncoding + Sync,
         A::Symbol: Send + Sync,
     {
+        Self::from_msa_with(&Static::<M>::new(), msa, rates)
+    }
+
+    /// Like [`from_msa`](DistMat::from_msa) for a model given as a value, e.g. one with
+    /// run-time parameters.
+    pub fn from_msa_with<A, D>(model: &D, msa: &MSA<A>, rates: RateHet) -> DistMat
+    where
+        D: DistanceModel<A> + ?Sized,
+        A: AlphabetEncoding + Sync,
+        A::Symbol: Send + Sync,
+    {
         let prepared = Prepared::new(msa);
-        Self::from_prepared::<M, A>(&prepared, msa.identifiers.clone(), rates)
+        Self::from_prepared(model, &prepared, msa.identifiers.clone(), rates)
     }
 
     /// Computes the matrix from a [`Prepared`] alignment.
@@ -128,9 +139,9 @@ impl DistMat {
     /// by every row of the block and the results are written in place (no per-pair
     /// intermediate vectors). With the `parallel` feature the blocks run on the Rayon
     /// thread pool.
-    pub fn from_prepared<M, A>(data: &Prepared<'_, A>, names: Vec<String>, rates: RateHet) -> DistMat
+    pub fn from_prepared<A, D>(model: &D, data: &Prepared<'_, A>, names: Vec<String>, rates: RateHet) -> DistMat
     where
-        M: ModelCalculation<A> + Send + Sync,
+        D: DistanceModel<A> + ?Sized,
         A: AlphabetEncoding + Sync,
         A::Symbol: Send + Sync,
     {
@@ -156,7 +167,7 @@ impl DistMat {
             let base = before(r0);
             for j in 0..r1 {
                 for i in r0.max(j + 1)..r1 {
-                    out[before(i) - base + j] = M::distance_prepared(data, i, j, rates);
+                    out[before(i) - base + j] = model.distance(data, i, j, rates);
                 }
             }
         };

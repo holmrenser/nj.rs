@@ -7,7 +7,7 @@
 
 use crate::alphabet::AlphabetEncoding;
 use crate::distance_matrix::DistMat;
-use crate::models::{ModelCalculation, RateHet};
+use crate::models::{DistanceModel, ModelCalculation, RateHet};
 use nanorand::{Rng, WyRand};
 use std::collections::HashMap;
 
@@ -166,6 +166,17 @@ impl<A: AlphabetEncoding> MSA<A> {
         A::Symbol: Send + Sync,
     {
         DistMat::from_msa::<M, A>(self, rates)
+    }
+
+    /// Like [`into_dist`](MSA::into_dist) for a model given as a value (see
+    /// [`DistanceModel`]), e.g. one built from a user-supplied rate matrix.
+    pub fn into_dist_with<D>(&self, model: &D, rates: RateHet) -> DistMat
+    where
+        D: DistanceModel<A> + ?Sized,
+        A: Sync,
+        A::Symbol: Send + Sync,
+    {
+        DistMat::from_msa_with(model, self, rates)
     }
 }
 

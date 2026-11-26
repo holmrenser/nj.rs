@@ -48,6 +48,7 @@
 //! | `Tamura` | ✓ | — |
 //! | `Poisson` | — | ✓ |
 //! | `KimuraProtein` | — | ✓ |
+//! | `Custom` (ML, rate matrix in [`NJConfig::matrix`]) | — | ✓ |
 //!
 //! Providing an incompatible model returns an `Err` from [`nj`].
 pub mod alphabet;
@@ -135,6 +136,7 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
     let rates = validate_rate_params(conf.gamma_shape, conf.p_invar)?;
     let max_distance = validate_max_distance(conf.max_distance)?;
     let model = conf.substitution_model;
+    let matrix = conf.matrix;
     if matches!(model, SubstitutionModel::PDiff)
         && (rates.gamma_shape.is_some() || rates.p_invar > 0.0)
         && let Some(cb) = cb
@@ -150,6 +152,7 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
     dispatch_run!(
         alphabet,
         model,
+        matrix.as_deref(),
         pairs,
         run_nj(
             n_bootstrap_samples,
@@ -175,10 +178,12 @@ pub fn distance_matrix(conf: DistConfig) -> Result<DistanceResult, NJError> {
     let rates = validate_rate_params(conf.gamma_shape, conf.p_invar)?;
     let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
     let model = conf.substitution_model;
+    let matrix = conf.matrix;
     let pairs = conf.msa.into_iter().map(|s| (s.identifier, s.sequence));
     dispatch_run!(
         alphabet,
         model,
+        matrix.as_deref(),
         pairs,
         run_distance_matrix(num_threads, rates)
     )
@@ -195,10 +200,12 @@ pub fn average_distance(conf: DistConfig) -> Result<f64, NJError> {
     let rates = validate_rate_params(conf.gamma_shape, conf.p_invar)?;
     let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
     let model = conf.substitution_model;
+    let matrix = conf.matrix;
     let pairs = conf.msa.into_iter().map(|s| (s.identifier, s.sequence));
     dispatch_run!(
         alphabet,
         model,
+        matrix.as_deref(),
         pairs,
         run_average_distance(num_threads, rates)
     )
@@ -230,6 +237,7 @@ mod tests {
             max_distance: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         }
     }
 
@@ -291,6 +299,7 @@ mod tests {
             max_distance: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         };
         let result = nj(conf, None).expect("NJ failed");
         assert_eq!(result.newick, "(A:0.200,B:0.200);");
@@ -319,6 +328,7 @@ mod tests {
             max_distance: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         };
         let out = nj(conf, None).unwrap();
         assert!(out.newick.ends_with(';'));
@@ -351,6 +361,7 @@ mod tests {
             max_distance: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         };
 
         let t1 = nj(conf.clone(), None).unwrap();
@@ -371,6 +382,7 @@ mod tests {
             max_distance: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -399,6 +411,7 @@ mod tests {
             max_distance: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -427,6 +440,7 @@ mod tests {
             max_distance: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -471,6 +485,7 @@ mod tests {
             max_distance: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         };
         let result = nj(conf, None).expect("NJ on lowercase protein should succeed");
         let dm = result.distance_matrix.unwrap();
@@ -620,6 +635,7 @@ mod tests {
             num_threads: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         })
         .unwrap();
         assert!(result.matrix[0][1].is_infinite());
@@ -698,6 +714,7 @@ mod tests {
             num_threads: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         }
     }
 
@@ -807,6 +824,7 @@ mod tests {
             num_threads: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         };
         assert!(distance_matrix(conf).is_err());
     }
@@ -872,6 +890,7 @@ mod tests {
             num_threads: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         };
         assert!(average_distance(conf).is_err());
     }
@@ -959,6 +978,7 @@ mod parallel_tests {
             max_distance: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         }
     }
 

@@ -1,7 +1,7 @@
 # Design: generalised substitution models and ML distances
 
-Status: agreed 2026-11-25. Matrix sourcing is open (§5.6); the numerics in §5.4 are to be confirmed during
-implementation. Why ML distances belong in a distance method, how other tools do it, and the statistical
+Status: agreed 2026-11-25; the protein ML engine and the `Custom` model are implemented on branch `feat/protein-ml`
+(§6). Built-in matrices wait on §5.6; the DNA presets (K2P/HKY/GTR as ML) are not started. Why ML distances belong in a distance method, how other tools do it, and the statistical
 guarantees: [`theory/distance-estimation.md`](../theory/distance-estimation.md). Performance work (NJ restructure,
 packed pair counts, SIMD) and the `Prepared` alignment it requires: [`performance.md`](performance.md).
 
@@ -61,18 +61,20 @@ the reported distance is `(1 − p_inv)·t̂` (substitutions per site over all s
 | `ReversibleModel` | `π`, `s_ij`, cached eigensystem; constructors `jc`, `k2p(κ)`, `hky(κ)`, `gtr(s)`, protein tables; `P(t)`, `P′(t)`, `P″(t)`, gamma/`p_inv` hooks. |
 | Estimator | Closed form (today's), per-pair ML, optional empirical GTR; maps `F` and a model to `d`. |
 
-Models become values built once per run, with access to the alignment (for `π`). They work on a prepared
-alignment and a pair of indices, so that DNA can use packed bit-planes ([`performance.md`](performance.md) §4):
+Models become values: the distance-matrix, NJ and bootstrap code is generic over `D: DistanceModel<A>` and takes the
+model as `&D`. Implemented as
 
 ```rust
 pub trait DistanceModel<A: AlphabetEncoding>: Send + Sync {
-    fn distance(&self, data: &Prepared<A>, i: usize, j: usize) -> f64;   // INFINITY if saturated
+    fn distance(&self, data: &Prepared<A>, i: usize, j: usize, rates: RateHet) -> f64;   // INFINITY if saturated
 }
-impl SubstitutionModel {
-    fn build<A: AlphabetEncoding>(&self, msa: &MSA<A>, cfg: &ModelConfig)
-        -> Result<Box<dyn DistanceModel<A>>, NJError>;   // the one place compatibility is checked
-}
+pub struct Static<M>(…);   // adapts a stateless `ModelCalculation` type, so closed-form models are unchanged
 ```
+
+`dispatch_run!` builds the value per arm: `Static::<Kimura2P>::new()` for the closed-form models, or a
+`CustomProtein` parsed from the `matrix` option. No `Box<dyn …>`: each model monomorphises the pair loop, and the
+`PDiff` and DNA timings did not change. The `build(&msa, cfg)` constructor from the first draft is only needed once a
+model depends on the alignment (pooled `π`); today's models carry their parameters.
 
 `ModelConfig` carries `κ`, the six GTR rates and optionally `π`, `α` and `p_inv`. A `dyn` call per pair is
 negligible next to the per-pair work, and `dispatch_run!` collapses to one function (about 14 instantiations
@@ -138,7 +140,8 @@ sums become `NaN` in the NJ update. Instead:
 
 The solver sits in the O(n²) distance stage, never in NJ's O(n³) loop, but runs once per bootstrap replicate.
 Scalar prototype on simulated pairs: DNA 0.23–0.37 µs per pair; protein 2.6–12.6 µs at L=300–1000 (68–292
-nonzero entries, ≈4 iterations). At n=1000 that is roughly 1.3–6 s per distance matrix, against ≈1.4 s for a
+nonzero entries, ≈4 iterations). The implementation measures 4.5–9.5 µs per pair for a random 20-state model
+(`ml_probe`, L=300–1000, divergence up to 30–70%), after working on unordered pairs and starting Newton directly. At n=1000 that is roughly 1.3–6 s per distance matrix, against ≈1.4 s for a
 whole `PDiff` run (almost all NJ; measured), times (B+1) with bootstrap. Warm starts did not reduce iterations.
 Confirm with a criterion benchmark in the repo before the protein step.
 
@@ -155,13 +158,16 @@ rate 1). This is for the maintainer to settle; it is not legal advice.
 0. **Done:** sanitise non-finite distances before NJ (§5.3): `DistMat::cap_non_finite`, `NJConfig::max_distance`,
    warning events for the main matrix and for bootstrap replicates, and an error from `DistMat::neighbor_joining`
    if a non-finite value ever reaches it.
-1. Registry, `list_models()`, generated docs and typings, drift checks.
-2. `DistanceModel` objects and `build(&msa, cfg)`; replace the dispatch macro. Required first, because `π` is
-   alignment-wide and parameters are configuration. Benchmark.
-3. `Prepared` alignment, `PairCounts` and the missing-data policy for all models (§5.2); the packed DNA counts are step 2 of [`performance.md`](performance.md).
-4. `ReversibleModel` and solver (§5.4); DNA presets JC, K2P, HKY/F84, GTR with explicit parameters; gamma and `p_inv`.
-5. Protein matrices, once §5.6 is decided.
-6. Later: empirical GTR, estimating exchangeabilities, custom matrices, set-likelihood for partial codes, NJ*.
+1. Registry, `list_models()`, generated docs and typings, drift checks. **Not started.**
+2. `DistanceModel` values and the `Static` adapter; `dispatch_run!` builds them. **Done** (§4); the alignment-dependent
+   `build(&msa, cfg)` and the registry are still open.
+3. `Prepared` alignment, pair counts and the missing-data policy (§5.2). **Done**, together with the packed DNA counts
+   ([`performance.md`](performance.md), [`performance-log.md`](performance-log.md)).
+4. `ReversibleModel` and solver (§5.4), gamma and `p_inv`. **Done** (`reversible.rs`, `ml.rs`), exposed for protein through the
+   `Custom` model. **Open:** DNA presets (JC, K2P, HKY/F84, GTR with explicit parameters) and a DNA `Custom`.
+5. Protein matrices: `Custom` accepts any matrix as PAML text. **Open:** built-in LG, WAG, JTT, Dayhoff (§5.6): the engine
+   embeds a matrix with one `protein_matrix!` line once its data file is cleared.
+6. Later: empirical GTR, estimating exchangeabilities, set-likelihood for partial codes, NJ*.
 
 ## 7. Validation
 
@@ -171,6 +177,8 @@ rate 1). This is for the maintainer to settle; it is not legal advice.
 - Saturation: a saturated `JukesCantor` pair yields no `NaN`/`inf` in the Newick; a constructed count matrix with
   two interior maxima exercises the bracket scan and the `ℓ(t̂) > ℓ(∞)` check.
 - Missing data: appending a column with a gap, `N` or `X` in either sequence changes no distance.
+- Solver against an independent reference: a dense grid maximum of the full (unmerged) likelihood on 62,500 simulated pairs
+  (K=4 and 20, high divergence, short sequences), with no disagreement (`ml::tests`, extensive run `--ignored`).
 - Cross-check against a reference tool (PHYLIP `dnadist`/`protdist` or PAML [Yang 2007]) on a small alignment.
 
 ## References

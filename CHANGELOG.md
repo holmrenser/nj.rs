@@ -9,6 +9,14 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 ## [Unreleased]
 
 ### Added
+- **`Custom` model: maximum-likelihood protein distances under your own rate matrix.** Pass the
+  exchangeabilities and frequencies of a reversible model (WAG, LG, JTT, …) as PAML-layout
+  text in the new `matrix` option (CLI `--matrix FILE`, Python `matrix=`, config field
+  `matrix`); each pair's distance is the `t` that maximises the likelihood of its aligned
+  residue pairs, with gamma rates and invariant sites. Saturated pairs are capped by
+  `max_distance` like every other model. No matrix data ships with nj.rs. About 5–10 µs per
+  pair, so n = 1000 takes several seconds. New `NJError::InvalidMatrix` (`ValueError` in
+  Python).
 - `max_distance` option (default 10.0 substitutions per site) on `NJConfig`, the
   CLI (`--max-distance`) and the Python `nj()` function: the distance given to a
   sequence pair whose distance is not finite because the sequences are saturated

@@ -60,7 +60,13 @@ fn alignment(n: usize, l: usize, max_div: f64) -> MSA<Protein> {
         let div = 0.02 + (max_div - 0.02) * i as f64 / (n.max(2) - 1) as f64;
         let s: Vec<u8> = base
             .iter()
-            .map(|&c| if r.f() < div { letters[(r.next() % 20) as usize] } else { c })
+            .map(|&c| {
+                if r.f() < div {
+                    letters[(r.next() % 20) as usize]
+                } else {
+                    c
+                }
+            })
             .collect();
         (format!("s{i}"), String::from_utf8(s).unwrap())
     });
@@ -82,7 +88,10 @@ fn best<I, O>(reps: usize, mut setup: impl FnMut() -> I, mut run: impl FnMut(I) 
 }
 
 fn main() {
-    let a: Vec<usize> = std::env::args().skip(1).filter_map(|x| x.parse().ok()).collect();
+    let a: Vec<usize> = std::env::args()
+        .skip(1)
+        .filter_map(|x| x.parse().ok())
+        .collect();
     if a.len() < 2 {
         eprintln!("usage: ml_probe N L [reps]");
         std::process::exit(2);
@@ -91,8 +100,16 @@ fn main() {
     let pairs = (n * (n - 1) / 2) as f64;
     let _ = Random20::model(); // build the eigensystem outside the timing
     for max_div in [0.3, 0.7] {
-        let (t_ml, d) = best(reps, || alignment(n, l, max_div), |m| m.into_dist::<ProteinMl<Random20>>(RateHet::NONE));
-        let (t_poisson, _) = best(reps, || alignment(n, l, max_div), |m| m.into_dist::<Poisson>(RateHet::NONE));
+        let (t_ml, d) = best(
+            reps,
+            || alignment(n, l, max_div),
+            |m| m.into_dist::<ProteinMl<Random20>>(RateHet::NONE),
+        );
+        let (t_poisson, _) = best(
+            reps,
+            || alignment(n, l, max_div),
+            |m| m.into_dist::<Poisson>(RateHet::NONE),
+        );
         let mut inf = 0usize;
         for i in 0..n {
             for j in 0..i {

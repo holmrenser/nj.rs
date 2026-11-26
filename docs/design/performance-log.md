@@ -20,7 +20,7 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 | 3a | `fearless_simd` on stable: port the byte kernel, remove nightly and the `simd` gate | done |
 | 3b | SIMD NJ row-minimum | done |
 | 3c | SIMD popcount loop over the planes | done |
-| 4 | ML solver SIMD | blocked: the ML solver does not exist yet (`substitution-models.md` plan step 4); the design in `performance.md` §2 stands |
+| 4 | ML solver SIMD | unblocked: the scalar solver exists (`ml.rs`, 4.5–9.5 µs per protein pair, `ml_probe`); SIMD per `performance.md` §2 not started |
 
 ## Decisions and deviations
 
@@ -161,7 +161,7 @@ real x86 and WASM timings.
 
 ## Follow-ups (not done)
 
-- ML solver SIMD (step 4) once the solver exists; the `U·W` precompute and padding in `performance.md` §2.4.
+- ML solver SIMD (step 4): the `X_ab[m]` precompute already exists; padding `K` to the vector width and two accumulators remain (`performance.md` §2.4). The scalar solver costs 4.5–9.5 µs per protein pair, so n = 1000 takes several seconds.
 - A SIMD `pack` kernel for bit-plane construction (matters for bootstrap on long, narrow alignments).
 - Harley–Seal accumulation on AVX2 (needs x86 hardware to evaluate); AVX-512 correctness.
 - Pruned NJ search (RapidNJ/NINJA style) for n ≫ 10⁴; NJ is the serial part in multi-threaded runs.

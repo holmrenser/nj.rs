@@ -27,6 +27,7 @@ fn config(pairs: &[(&str, &str)], model: SubstitutionModel) -> NJConfig {
         max_distance: None,
         gamma_shape: None,
         p_invar: None,
+        matrix: None,
     }
 }
 

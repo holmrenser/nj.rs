@@ -76,6 +76,7 @@ mod _nj_py {
             | NJError::InvalidGammaShape { .. }
             | NJError::InvalidPInvar { .. }
             | NJError::InvalidMaxDistance { .. }
+            | NJError::InvalidMatrix { .. }
             | NJError::ParseError(_) => PyValueError::new_err(msg),
             NJError::AlgorithmFailure(_) | NJError::RngError(_) => PyRuntimeError::new_err(msg),
         }

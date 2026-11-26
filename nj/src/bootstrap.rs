@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use crate::alphabet::AlphabetEncoding;
 use crate::config::MSA;
 use crate::event::NJEvent;
-use crate::models::{ModelCalculation, RateHet};
+use crate::models::{DistanceModel, RateHet};
 use crate::tree::{NameOrSupport, TreeNode};
 
 /// Fills `out` with the leaf indices of all taxa in the subtree rooted at `node`.
@@ -114,7 +114,8 @@ pub(crate) struct BootstrapTally {
 /// Shared by the sequential and parallel bootstrap paths. Every fallible step is
 /// propagated via `?` so a failed replicate becomes a returned `Err` rather than
 /// a panic (which would otherwise poison a Rayon worker thread).
-fn run_one_replicate<A, M>(
+fn run_one_replicate<A, D>(
+    model: &D,
     msa: &MSA<A>,
     idx_map: &HashMap<String, usize>,
     n_taxa: usize,
@@ -124,9 +125,9 @@ fn run_one_replicate<A, M>(
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
+    D: DistanceModel<A>,
 {
-    let mut dist = msa.bootstrap()?.into_dist::<M>(rates);
+    let mut dist = msa.bootstrap()?.into_dist_with(model, rates);
     let saturated = !dist.cap_non_finite(max_distance).is_empty();
     let tree = dist.neighbor_joining()?;
     let mut splits = HashSet::new();
@@ -142,7 +143,8 @@ where
 /// Uses `std::thread::scope` so `msa` and `idx_map` can be borrowed into the
 /// spawned thread without requiring `'static` lifetimes.
 #[cfg(feature = "parallel")]
-fn bootstrap_clade_counts_parallel<A, M>(
+fn bootstrap_clade_counts_parallel<A, D>(
+    model: &D,
     msa: &MSA<A>,
     n_bootstrap_samples: usize,
     idx_map: &HashMap<String, usize>,
@@ -155,7 +157,7 @@ fn bootstrap_clade_counts_parallel<A, M>(
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
+    D: DistanceModel<A>,
 {
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
     use std::sync::mpsc;
@@ -175,7 +177,7 @@ where
                 (0..n_bootstrap_samples)
                     .into_par_iter()
                     .for_each_with(tx, |sender, _| {
-                        let result = run_one_replicate::<A, M>(msa, idx_map, n_taxa, rates, max_distance);
+                        let result = run_one_replicate(model, msa, idx_map, n_taxa, rates, max_distance);
                         // Ignore send errors: only occurs if receiver was dropped,
                         // which cannot happen while we are in the recv loop below.
                         let _ = sender.send(result);
@@ -217,7 +219,8 @@ where
 /// pool via [`bootstrap_clade_counts_parallel`]; the `on_event` callback is
 /// still called after each replicate from the main thread. Without the feature
 /// the loop is sequential and `on_event` fires in order.
-pub(crate) fn bootstrap_clade_counts<A, M>(
+pub(crate) fn bootstrap_clade_counts<A, D>(
+    model: &D,
     msa: &MSA<A>,
     n_bootstrap_samples: usize,
     on_event: Option<&dyn Fn(NJEvent)>,
@@ -228,7 +231,7 @@ pub(crate) fn bootstrap_clade_counts<A, M>(
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
+    D: DistanceModel<A>,
 {
     if n_bootstrap_samples == 0 {
         return Ok(None);
@@ -242,7 +245,8 @@ where
     let n_taxa = msa.n_sequences;
 
     #[cfg(feature = "parallel")]
-    let tally = bootstrap_clade_counts_parallel::<A, M>(
+    let tally = bootstrap_clade_counts_parallel(
+        model,
         msa,
         n_bootstrap_samples,
         &idx_map,
@@ -260,7 +264,7 @@ where
         let mut saturated_replicates = 0usize;
         for i in 0..n_bootstrap_samples {
             let (local, saturated) =
-                run_one_replicate::<A, M>(msa, &idx_map, n_taxa, rates, max_distance)?;
+                run_one_replicate(model, msa, &idx_map, n_taxa, rates, max_distance)?;
             for (clade, count) in local {
                 *c.entry(clade).or_insert(0) += count;
             }

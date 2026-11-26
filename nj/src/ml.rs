@@ -66,9 +66,19 @@ impl Pair<'_> {
     /// (`t` so small that rounding swamps an off-diagonal entry).
     fn eval(&mut self, t: f64) -> Option<Eval> {
         let model = self.model;
-        model.factors(t, self.het.gamma_shape, &mut self.g, &mut self.g1, &mut self.g2);
+        model.factors(
+            t,
+            self.het.gamma_shape,
+            &mut self.g,
+            &mut self.g1,
+            &mut self.g2,
+        );
         let (w, p_inv) = (1.0 - self.het.p_invar, self.het.p_invar);
-        let mut e = Eval { ll: 0.0, d1: 0.0, d2: 0.0 };
+        let mut e = Eval {
+            ll: 0.0,
+            d1: 0.0,
+            d2: 0.0,
+        };
         for &(a, b, n) in &self.entries {
             let x = model.coefficients(a, b);
             let (mut p, mut p1, mut p2) = (0.0, 0.0, 0.0);
@@ -168,7 +178,11 @@ fn solve(pair: &mut Pair<'_>, total: f64, differing: f64) -> Option<f64> {
             None => {
                 // t is too small to evaluate: the slope there is positive.
                 lo = lo.max(t);
-                next = if hi.is_finite() { 0.5 * (lo + hi) } else { 2.0 * t };
+                next = if hi.is_finite() {
+                    0.5 * (lo + hi)
+                } else {
+                    2.0 * t
+                };
             }
             Some(e) => {
                 ll = e.ll;
@@ -251,9 +265,18 @@ mod tests {
         let mut rng = Rng(0x5EED_0010);
         let hets = [
             RateHet::NONE,
-            RateHet { gamma_shape: Some(0.5), p_invar: 0.0 },
-            RateHet { gamma_shape: None, p_invar: 0.25 },
-            RateHet { gamma_shape: Some(1.5), p_invar: 0.4 },
+            RateHet {
+                gamma_shape: Some(0.5),
+                p_invar: 0.0,
+            },
+            RateHet {
+                gamma_shape: None,
+                p_invar: 0.25,
+            },
+            RateHet {
+                gamma_shape: Some(1.5),
+                p_invar: 0.4,
+            },
         ];
         for k in [4usize, 20] {
             for _ in 0..3 {
@@ -293,7 +316,13 @@ mod tests {
     }
 
     /// Two sequences with `same` identical columns and `diff` columns A/C, as symbols.
-    fn dna_pair(same: usize, diff: usize) -> (Vec<crate::alphabet::DnaSymbol>, Vec<crate::alphabet::DnaSymbol>) {
+    fn dna_pair(
+        same: usize,
+        diff: usize,
+    ) -> (
+        Vec<crate::alphabet::DnaSymbol>,
+        Vec<crate::alphabet::DnaSymbol>,
+    ) {
         use crate::alphabet::{AlphabetEncoding, DNA};
         let mut x: Vec<_> = vec![DNA::encode(b'A'); same];
         let mut y = x.clone();
@@ -311,14 +340,29 @@ mod tests {
         let f = dense(4, &[(0, 0, 800.0), (0, 1, 120.0)]);
         for het in [
             RateHet::NONE,
-            RateHet { gamma_shape: Some(0.3), p_invar: 0.0 },
-            RateHet { gamma_shape: Some(2.0), p_invar: 0.0 },
-            RateHet { gamma_shape: None, p_invar: 0.2 },
-            RateHet { gamma_shape: Some(0.8), p_invar: 0.35 },
+            RateHet {
+                gamma_shape: Some(0.3),
+                p_invar: 0.0,
+            },
+            RateHet {
+                gamma_shape: Some(2.0),
+                p_invar: 0.0,
+            },
+            RateHet {
+                gamma_shape: None,
+                p_invar: 0.2,
+            },
+            RateHet {
+                gamma_shape: Some(0.8),
+                p_invar: 0.35,
+            },
         ] {
             let want = pairwise_distance_with::<JukesCantor, DNA>(&x, &y, het);
             let got = ml_distance(&model, &f, het);
-            assert!((got - want).abs() < 1e-8 * want, "{het:?}: ML {got} vs closed form {want}");
+            assert!(
+                (got - want).abs() < 1e-8 * want,
+                "{het:?}: ML {got} vs closed form {want}"
+            );
         }
     }
 
@@ -346,12 +390,21 @@ mod tests {
         let p = 150.0 / 850.0;
         for het in [
             RateHet::NONE,
-            RateHet { gamma_shape: Some(0.5), p_invar: 0.0 },
-            RateHet { gamma_shape: Some(1.0), p_invar: 0.3 },
+            RateHet {
+                gamma_shape: Some(0.5),
+                p_invar: 0.0,
+            },
+            RateHet {
+                gamma_shape: Some(1.0),
+                p_invar: 0.3,
+            },
         ] {
             let want = equal_rates_closed_form(20, p, het);
             let got = ml_distance(&model, &f, het);
-            assert!((got - want).abs() < 1e-8 * want, "{het:?}: ML {got} vs closed form {want}");
+            assert!(
+                (got - want).abs() < 1e-8 * want,
+                "{het:?}: ML {got} vs closed form {want}"
+            );
         }
         // The two differ by about 0.5% here; guard against confusing them.
         let poisson = -(1.0_f64 - p).ln();
@@ -385,10 +438,18 @@ mod tests {
     }
 
     /// The full (unmerged) log-likelihood on a grid, the independent reference for the solver.
-    fn grid_maximum(model: &ReversibleModel, f: &[f64], step: f64, steps: usize) -> (f64, f64, f64) {
+    fn grid_maximum(
+        model: &ReversibleModel,
+        f: &[f64],
+        step: f64,
+        steps: usize,
+    ) -> (f64, f64, f64) {
         let k = model.n_states();
         let ll = |p: &[f64]| -> f64 {
-            (0..k * k).filter(|&i| f[i] > 0.0).map(|i| f[i] * p[i].ln()).sum()
+            (0..k * k)
+                .filter(|&i| f[i] > 0.0)
+                .map(|i| f[i] * p[i].ln())
+                .sum()
         };
         let (mut best_t, mut best_ll) = (0.0, f64::NEG_INFINITY);
         for i in 1..=steps {
@@ -424,16 +485,25 @@ mod tests {
             }
             let loglik = |t: f64| -> f64 {
                 let p = model.transition_matrix(t, RateHet::NONE);
-                (0..k * k).filter(|&i| f[i] > 0.0).map(|i| f[i] * p[i].ln()).sum()
+                (0..k * k)
+                    .filter(|&i| f[i] > 0.0)
+                    .map(|i| f[i] * p[i].ln())
+                    .sum()
             };
             // A maximum on the grid's last point means ℓ is still rising at t_max: saturated by
             // definition. A margin keeps knife-edge cases (within rounding of ℓ(∞)) out of the test.
             if grid_t >= 9.995 {
                 saturated += 1;
-                assert!(d.is_infinite(), "k {k} trial {trial}: still rising at t_max but solver returned {d}");
+                assert!(
+                    d.is_infinite(),
+                    "k {k} trial {trial}: still rising at t_max but solver returned {d}"
+                );
             } else if grid_ll > limit + 1e-6 {
                 finite += 1;
-                assert!(d.is_finite(), "k {k} trial {trial}: grid finds a maximum at {grid_t}, solver says saturated");
+                assert!(
+                    d.is_finite(),
+                    "k {k} trial {trial}: grid finds a maximum at {grid_t}, solver says saturated"
+                );
                 // Two maxima of nearly equal height may swap places: accept any maximum whose
                 // likelihood is within a hair of the grid's best.
                 assert!(
@@ -442,7 +512,10 @@ mod tests {
                 );
             } else if grid_ll < limit - 1e-6 {
                 saturated += 1;
-                assert!(d.is_infinite(), "k {k} trial {trial}: no maximum beats ℓ(∞) but solver returned {d}");
+                assert!(
+                    d.is_infinite(),
+                    "k {k} trial {trial}: no maximum beats ℓ(∞) but solver returned {d}"
+                );
             }
         }
         (finite, saturated)
@@ -451,10 +524,16 @@ mod tests {
     #[test]
     fn test_solver_agrees_with_a_grid_search_on_simulated_pairs() {
         let (finite, saturated) = check_against_grid(4, 800, 100, 0x5EED_0030);
-        assert!(finite > 300 && saturated > 30, "both outcomes must occur: {finite} finite, {saturated} saturated");
+        assert!(
+            finite > 300 && saturated > 30,
+            "both outcomes must occur: {finite} finite, {saturated} saturated"
+        );
         // Saturation is rare at K=20 and 300 sites (about 2%); the extensive test covers it.
         let (finite, _) = check_against_grid(20, 30, 300, 0x5EED_0031);
-        assert!(finite > 20, "K=20: only {finite} pairs had a finite maximum");
+        assert!(
+            finite > 20,
+            "K=20: only {finite} pairs had a finite maximum"
+        );
     }
 
     /// Larger sweep: `cargo test --release -p nj --lib ml::tests::extensive -- --ignored --nocapture`.
@@ -469,7 +548,14 @@ mod tests {
     #[test]
     fn test_identical_and_empty_pairs_are_zero() {
         let model = ReversibleModel::equal_rates(20);
-        assert_eq!(ml_distance(&model, &dense(20, &[(2, 2, 40.0), (5, 5, 10.0)]), RateHet::NONE), 0.0);
+        assert_eq!(
+            ml_distance(
+                &model,
+                &dense(20, &[(2, 2, 40.0), (5, 5, 10.0)]),
+                RateHet::NONE
+            ),
+            0.0
+        );
         assert_eq!(ml_distance(&model, &vec![0.0; 400], RateHet::NONE), 0.0);
     }
 

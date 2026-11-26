@@ -6,7 +6,21 @@ use crate::alphabet::Alphabet;
 use crate::config::{DEFAULT_MAX_DISTANCE, SequenceObject};
 use crate::error::NJError;
 use crate::event::{LogLevel, NJEvent};
-use crate::models::RateHet;
+use crate::models::{RateHet, SubstitutionModel};
+
+/// Checks that the `matrix` option is present exactly when the model is `Custom`.
+pub(crate) fn validate_matrix(model: &SubstitutionModel, matrix: Option<&str>) -> Result<(), NJError> {
+    match (model, matrix) {
+        (SubstitutionModel::Custom, None) => Err(NJError::InvalidMatrix {
+            reason: "the 'Custom' model needs a rate matrix in the `matrix` option".into(),
+        }),
+        (SubstitutionModel::Custom, Some(_)) => Ok(()),
+        (_, Some(_)) => Err(NJError::InvalidMatrix {
+            reason: "`matrix` is only used with the 'Custom' model".into(),
+        }),
+        (_, None) => Ok(()),
+    }
+}
 
 /// Validates that the MSA is non-empty, all sequences have equal length, and
 /// all identifiers are unique.

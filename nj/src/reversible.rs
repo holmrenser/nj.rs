@@ -15,7 +15,7 @@
 //!
 //! The coefficients `X_ab[m]` are computed once per model; evaluating `P`, `P′` and `P″`
 //! for one entry is then three length-`K` dot products. Among-site rate variation only
-//! changes the factor `e^{λt}` (see [`ReversibleModel::factors`]), so it costs nothing
+//! changes the factor `e^{λt}` (see `ReversibleModel::factors`), so it costs nothing
 //! extra per entry. Background and references: `docs/theory/distance-estimation.md`.
 
 use crate::models::RateHet;
@@ -73,11 +73,16 @@ impl ReversibleModel {
         // Row sums of Q give the diagonal; the mean rate fixes the time scale.
         let mut diag = vec![0.0; k];
         for a in 0..k {
-            diag[a] = -(0..k).filter(|&b| b != a).map(|b| s[a * k + b] * pi[b]).sum::<f64>();
+            diag[a] = -(0..k)
+                .filter(|&b| b != a)
+                .map(|b| s[a * k + b] * pi[b])
+                .sum::<f64>();
         }
         let mean_rate: f64 = -(0..k).map(|a| pi[a] * diag[a]).sum::<f64>();
         if !(mean_rate.is_finite() && mean_rate > 0.0) {
-            return Err("the rate matrix has no substitutions (all exchangeabilities are zero)".into());
+            return Err(
+                "the rate matrix has no substitutions (all exchangeabilities are zero)".into(),
+            );
         }
 
         // A = Π^½ Q Π^-½ (symmetric), scaled by 1/mean_rate.
@@ -128,11 +133,18 @@ impl ReversibleModel {
             }
             match token.parse::<f64>() {
                 Ok(v) => numbers.push(v),
-                Err(_) => return Err(format!("unexpected token '{token}' while reading the matrix")),
+                Err(_) => {
+                    return Err(format!(
+                        "unexpected token '{token}' while reading the matrix"
+                    ));
+                }
             }
         }
         if numbers.len() < need {
-            return Err(format!("expected {need} numbers for {k} states, found {}", numbers.len()));
+            return Err(format!(
+                "expected {need} numbers for {k} states, found {}",
+                numbers.len()
+            ));
         }
         let mut s = vec![0.0; k * k];
         let mut it = numbers.iter();
@@ -184,7 +196,14 @@ impl ReversibleModel {
     /// Uniform rates: `g = e^{λt}`. Gamma-distributed rates with shape `α` (mean one):
     /// `g = (1 − λt/α)^{−α}`, the Laplace transform of the rate distribution
     /// [Gu & Li 1996; Waddell & Steel 1997].
-    pub(crate) fn factors(&self, t: f64, gamma_shape: Option<f64>, g: &mut [f64], g1: &mut [f64], g2: &mut [f64]) {
+    pub(crate) fn factors(
+        &self,
+        t: f64,
+        gamma_shape: Option<f64>,
+        g: &mut [f64],
+        g1: &mut [f64],
+        g2: &mut [f64],
+    ) {
         match gamma_shape {
             None => {
                 for (m, &l) in self.lambda.iter().enumerate() {
@@ -223,7 +242,12 @@ impl ReversibleModel {
         let mut p = vec![0.0; k * k];
         for a in 0..k {
             for b in 0..k {
-                let v: f64 = self.coefficients(a, b).iter().zip(&g).map(|(x, g)| x * g).sum();
+                let v: f64 = self
+                    .coefficients(a, b)
+                    .iter()
+                    .zip(&g)
+                    .map(|(x, g)| x * g)
+                    .sum();
                 p[a * k + b] = (1.0 - het.p_invar) * v + if a == b { het.p_invar } else { 0.0 };
             }
         }
@@ -241,7 +265,12 @@ pub(crate) fn jacobi_eigen(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     for i in 0..n {
         v[i * n + i] = 1.0;
     }
-    let scale: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt().max(f64::MIN_POSITIVE);
+    let scale: f64 = a
+        .iter()
+        .map(|x| x * x)
+        .sum::<f64>()
+        .sqrt()
+        .max(f64::MIN_POSITIVE);
     for _sweep in 0..100 {
         let mut off = 0.0;
         for p in 0..n {
@@ -338,7 +367,10 @@ mod tests {
             for i in 0..n {
                 for j in 0..n {
                     let rec: f64 = (0..n).map(|k| v[i * n + k] * lam[k] * v[j * n + k]).sum();
-                    assert!((rec - orig[i * n + j]).abs() < 1e-12, "n {n}: reconstruction ({i},{j})");
+                    assert!(
+                        (rec - orig[i * n + j]).abs() < 1e-12,
+                        "n {n}: reconstruction ({i},{j})"
+                    );
                     let dot: f64 = (0..n).map(|k| v[k * n + i] * v[k * n + j]).sum();
                     let want = if i == j { 1.0 } else { 0.0 };
                     assert!((dot - want).abs() < 1e-12, "n {n}: orthogonality ({i},{j})");
@@ -377,7 +409,10 @@ mod tests {
                 for a in 0..k {
                     for b in 0..k {
                         let prod: f64 = (0..k).map(|c| p[a * k + c] * p[c * k + b]).sum();
-                        assert!((prod - p2[a * k + b]).abs() < 1e-12, "semigroup (k {k}, t {t})");
+                        assert!(
+                            (prod - p2[a * k + b]).abs() < 1e-12,
+                            "semigroup (k {k}, t {t})"
+                        );
                     }
                 }
             }
@@ -397,8 +432,14 @@ mod tests {
             let model = random_model(&mut rng, k);
             let t = 1e-6;
             let p = model.transition_matrix(t, RateHet::NONE);
-            let moved: f64 = (0..k).map(|a| model.frequencies()[a] * (1.0 - p[a * k + a])).sum();
-            assert!((moved / t - 1.0).abs() < 1e-5, "k {k}: mean rate {}", moved / t);
+            let moved: f64 = (0..k)
+                .map(|a| model.frequencies()[a] * (1.0 - p[a * k + a]))
+                .sum();
+            assert!(
+                (moved / t - 1.0).abs() < 1e-5,
+                "k {k}: mean rate {}",
+                moved / t
+            );
         }
     }
 
@@ -428,8 +469,14 @@ mod tests {
         let k = 20;
         for het in [
             RateHet::NONE,
-            RateHet { gamma_shape: Some(0.5), p_invar: 0.0 },
-            RateHet { gamma_shape: Some(2.0), p_invar: 0.3 },
+            RateHet {
+                gamma_shape: Some(0.5),
+                p_invar: 0.0,
+            },
+            RateHet {
+                gamma_shape: Some(2.0),
+                p_invar: 0.3,
+            },
         ] {
             let (mut g, mut g1, mut g2) = (vec![0.0; k], vec![0.0; k], vec![0.0; k]);
             let t = 0.8;
@@ -443,8 +490,14 @@ mod tests {
             for m in 0..k {
                 let fd1 = (gp[m] - gm[m]) / (2.0 * h);
                 let fd2 = (d1p[m] - d1m[m]) / (2.0 * h);
-                assert!((fd1 - g1[m]).abs() < 1e-7 * (1.0 + g1[m].abs()), "g' at {m}, {het:?}");
-                assert!((fd2 - g2[m]).abs() < 1e-6 * (1.0 + g2[m].abs()), "g'' at {m}, {het:?}");
+                assert!(
+                    (fd1 - g1[m]).abs() < 1e-7 * (1.0 + g1[m].abs()),
+                    "g' at {m}, {het:?}"
+                );
+                assert!(
+                    (fd2 - g2[m]).abs() < 1e-6 * (1.0 + g2[m].abs()),
+                    "g'' at {m}, {het:?}"
+                );
             }
         }
     }
@@ -463,7 +516,10 @@ mod tests {
             sum += density * (lambda * r * t).exp() * h;
         }
         let closed = (1.0 - lambda * t / alpha).powf(-alpha);
-        assert!((sum - closed).abs() < 1e-6, "numerical {sum} vs closed form {closed}");
+        assert!(
+            (sum - closed).abs() < 1e-6,
+            "numerical {sum} vs closed form {closed}"
+        );
     }
 
     /// Lanczos approximation of ln Γ(x), enough for the test above.
@@ -501,7 +557,10 @@ mod tests {
             }
         }
         let direct = ReversibleModel::new(&s, &[0.1, 0.2, 0.3, 0.4]).unwrap();
-        let (p, q) = (model.transition_matrix(0.4, RateHet::NONE), direct.transition_matrix(0.4, RateHet::NONE));
+        let (p, q) = (
+            model.transition_matrix(0.4, RateHet::NONE),
+            direct.transition_matrix(0.4, RateHet::NONE),
+        );
         assert_eq!(p, q);
         assert!(ReversibleModel::from_paml("1 2 3", 4).is_err());
         assert!(ReversibleModel::from_paml("1 2 x 4 5 6 .1 .2 .3 .4", 4).is_err());
@@ -510,16 +569,28 @@ mod tests {
     #[test]
     fn test_invalid_models_are_rejected() {
         let s = vec![0.0, 1.0, 1.0, 0.0];
-        assert!(ReversibleModel::new(&s, &[0.5, 0.0]).is_err(), "zero frequency");
+        assert!(
+            ReversibleModel::new(&s, &[0.5, 0.0]).is_err(),
+            "zero frequency"
+        );
         assert!(ReversibleModel::new(&s, &[0.5]).is_err(), "one state");
-        assert!(ReversibleModel::new(&[0.0, 1.0, 2.0, 0.0], &[0.5, 0.5]).is_err(), "asymmetric");
-        assert!(ReversibleModel::new(&[0.0; 4], &[0.5, 0.5]).is_err(), "no substitutions");
+        assert!(
+            ReversibleModel::new(&[0.0, 1.0, 2.0, 0.0], &[0.5, 0.5]).is_err(),
+            "asymmetric"
+        );
+        assert!(
+            ReversibleModel::new(&[0.0; 4], &[0.5, 0.5]).is_err(),
+            "no substitutions"
+        );
         // Two disconnected pairs of states: more than one zero eigenvalue.
         let mut blocks = vec![0.0; 16];
         blocks[1] = 1.0;
         blocks[4] = 1.0;
         blocks[11] = 1.0;
         blocks[14] = 1.0;
-        assert!(ReversibleModel::new(&blocks, &[0.25; 4]).is_err(), "reducible");
+        assert!(
+            ReversibleModel::new(&blocks, &[0.25; 4]).is_err(),
+            "reducible"
+        );
     }
 }

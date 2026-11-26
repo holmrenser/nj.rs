@@ -86,6 +86,7 @@ fn main() {
             num_threads: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
         })
         .unwrap();
     });
@@ -100,6 +101,7 @@ fn main() {
         max_distance: None,
         gamma_shape: None,
         p_invar: None,
+        matrix: None,
     };
     let t_all = best(reps, || {
         let _ = run_nj(conf(0), None).unwrap();

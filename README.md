@@ -27,6 +27,9 @@ Takes a multiple sequence alignment and returns a Newick tree. The alphabet (DNA
 | `Tamura` | ✓ | | ✓ |
 | `Poisson` | | ✓ | ✓ |
 | `KimuraProtein` | | ✓ | ✓ |
+| `Custom` (ML distance, your rate matrix) | | ✓ | ✓ |
+
+**Custom protein matrices.** `Custom` is the maximum-likelihood distance under a reversible rate matrix you supply, such as WAG, LG or JTT: for every pair of sequences it fits the single distance `t` that maximises `Σ F_ab ln P_ab(t)` (`F_ab`: columns with residues `a` and `b`; `P(t) = exp(Qt)`), so the matrix is fixed and only `t` is estimated. Gamma rates and invariant sites enter the likelihood, and gaps and `X` are dropped per pair. Pass the matrix as text in PAML layout in the `matrix` option (CLI: `--matrix FILE`): the lower triangle of the symmetric exchangeability matrix by rows (1, 2, …, 19 numbers), then the 20 amino-acid frequencies, in the order `ARNDCQEGHILKMFPSTWYV`; anything after those numbers is ignored. `matrix` is required for `Custom` and an error for any other model. nj.rs does not ship the published matrices; the PAML-format files distributed by the authors of each matrix can be passed as they are. Cost: about 5–10 µs per pair (n = 1000: several seconds), against milliseconds for the closed-form models. Theory and solver: [`docs/design/substitution-models.md`](docs/design/substitution-models.md), [`docs/theory/distance-estimation.md`](docs/theory/distance-estimation.md).
 
 Using a model that does not match the alphabet returns an error. `gamma_shape` (α) must be `> 0` and `p_invar` must be in `[0, 1)`; they combine as `+I+Γ`.
 
@@ -51,8 +54,9 @@ nj -t 4 --n-bootstrap-samples 1000 sequences.fasta > tree.nwk
 | `[FASTA]` | Input alignment (stdin if omitted) |
 | `-o, --output <FILE>` | Write output to a file instead of stdout |
 | `-b, --n-bootstrap-samples <N>` | Bootstrap replicates, `0` to disable (default `100`) |
-| `-m, --substitution-model <MODEL>` | `p-diff` (default), `jukes-cantor`, `kimura2-p`, `tajima-nei`, `tamura`, `poisson`, `kimura-protein` |
+| `-m, --substitution-model <MODEL>` | `p-diff` (default), `jukes-cantor`, `kimura2-p`, `tajima-nei`, `tamura`, `poisson`, `kimura-protein`, `custom` |
 | `-a, --alphabet <ALPHABET>` | Override alphabet auto-detection |
+| `--matrix <FILE>` | Rate matrix (PAML layout) for `-m custom` |
 | `-g, --gamma-shape <ALPHA>` | Gamma rate-heterogeneity shape |
 | `-i, --p-invar <FRACTION>` | Proportion of invariant sites |
 | `--max-distance <D>` | Distance given to saturated pairs, which have no finite estimate (default `10`) |

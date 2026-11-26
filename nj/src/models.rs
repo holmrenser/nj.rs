@@ -14,6 +14,8 @@
 //! tallies; they are functions of the 4×4 pair-count table [`DnaCounts`], exposed as
 //! `from_counts` on each model.
 
+use std::marker::PhantomData;
+
 use serde::{Deserialize, Serialize};
 
 use crate::alphabet::{AlphabetEncoding, DNA, DnaSymbol, Protein, ProteinSymbol};
@@ -90,6 +92,42 @@ pub trait ModelCalculation<A: AlphabetEncoding> {
     /// exact integers) without a pass over the symbols.
     fn distance_prepared(data: &Prepared<'_, A>, i: usize, j: usize, rates: RateHet) -> f64 {
         Self::distance(data.sequence(i), data.sequence(j), rates)
+    }
+}
+
+/// A distance model as a value, working on a prepared alignment.
+///
+/// [`ModelCalculation`] models are types without state, which is all the closed-form models
+/// need. A model with run-time parameters (a user-supplied rate matrix, with its eigensystem)
+/// cannot be a type, so the distance-matrix, NJ and bootstrap code is written against this
+/// trait instead. Stateless models are adapted with [`Static`]; there is no dynamic dispatch,
+/// each model monomorphises the pair loop.
+pub trait DistanceModel<A: AlphabetEncoding>: Send + Sync {
+    /// Distance between sequences `i` and `j` of `data`: finite and non-negative, `0.0`
+    /// when nothing is comparable, `f64::INFINITY` when the pair is saturated.
+    fn distance(&self, data: &Prepared<'_, A>, i: usize, j: usize, rates: RateHet) -> f64;
+}
+
+/// Adapter that makes a stateless [`ModelCalculation`] type usable as a [`DistanceModel`].
+pub struct Static<M>(PhantomData<fn() -> M>);
+
+impl<M> Static<M> {
+    /// The adapter for model type `M`.
+    pub const fn new() -> Self {
+        Static(PhantomData)
+    }
+}
+
+impl<M> Default for Static<M> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<A: AlphabetEncoding, M: ModelCalculation<A>> DistanceModel<A> for Static<M> {
+    #[inline(always)]
+    fn distance(&self, data: &Prepared<'_, A>, i: usize, j: usize, rates: RateHet) -> f64 {
+        M::distance_prepared(data, i, j, rates)
     }
 }
 
@@ -443,6 +481,7 @@ impl ModelCalculation<DNA> for Tamura {
 /// | `Tamura` | DNA only | `-h · ln(1 - P/h - Q) - 0.5(1-h)·ln(1-2Q)` |
 /// | `Poisson` | Protein only | `-ln(1 - p)` |
 /// | `KimuraProtein` | Protein only | `-ln(1 - p - 0.2 p²)` |
+/// | `Custom` | Protein only (for now) | ML distance under the matrix in the `matrix` option |
 ///
 /// Model–alphabet compatibility is enforced at runtime in [`crate::nj`].
 #[derive(Clone, Debug, ts_rs::TS, Serialize, Deserialize)]
@@ -463,6 +502,10 @@ pub enum SubstitutionModel {
     Poisson,
     /// Kimura (1983): empirical protein distance (`Poisson` plus a `0.2 p²` term).
     KimuraProtein,
+    /// Maximum-likelihood distance under a user-supplied reversible protein rate matrix
+    /// (e.g. WAG, LG, JTT): the exchangeabilities and frequencies are given in the
+    /// `matrix` option, PAML layout. Only the distance of each pair is fitted.
+    Custom,
 }
 
 #[cfg(test)]

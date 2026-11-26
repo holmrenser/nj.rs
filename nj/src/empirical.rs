@@ -16,7 +16,7 @@ use std::marker::PhantomData;
 use crate::alphabet::Protein;
 use crate::counts::ProteinCounts;
 use crate::ml::ml_distance;
-use crate::models::{ModelCalculation, RateHet};
+use crate::models::{DistanceModel, ModelCalculation, RateHet};
 use crate::prepared::Prepared;
 use crate::reversible::ReversibleModel;
 
@@ -45,6 +45,38 @@ impl<M: ProteinMatrix> ModelCalculation<Protein> for ProteinMl<M> {
 
     fn distance_prepared(data: &Prepared<'_, Protein>, i: usize, j: usize, rates: RateHet) -> f64 {
         ml_distance(M::model(), &data.protein_counts(i, j).to_f64(), rates)
+    }
+}
+
+/// A protein rate matrix supplied at run time (the `Custom` model): the same ML distance as
+/// [`ProteinMl`], with the model held as a value instead of a type.
+pub struct CustomProtein {
+    model: ReversibleModel,
+}
+
+impl CustomProtein {
+    /// Parses a matrix in PAML layout (see [`ReversibleModel::from_paml`]) for the 20 amino acids.
+    pub fn from_paml(text: &str) -> Result<Self, String> {
+        Ok(Self {
+            model: ReversibleModel::from_paml(text, 20)?,
+        })
+    }
+
+    /// Wraps an existing 20-state model.
+    pub fn new(model: ReversibleModel) -> Result<Self, String> {
+        if model.n_states() != 20 {
+            return Err(format!(
+                "a protein model needs 20 states, got {}",
+                model.n_states()
+            ));
+        }
+        Ok(Self { model })
+    }
+}
+
+impl DistanceModel<Protein> for CustomProtein {
+    fn distance(&self, data: &Prepared<'_, Protein>, i: usize, j: usize, rates: RateHet) -> f64 {
+        ml_distance(&self.model, &data.protein_counts(i, j).to_f64(), rates)
     }
 }
 
@@ -94,7 +126,9 @@ mod tests {
     fn alignment(n: usize, len: usize, seed: u64) -> MSA<Protein> {
         let mut rng = Rng(seed);
         let letters = b"ARNDCQEGHILKMFPSTWYV";
-        let base: Vec<u8> = (0..len).map(|_| letters[(rng.next() % 20) as usize]).collect();
+        let base: Vec<u8> = (0..len)
+            .map(|_| letters[(rng.next() % 20) as usize])
+            .collect();
         let pairs = (0..n).map(|i| {
             let mut s = base.clone();
             for c in s.iter_mut() {
@@ -119,7 +153,11 @@ mod tests {
             for j in 0..9 {
                 let by_symbols = Ml::distance(&msa.sequences[i], &msa.sequences[j], RateHet::NONE);
                 let by_prepared = Ml::distance_prepared(&prepared, i, j, RateHet::NONE);
-                assert_eq!(by_symbols.to_bits(), by_prepared.to_bits(), "pair ({i},{j})");
+                assert_eq!(
+                    by_symbols.to_bits(),
+                    by_prepared.to_bits(),
+                    "pair ({i},{j})"
+                );
                 let counts = ProteinCounts::from_symbols(&msa.sequences[i], &msa.sequences[j]);
                 let direct = ml_distance(Synthetic::model(), &counts.to_f64(), RateHet::NONE);
                 assert_eq!(by_symbols.to_bits(), direct.to_bits(), "pair ({i},{j})");
@@ -141,7 +179,10 @@ mod tests {
         }
         // Sequence 0 is the ancestor of the others; later ones diverge further from it.
         for i in 2..n {
-            assert!(d.get(0, i) > d.get(0, i - 1) * 0.8, "divergence should grow with i");
+            assert!(
+                d.get(0, i) > d.get(0, i - 1) * 0.8,
+                "divergence should grow with i"
+            );
         }
         assert!(d.get(0, n - 1) > d.get(0, 1));
     }
@@ -152,7 +193,11 @@ mod tests {
         let b = "ARNDCQEGHILKMFPSTWYAARNDCQEGHIK";
         let msa = |x: &str, y: &str| {
             MSA::<Protein>::try_from_pairs(
-                [("a".to_string(), x.to_string()), ("b".to_string(), y.to_string())].into_iter(),
+                [
+                    ("a".to_string(), x.to_string()),
+                    ("b".to_string(), y.to_string()),
+                ]
+                .into_iter(),
             )
             .unwrap()
         };
@@ -162,21 +207,43 @@ mod tests {
         for (extra_a, extra_b) in [("-", "W"), ("W", "-"), ("X", "L"), ("L", "X"), ("-", "X")] {
             let m = msa(&format!("{a}{extra_a}"), &format!("{b}{extra_b}"));
             let got = Ml::distance(&m.sequences[0], &m.sequences[1], RateHet::NONE);
-            assert_eq!(got.to_bits(), want.to_bits(), "extra column ({extra_a}, {extra_b})");
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "extra column ({extra_a}, {extra_b})"
+            );
         }
     }
 
     #[test]
     fn test_full_nj_run_with_bootstrap_and_rate_variation() {
         let msa = alignment(10, 300, 3);
-        let rates = RateHet { gamma_shape: Some(0.7), p_invar: 0.1 };
-        let result = crate::runner::run_nj::<Protein, Ml>(msa, 20, None, None, true, true, rates, 10.0).unwrap();
+        let rates = RateHet {
+            gamma_shape: Some(0.7),
+            p_invar: 0.1,
+        };
+        let result = crate::runner::run_nj(
+            msa,
+            &crate::models::Static::<Ml>::new(),
+            20,
+            None,
+            None,
+            true,
+            true,
+            rates,
+            10.0,
+        )
+        .unwrap();
         assert!(result.newick.ends_with(';'));
         assert!(!result.newick.contains("NaN") && !result.newick.contains("inf"));
         assert!(result.average_distance.unwrap() > 0.0);
         // All ten taxa appear in the tree.
         for i in 0..10 {
-            assert!(result.newick.contains(&format!("s{i}:")), "taxon s{i} missing: {}", result.newick);
+            assert!(
+                result.newick.contains(&format!("s{i}:")),
+                "taxon s{i} missing: {}",
+                result.newick
+            );
         }
     }
 
