@@ -20,7 +20,7 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 | 3a | `fearless_simd` on stable: port the byte kernel, remove nightly and the `simd` gate | done |
 | 3b | SIMD NJ row-minimum | done |
 | 3c | SIMD popcount loop over the planes | done |
-| 4 | ML solver SIMD | blocked: the ML solver does not exist yet (`substitution-models.md` plan step 4) |
+| 4 | ML solver SIMD | blocked: the ML solver does not exist yet (`substitution-models.md` plan step 4); the design in `performance.md` §2 stands |
 
 ## Decisions and deviations
 
@@ -135,6 +135,37 @@ also pass on x86 SSE4.2 and AVX2 under emulation.
 | DNA n=1000 L=1000 `tn` | 29.7 ms | 22.9 ms |
 | DNA n=2000 L=1000 `k2p` | 105.6 ms | 77.4 ms |
 | DNA n=1000 L=10000 `k2p` | not measured | 122.9 ms |
+
+## Final results (`9d5fd54`, single thread)
+
+| Case | Baseline `nj()` | Final `nj()` | Baseline distances | Final distances | Baseline NJ | Final NJ |
+|---|---|---|---|---|---|---|
+| DNA n=500 `pdiff` | 199 ms | 6.9 ms (29×) | 38.7 ms | 4.1 ms | 160 ms | 2.8 ms |
+| DNA n=1000 `pdiff` | 1438 ms | 36.4 ms (40×) | 153.9 ms | 15.6 ms | 1284 ms | 20.9 ms |
+| DNA n=1000 `jc` | 1437 ms | 39.0 ms (37×) | 155.7 ms | 18.8 ms | 1282 ms | 20.2 ms |
+| DNA n=1000 `k2p` | 2085 ms | 40.0 ms (52×) | 802.3 ms | 19.7 ms | 1283 ms | 20.3 ms |
+| DNA n=1000 `tn` | 2224 ms | 43.1 ms (52×) | 940.6 ms | 22.9 ms | 1284 ms | 20.2 ms |
+| DNA n=1000 `tamura` | 2121 ms | 40.4 ms (52×) | 837.9 ms | 20.3 ms | 1283 ms | 20.2 ms |
+| DNA n=2000 `k2p` | 13482 ms | 233 ms (58×) | 3177.6 ms | 77.3 ms | 10304 ms | 155.8 ms |
+| protein n=1000 `poisson` | 1364 ms | 31.0 ms (44×) | 78.7 ms | 10.4 ms | 1286 ms | 20.6 ms |
+| protein n=500 `kimura-protein` | 173 ms | 4.9 ms (35×) | 12.2 ms | 2.1 ms | 161 ms | 2.9 ms |
+| DNA n=200 `k2p`, 20 bootstrap | 0.91 s | 0.03 s (30×) | | | | |
+
+With the `parallel` feature on 12 cores the distance stage shrinks further (n=2000 `k2p`: 77 → 18 ms, n=1000: 20 → 5 ms),
+so NJ, which is serial, is then about 90% of a single `nj()` call; bootstrap replicates still run in parallel.
+
+Verification: 183 tests with and without `parallel` and `cli` (plus 16 CLI tests); Python extension built and its 63
+tests pass; the workspace (incl. benches, WASM with `+simd128`) compiles; kernels, NJ oracle and distance-matrix tests also
+pass on x86-64 under `qemu-x86_64` (Nehalem → SSE4.2, Haswell → AVX2; the emulator did not offer AVX-512). Not measured:
+real x86 and WASM timings.
+
+## Follow-ups (not done)
+
+- ML solver SIMD (step 4) once the solver exists; the `U·W` precompute and padding in `performance.md` §2.4.
+- A SIMD `pack` kernel for bit-plane construction (matters for bootstrap on long, narrow alignments).
+- Harley–Seal accumulation on AVX2 (needs x86 hardware to evaluate); AVX-512 correctness.
+- Pruned NJ search (RapidNJ/NINJA style) for n ≫ 10⁴; NJ is the serial part in multi-threaded runs.
+- Warn when a sequence consists only of `N`/`X` (distance 0 against everything, silently).
 
 ## Commits
 

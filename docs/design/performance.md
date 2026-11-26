@@ -1,6 +1,8 @@
 # Design: performance priorities
 
-Status: proposal. Tells us what to do first and why. Companion to [`substitution-models.md`](substitution-models.md).
+Status: implemented on branch `perf/nj-simd`, steps 1–3; step 4 waits for the ML solver. What was built, where it
+deviated and what was measured: [`performance-log.md`](performance-log.md). Tells us what to do first and why.
+Companion to [`substitution-models.md`](substitution-models.md).
 
 ## 1. Priorities
 

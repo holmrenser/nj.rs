@@ -44,8 +44,8 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   stable. The `simd` Cargo feature is now a no-op. The minimum supported Rust version
   is 1.89. Protein distances are about 6× faster.
 - DNA distances are computed from bit-planes (four bitmasks per sequence, A/C/G/T) and a
-  pair-count table: `Kimura2P`, `TajimaNei` and `Tamura` are about 30× faster, `PDiff`
-  and `JukesCantor` about 6×, with identical results. The parallel pair loop writes rows
+  pair-count table: `Kimura2P`, `TajimaNei` and `Tamura` are about 40× faster, `PDiff`
+  and `JukesCantor` about 10×, with identical results. The parallel pair loop writes rows
   in blocks straight into the matrix instead of materialising every `(i, j)` pair and result.
 - Neighbor-joining is about 60× faster: the active rows of the matrix are kept
   contiguous instead of testing an active-set bit and rebuilding the triangular

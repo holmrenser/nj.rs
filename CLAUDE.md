@@ -107,6 +107,15 @@ Bootstrap runs N replicate NJ trees on column-resampled MSAs, tallies splits usi
 
 NJ output is unrooted but stored with an arbitrary root, so splits are keyed by `split_key` — the side that excludes taxon 0 — making keys independent of rooting. `collect_splits` records each split once per tree (the root's two children describe the same split), and trivial splits (a side with fewer than two taxa) are never labelled.
 
+### Performance structure
+
+- **Missing data.** A symbol byte `>= AlphabetEncoding::N_STATES` (4 DNA, 20 protein) is missing: gaps and `N`/`X` are excluded per pair in every model (pairwise deletion).
+- **`prepared.rs` / `counts.rs`.** `DistMat::from_msa` builds a `Prepared` alignment; for DNA it holds four bit-planes (A, C, G, T) per sequence, and `dna_counts(i, j)` returns the exact 4×4 pair-count table (`DnaCounts`) as `Σ popcount(plane_a(i) & plane_b(j))`. The DNA models are functions of that table (`from_counts`); `ModelCalculation::distance` (symbol slices, histogram) is the reference path, `distance_prepared` the fast one. Protein uses the byte kernel.
+- **`DistMat::from_prepared`** fills blocks of 16 rows in place (Rayon over blocks with `parallel`).
+- **`kernels.rs`.** All SIMD kernels (`fearless_simd`, stable Rust, run-time dispatch; scalar fallback) next to their scalar references: the `(n_diff, n_comparable)` byte kernel, `row_minima` (NJ search) and `plane_counts`. Each is `#[simd]`-annotated (without it the code loses its inlining) and tested at every level via `kernels::testing::levels()`.
+- **`nj.rs`.** Active nodes occupy slots `0..m` of the packed matrix (swap-remove on join). `Q = (m−2)·d − (S_i + S_j)`, ties go to the smallest original `(i, j)`, and row sums update in ascending original index; `nj_reference.rs` (`cfg(test)`) is the straightforward oracle and the tests require bit-identical trees.
+- Design and results: `docs/design/performance.md`, `docs/design/performance-log.md`.
+
 ### CLI (`main.rs`)
 
 Enabled only with `--features cli`. Parses FASTA via `clap`, builds a `NJConfig`, calls `nj()`, and prints the Newick string (or a JSON object when `--distance-matrix` / `--average-distance` is set).
