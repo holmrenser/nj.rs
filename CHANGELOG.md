@@ -32,6 +32,17 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 - `DistMat::neighbor_joining` returns an error for a matrix containing a non-finite
   distance instead of silently producing a `NaN` tree; use the new
   `DistMat::cap_non_finite` first.
+- **Unknown characters are missing data.** `N` (DNA) and `X` (protein) are now
+  excluded per pair, exactly like gaps, in every model. Before, they counted as a
+  distinct state: one `N` against a base was a mismatch and `N` against `N` a match,
+  so a pair differing only by an `N` had a non-zero distance. Alignments containing
+  `N` or `X` now give smaller distances. Ambiguity codes were already read as `N`.
+- Neighbor-joining is about 30× faster: the active rows of the matrix are kept
+  contiguous instead of testing an active-set bit and rebuilding the triangular
+  index for every element (n=1000: 1.3 s to 44 ms; n=2000: 10.3 s to 0.33 s). The
+  Q criterion is now computed as `(m−2)·d − (S_i + S_j)`, which is symmetric in the
+  two nodes; the value can differ from `(m−2)·d − S_i − S_j` in the last bit, so
+  which of two pairs that tie to within rounding is joined first may change.
 
 ## [0.0.26] - 2026-11-20
 

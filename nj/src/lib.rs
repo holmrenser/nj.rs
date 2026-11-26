@@ -56,6 +56,7 @@
 //! Providing an incompatible model returns an `Err` from [`nj`].
 pub mod alphabet;
 pub mod config;
+pub mod counts;
 pub mod distance_matrix;
 pub mod error;
 pub mod event;

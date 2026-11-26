@@ -2,19 +2,23 @@
 //!
 //! Each model implements [`ModelCalculation::distance`], mapping a pair of
 //! aligned, pre-encoded sequences of equal length to an evolutionary distance.
-//! Columns where either sequence has a gap are excluded (pairwise deletion); the
-//! number of comparable (non-gap) columns is the denominator in every formula.
+//! Columns where either sequence has a gap or an unknown character (`N` for DNA, `X`
+//! for protein) are excluded (pairwise deletion); the number of comparable columns is
+//! the denominator in every formula. An unknown character carries no information about
+//! the distance, so it is neither a match nor a mismatch.
 //!
 //! The count-based models (`PDiff`, `JukesCantor`, `Poisson`, `KimuraProtein`)
 //! share a single branchless byte kernel ([`diff_and_comparable`]) that the
 //! compiler autovectorizes; with the `simd` Cargo feature it dispatches to an
 //! explicit [`core::simd`] kernel. `Kimura2P`, `TajimaNei`, and `Tamura` need
 //! per-mismatch classification (transition vs. transversion) or base-composition
-//! tallies, so they keep their own scalar passes.
+//! tallies; they are functions of the 4×4 pair-count table [`DnaCounts`], exposed as
+//! `from_counts` on each model.
 
 use serde::{Deserialize, Serialize};
 
 use crate::alphabet::{AlphabetEncoding, DNA, DnaSymbol, Protein, ProteinSymbol};
+use crate::counts::DnaCounts;
 
 /// Among-site rate-variation parameters applied on top of a substitution model.
 ///
@@ -108,26 +112,28 @@ where
 
 /// Counts `(n_diff, n_comparable)` over two equal-length encoded sequences.
 ///
-/// `n_comparable` is the number of columns where neither symbol is a gap
-/// (pairwise deletion); `n_diff` is the number of those comparable columns where
-/// the two symbols differ. Shared by every count-based model — they differ only
-/// in how [`ModelCalculation::distance`] maps these two counts to a distance.
+/// A column is comparable when both symbols are real states: neither a gap nor the
+/// alphabet's unknown symbol (pairwise deletion). `n_diff` is the number of comparable
+/// columns where the two symbols differ. Shared by every count-based model — they
+/// differ only in how [`ModelCalculation::distance`] maps these two counts to a
+/// distance.
 #[inline]
 fn diff_and_comparable<A: AlphabetEncoding>(s1: &[A::Symbol], s2: &[A::Symbol]) -> (usize, usize) {
-    count_diff_comparable(A::as_bytes(s1), A::as_bytes(s2), A::GAP_BYTE)
+    count_diff_comparable(A::as_bytes(s1), A::as_bytes(s2), A::N_STATES as u8)
 }
 
-/// Branchless scalar kernel: counts `(n_diff, n_comparable)` over raw bytes.
+/// Branchless scalar kernel: counts `(n_diff, n_comparable)` over raw bytes, where a
+/// byte below `n_states` is a real state and anything else (unknown, gap) is missing.
 ///
 /// Written without data-dependent branches (boolean masks accumulated as `0`/`1`)
 /// so the compiler can autovectorize the two reductions. Also used for the
 /// SIMD path's sub-`N` remainder.
 #[inline]
-fn count_diff_comparable_scalar(a: &[u8], b: &[u8], gap: u8) -> (usize, usize) {
+fn count_diff_comparable_scalar(a: &[u8], b: &[u8], n_states: u8) -> (usize, usize) {
     let mut n_comparable = 0usize;
     let mut n_diff = 0usize;
     for (&x, &y) in a.iter().zip(b.iter()) {
-        let comparable = (x != gap) & (y != gap);
+        let comparable = (x < n_states) & (y < n_states);
         let diff = comparable & (x != y);
         n_comparable += comparable as usize;
         n_diff += diff as usize;
@@ -141,13 +147,16 @@ fn count_diff_comparable_scalar(a: &[u8], b: &[u8], gap: u8) -> (usize, usize) {
 /// overflow regardless of sequence length.
 #[cfg(feature = "simd")]
 #[inline]
-fn count_diff_comparable(a: &[u8], b: &[u8], gap: u8) -> (usize, usize) {
-    use core::simd::{Simd, cmp::SimdPartialEq};
+fn count_diff_comparable(a: &[u8], b: &[u8], n_states: u8) -> (usize, usize) {
+    use core::simd::{
+        Simd,
+        cmp::{SimdPartialEq, SimdPartialOrd},
+    };
 
     const N: usize = 32;
     type V = Simd<u8, N>;
 
-    let gapv = V::splat(gap);
+    let limit = V::splat(n_states);
     let mut n_comparable = 0usize;
     let mut n_diff = 0usize;
 
@@ -156,21 +165,21 @@ fn count_diff_comparable(a: &[u8], b: &[u8], gap: u8) -> (usize, usize) {
     for (ka, kb) in ca.by_ref().zip(cb.by_ref()) {
         let va = V::from_slice(ka);
         let vb = V::from_slice(kb);
-        let comparable = va.simd_ne(gapv) & vb.simd_ne(gapv);
+        let comparable = va.simd_lt(limit) & vb.simd_lt(limit);
         let diff = comparable & va.simd_ne(vb);
         n_comparable += comparable.to_bitmask().count_ones() as usize;
         n_diff += diff.to_bitmask().count_ones() as usize;
     }
 
-    let (rd, rc) = count_diff_comparable_scalar(ca.remainder(), cb.remainder(), gap);
+    let (rd, rc) = count_diff_comparable_scalar(ca.remainder(), cb.remainder(), n_states);
     (n_diff + rd, n_comparable + rc)
 }
 
 /// Scalar fallback used when the `simd` feature is disabled (stable toolchains).
 #[cfg(not(feature = "simd"))]
 #[inline]
-fn count_diff_comparable(a: &[u8], b: &[u8], gap: u8) -> (usize, usize) {
-    count_diff_comparable_scalar(a, b, gap)
+fn count_diff_comparable(a: &[u8], b: &[u8], n_states: u8) -> (usize, usize) {
+    count_diff_comparable_scalar(a, b, n_states)
 }
 
 /// p-distance (proportion of differing sites).
@@ -242,34 +251,17 @@ impl ModelCalculation<DNA> for JukesCantor {
 /// high divergence or when transversion frequency alone reaches 0.5.
 pub struct Kimura2P;
 
-impl ModelCalculation<DNA> for Kimura2P {
-    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
-        // Kimura2P classifies each mismatch as a transition (A↔G, C↔T) or a
-        // transversion, so it keeps its own scalar pass rather than the shared
-        // count kernel. Gap columns are excluded (pairwise deletion).
-        let mut n_comparable = 0usize;
-        let mut ti = 0usize;
-        let mut tv = 0usize;
-        for (&a, &b) in s1.iter().zip(s2.iter()) {
-            if a != DnaSymbol::Gap && b != DnaSymbol::Gap {
-                n_comparable += 1;
-                if a != b {
-                    match (a, b) {
-                        (DnaSymbol::A, DnaSymbol::G)
-                        | (DnaSymbol::G, DnaSymbol::A)
-                        | (DnaSymbol::C, DnaSymbol::T)
-                        | (DnaSymbol::T, DnaSymbol::C) => ti += 1, // transition
-                        _ => tv += 1,                              // transversion
-                    }
-                }
-            }
-        }
+impl Kimura2P {
+    /// Distance from a pair-count table (`P` and `Q` are the transition and transversion
+    /// proportions of the comparable columns).
+    pub fn from_counts(c: &DnaCounts, rates: RateHet) -> f64 {
+        let n_comparable = c.n_comparable();
         if n_comparable == 0 {
             return 0.0;
         }
         let scale = 1.0 - rates.p_invar;
-        let p = (ti as f64 / n_comparable as f64) / scale;
-        let q = (tv as f64 / n_comparable as f64) / scale;
+        let p = (c.transitions() as f64 / n_comparable as f64) / scale;
+        let q = (c.transversions() as f64 / n_comparable as f64) / scale;
         let denom1 = 1.0 - 2.0 * p - q;
         let denom2 = 1.0 - 2.0 * q;
         if denom1 <= 0.0 || denom2 <= 0.0 {
@@ -279,6 +271,12 @@ impl ModelCalculation<DNA> for Kimura2P {
                 * (corrected_term(0.5, denom1, rates.gamma_shape)
                     + corrected_term(0.25, denom2, rates.gamma_shape))
         }
+    }
+}
+
+impl ModelCalculation<DNA> for Kimura2P {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
+        Self::from_counts(&DnaCounts::from_symbols(s1, s2), rates)
     }
 }
 
@@ -343,34 +341,16 @@ impl ModelCalculation<Protein> for KimuraProtein {
 /// frequencies and `h = Σ_{i<j} xᵢⱼ² / (2 gᵢ gⱼ)` aggregates the per-pair
 /// difference frequencies `xᵢⱼ`, all estimated from the two sequences. Reduces
 /// exactly to Jukes-Cantor when base frequencies are equal and substitutions are
-/// uniform. Like the other DNA models, `N` is treated as a distinct comparable
-/// state. Returns [`f64::INFINITY`] at saturation (`p ≥ b`).
+/// uniform. Returns [`f64::INFINITY`] at saturation (`p ≥ b`).
 pub struct TajimaNei;
 
-impl ModelCalculation<DNA> for TajimaNei {
-    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
-        // Tajima-Nei needs per-base frequencies and per-pair difference
-        // frequencies, so it keeps its own scalar pass over the five non-gap DNA
-        // states (A, C, G, T, N). Gap columns are excluded (pairwise deletion).
-        const K: usize = 5; // A, C, G, T, N (Gap excluded)
-        let mut base_count = [0.0f64; K]; // base occurrences over both sequences
-        let mut pair_count = [[0.0f64; K]; K]; // unordered counts of differing pairs
-        let mut n_comparable = 0usize;
-        let mut n_diff = 0usize;
-        for (&a, &b) in s1.iter().zip(s2.iter()) {
-            if a == DnaSymbol::Gap || b == DnaSymbol::Gap {
-                continue;
-            }
-            n_comparable += 1;
-            let (i, j) = (a as usize, b as usize);
-            base_count[i] += 1.0;
-            base_count[j] += 1.0;
-            if a != b {
-                n_diff += 1;
-                let (lo, hi) = if i < j { (i, j) } else { (j, i) };
-                pair_count[lo][hi] += 1.0;
-            }
-        }
+impl TajimaNei {
+    /// Distance from a pair-count table: base frequencies `gᵢ` come from both sequences,
+    /// the difference frequencies `xᵢⱼ` from the off-diagonal cells.
+    pub fn from_counts(c: &DnaCounts, rates: RateHet) -> f64 {
+        const K: usize = 4;
+        let n_comparable = c.n_comparable();
+        let n_diff = c.n_diff();
         if n_comparable == 0 {
             return 0.0;
         }
@@ -380,10 +360,11 @@ impl ModelCalculation<DNA> for TajimaNei {
             return 0.0;
         }
         // Base frequencies g_i (total base observations = 2 · n_comparable).
+        let base_count = c.base_counts();
         let mut g = [0.0f64; K];
         let mut sum_g2 = 0.0;
         for k in 0..K {
-            g[k] = base_count[k] / (2.0 * n);
+            g[k] = base_count[k] as f64 / (2.0 * n);
             sum_g2 += g[k] * g[k];
         }
         // h = Σ_{i<j} x_ij² / (2 g_i g_j); pairs touching a zero-frequency base
@@ -391,7 +372,7 @@ impl ModelCalculation<DNA> for TajimaNei {
         let mut h = 0.0;
         for i in 0..K {
             for j in (i + 1)..K {
-                let x_ij = pair_count[i][j] / n;
+                let x_ij = c.unordered(i, j) as f64 / n;
                 if x_ij > 0.0 && g[i] > 0.0 && g[j] > 0.0 {
                     h += (x_ij * x_ij) / (2.0 * g[i] * g[j]);
                 }
@@ -414,6 +395,12 @@ impl ModelCalculation<DNA> for TajimaNei {
     }
 }
 
+impl ModelCalculation<DNA> for TajimaNei {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
+        Self::from_counts(&DnaCounts::from_symbols(s1, s2), rates)
+    }
+}
+
 /// Tamura (1992) three-parameter distance for DNA.
 ///
 /// `d = -h · ln(1 - P/h - Q) - ½ · (1 - h) · ln(1 - 2Q)`,  `h = 2θ(1-θ)`
@@ -426,34 +413,12 @@ impl ModelCalculation<DNA> for TajimaNei {
 /// when either logarithm argument is non-positive (saturation or degenerate GC).
 pub struct Tamura;
 
-impl ModelCalculation<DNA> for Tamura {
-    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
-        // Like Kimura2P, classifies each mismatch as transition or transversion;
-        // additionally tallies G/C bases for the GC-content correction. Gap
-        // columns are excluded (pairwise deletion).
-        let mut n_comparable = 0usize;
-        let mut ti = 0usize;
-        let mut tv = 0usize;
-        let mut gc = 0usize; // G/C occurrences over both sequences
-        for (&a, &b) in s1.iter().zip(s2.iter()) {
-            if a != DnaSymbol::Gap && b != DnaSymbol::Gap {
-                n_comparable += 1;
-                for x in [a, b] {
-                    if x == DnaSymbol::G || x == DnaSymbol::C {
-                        gc += 1;
-                    }
-                }
-                if a != b {
-                    match (a, b) {
-                        (DnaSymbol::A, DnaSymbol::G)
-                        | (DnaSymbol::G, DnaSymbol::A)
-                        | (DnaSymbol::C, DnaSymbol::T)
-                        | (DnaSymbol::T, DnaSymbol::C) => ti += 1, // transition
-                        _ => tv += 1,                              // transversion
-                    }
-                }
-            }
-        }
+impl Tamura {
+    /// Distance from a pair-count table: `P`/`Q` are the transition/transversion
+    /// proportions and `θ` the G+C content over both sequences.
+    pub fn from_counts(c: &DnaCounts, rates: RateHet) -> f64 {
+        let n_comparable = c.n_comparable();
+        let (ti, tv) = (c.transitions(), c.transversions());
         if n_comparable == 0 || ti + tv == 0 {
             return 0.0; // no comparable sites, or all comparable sites identical
         }
@@ -463,7 +428,9 @@ impl ModelCalculation<DNA> for Tamura {
         let big_q = (tv as f64 / n) / scale;
         // θ (GC content) is a composition statistic, not a divergence proportion,
         // so it is not rescaled by the invariant-sites correction.
-        let theta = gc as f64 / (2.0 * n); // GC content over both sequences
+        let base_count = c.base_counts();
+        let gc = base_count[1] + base_count[2]; // C and G over both sequences
+        let theta = gc as f64 / (2.0 * n);
         let h = 2.0 * theta * (1.0 - theta);
         let arg1 = 1.0 - big_p / h - big_q;
         let arg2 = 1.0 - 2.0 * big_q;
@@ -474,6 +441,12 @@ impl ModelCalculation<DNA> for Tamura {
                 * (corrected_term(h, arg1, rates.gamma_shape)
                     + corrected_term(0.5 * (1.0 - h), arg2, rates.gamma_shape))
         }
+    }
+}
+
+impl ModelCalculation<DNA> for Tamura {
+    fn distance(s1: &[DnaSymbol], s2: &[DnaSymbol], rates: RateHet) -> f64 {
+        Self::from_counts(&DnaCounts::from_symbols(s1, s2), rates)
     }
 }
 
@@ -957,5 +930,65 @@ mod tests {
             },
         );
         assert_eq!(classic, with_rates);
+    }
+
+    // --- unknown characters (N / X) are missing data, like gaps ---
+
+    #[test]
+    fn test_unknown_dna_characters_change_no_distance() {
+        // Extra columns where either side is N or a gap (including N/N, which is not a
+        // match) must not alter any model's distance.
+        let (a, b) = (dna!("ACGTACGTACGT"), dna!("ACGAACGTCCGA"));
+        let (an, bn) = (dna!("ACGTACGTACGTNN-A"), dna!("ACGAACGTCCGAAN-N"));
+        macro_rules! check {
+            ($($m:ty),*) => {$(
+                let plain = pairwise_distance::<$m, DNA>(&a, &b);
+                let padded = pairwise_distance::<$m, DNA>(&an, &bn);
+                assert_eq!(plain.to_bits(), padded.to_bits(), stringify!($m));
+            )*};
+        }
+        check!(PDiff, JukesCantor, Kimura2P, TajimaNei, Tamura);
+    }
+
+    #[test]
+    fn test_unknown_protein_characters_change_no_distance() {
+        let (a, b) = (protein!("ARNDCQEGHILK"), protein!("ARNDCQEGHIAK"));
+        let (ax, bx) = (protein!("ARNDCQEGHILKXX-A"), protein!("ARNDCQEGHIAKAX-X"));
+        macro_rules! check {
+            ($($m:ty),*) => {$(
+                let plain = pairwise_distance::<$m, Protein>(&a, &b);
+                let padded = pairwise_distance::<$m, Protein>(&ax, &bx);
+                assert_eq!(plain.to_bits(), padded.to_bits(), stringify!($m));
+            )*};
+        }
+        check!(PDiff, Poisson, KimuraProtein);
+    }
+
+    #[test]
+    fn test_unknown_is_neither_match_nor_mismatch() {
+        // One N against a base used to count as a difference.
+        assert_eq!(pairwise_distance::<PDiff, DNA>(&dna!("ACGTACGTAC"), &dna!("ACGTNCGTAC")), 0.0);
+        assert_eq!(
+            pairwise_distance::<PDiff, Protein>(&protein!("ARNDCQEGHI"), &protein!("ARNDXQEGHI")),
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_pair_counts_agree_with_the_byte_kernel() {
+        // The two ways of counting differences (byte kernel, 4×4 table) must agree.
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for len in [0usize, 1, 5, 31, 32, 33, 100, 257] {
+            let s1: Vec<DnaSymbol> = (0..len).map(|_| DNA::encode(b"ACGTN-"[(next() % 6) as usize])).collect();
+            let s2: Vec<DnaSymbol> = (0..len).map(|_| DNA::encode(b"ACGTN-"[(next() % 6) as usize])).collect();
+            let c = DnaCounts::from_symbols(&s1, &s2);
+            assert_eq!((c.n_diff(), c.n_comparable()), diff_and_comparable::<DNA>(&s1, &s2), "len {len}");
+        }
     }
 }

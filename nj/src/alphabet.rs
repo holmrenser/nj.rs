@@ -23,9 +23,14 @@ pub trait AlphabetEncoding {
     /// [`as_bytes`](AlphabetEncoding::as_bytes) for the byte-level distance kernel.
     type Symbol: Copy;
 
-    /// Byte value of the gap symbol (`Self::Symbol::Gap as u8`). Used by the
-    /// branchless / SIMD distance kernel for gap detection without enum matching.
+    /// Byte value of the gap symbol (`Self::Symbol::Gap as u8`).
     const GAP_BYTE: u8;
+
+    /// Number of real states (4 for DNA, 20 for protein). Symbols are numbered so that
+    /// the real states are `0..N_STATES`; the unknown symbol and the gap come after, so
+    /// `byte >= N_STATES` means "missing". The distance kernels use this to exclude
+    /// gaps and unknowns without enum matching.
+    const N_STATES: usize;
 
     /// Encodes a byte into the corresponding symbol in the alphabet.
     fn encode(symbol: u8) -> Self::Symbol;
@@ -75,6 +80,7 @@ impl AlphabetEncoding for DNA {
     type Symbol = DnaSymbol;
 
     const GAP_BYTE: u8 = DnaSymbol::Gap as u8;
+    const N_STATES: usize = 4;
 
     fn encode(symbol: u8) -> Self::Symbol {
         match symbol {
@@ -146,6 +152,7 @@ impl AlphabetEncoding for Protein {
     type Symbol = ProteinSymbol;
 
     const GAP_BYTE: u8 = ProteinSymbol::Gap as u8;
+    const N_STATES: usize = 20;
 
     fn encode(symbol: u8) -> Self::Symbol {
         // Match on the uppercased byte so lowercase residues encode identically

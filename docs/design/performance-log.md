@@ -14,7 +14,7 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 |---|---|---|
 | 0 | Log, probe example, baseline | done |
 | 1 | NJ: contiguous rows, symmetric `Q`, oracle under `cfg(test)` | done |
-| 2a | Missing data: `N`/`X` dropped per pair; DNA models consume a 4×4 pair-count table | pending |
+| 2a | Missing data: `N`/`X` dropped per pair; DNA models consume a 4×4 pair-count table | done |
 | 2b | `Prepared` alignment, bit-planes for DNA, tiled parallel pair loop | pending |
 | 2c | Bootstrap: fuse column gather with packing | pending |
 | 3a | `fearless_simd` on stable: port the byte kernel, remove nightly and the `simd` gate | pending |
@@ -30,6 +30,13 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
   and layout-independent. The reference implementation uses the same definition, so the oracle comparison stays
   bit-exact. This can change which of two *near-equal* pairs is joined, relative to releases before this branch,
   in the last bit only; the golden and property tests are unaffected.
+- **Missing data (step 2a).** `AlphabetEncoding::N_STATES` (4/20) replaces the gap byte in the kernel: a byte
+  `>= N_STATES` is missing, which covers the gap and `N`/`X` with one compare. `K2P`, `TajimaNei` and `Tamura`
+  became functions of a 4×4 `DnaCounts` table (`from_counts`); `PDiff`/`JC` keep the byte kernel until the planes
+  arrive. `TajimaNei` therefore works on 4 states instead of 5 (`N` was a state). This is the accepted decision
+  "treat `N`/`X` as missing in the existing models too"; it changes results for alignments containing `N`/`X`
+  (CHANGELOG entry added). A sequence of only `N`s still gives distance 0 with no warning (the existing warning
+  covers only all-gap sequences).
 - **WASM already builds with `+simd128`** (`wasm/.cargo/config.toml`), so the "WASM needs a second SIMD build"
   caveat in `performance.md` does not apply to this repo.
 
@@ -68,3 +75,5 @@ bit-identical trees (identifiers, branch-length bits, labels).
 - `perf: add progress log and perf_probe example` — this file, `nj/examples/perf_probe.rs`, baseline above.
 - `perf(nj): compact the matrix, scan rows as slices` — `nj/src/nj.rs` rewritten, previous implementation kept as
   `nj/src/nj_reference.rs` (`cfg(test)`), four oracle tests.
+- `perf(models): treat N/X as missing; DNA models consume a 4×4 pair-count table` — `nj/src/counts.rs`,
+  `AlphabetEncoding::N_STATES`, `from_counts` on `Kimura2P`/`TajimaNei`/`Tamura`, policy tests, CHANGELOG.
