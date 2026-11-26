@@ -267,6 +267,121 @@ mod tests {
         }
     }
 
+    /// `exp(Q·t)` for a 4×4 matrix by scaling and squaring a Taylor series: deliberately unrelated
+    /// to the eigendecomposition used by the model.
+    fn expm(q: &[[f64; 4]; 4], t: f64) -> [[f64; 4]; 4] {
+        let squarings = 12;
+        let scale = t / (1u64 << squarings) as f64;
+        let mut a = [[0.0; 4]; 4];
+        for i in 0..4 {
+            for j in 0..4 {
+                a[i][j] = q[i][j] * scale;
+            }
+        }
+        let mul = |x: &[[f64; 4]; 4], y: &[[f64; 4]; 4]| {
+            let mut r = [[0.0; 4]; 4];
+            for i in 0..4 {
+                for j in 0..4 {
+                    r[i][j] = (0..4).map(|k| x[i][k] * y[k][j]).sum();
+                }
+            }
+            r
+        };
+        let mut result = [[0.0; 4]; 4];
+        let mut term = [[0.0; 4]; 4];
+        for i in 0..4 {
+            result[i][i] = 1.0;
+            term[i][i] = 1.0;
+        }
+        for k in 1..=18 {
+            term = mul(&term, &a);
+            for i in 0..4 {
+                for j in 0..4 {
+                    term[i][j] /= k as f64;
+                    result[i][j] += term[i][j];
+                }
+            }
+        }
+        for _ in 0..squarings {
+            result = mul(&result, &result);
+        }
+        result
+    }
+
+    #[test]
+    fn test_asymmetric_rates_match_an_independent_matrix_exponential() {
+        // Every exchangeability different, so a wrong pairing of rates and base pairs changes the
+        // answer. Q is built from *named* pairs here, then exponentiated by an unrelated routine,
+        // and the likelihood is maximised by golden-section search.
+        let named = [
+            ("AC", 0.5),
+            ("AG", 3.0),
+            ("AT", 0.8),
+            ("CG", 1.3),
+            ("CT", 6.0),
+            ("GT", 0.2),
+        ];
+        let rates: Vec<f64> = named.iter().map(|&(_, r)| r).collect();
+        let pi = [0.35, 0.15, 0.2, 0.3];
+        let base = |c: char| "ACGT".find(c).unwrap();
+        let mut q = [[0.0; 4]; 4];
+        for &(pair, r) in &named {
+            let (a, b) = (
+                base(pair.chars().next().unwrap()),
+                base(pair.chars().nth(1).unwrap()),
+            );
+            q[a][b] = r * pi[b];
+            q[b][a] = r * pi[a];
+        }
+        let mut mean_rate = 0.0;
+        for a in 0..4 {
+            q[a][a] = -(0..4).filter(|&b| b != a).map(|b| q[a][b]).sum::<f64>();
+            mean_rate -= pi[a] * q[a][a];
+        }
+        for row in q.iter_mut() {
+            for v in row.iter_mut() {
+                *v /= mean_rate;
+            }
+        }
+        // An asymmetric table of aligned pairs (row = base in the first sequence).
+        #[rustfmt::skip]
+        let f: [f64; 16] = [
+            80.0,  5.0, 12.0,  4.0,
+             3.0, 30.0,  2.0, 15.0,
+             7.0,  3.0, 40.0,  4.0,
+             6.0, 10.0,  5.0, 60.0,
+        ];
+        let loglik = |t: f64| {
+            let p = expm(&q, t);
+            (0..16).map(|k| f[k] * p[k / 4][k % 4].ln()).sum::<f64>()
+        };
+        let (mut lo, mut hi) = (1e-6, 6.0);
+        let phi = (5f64.sqrt() - 1.0) / 2.0;
+        for _ in 0..200 {
+            let (x1, x2) = (hi - phi * (hi - lo), lo + phi * (hi - lo));
+            if loglik(x1) < loglik(x2) {
+                lo = x1;
+            } else {
+                hi = x2;
+            }
+        }
+        let want = 0.5 * (lo + hi);
+        let gtr = Gtr::new(&rates, &pi).unwrap();
+        let got = ml_distance(gtr.model(), &f, RateHet::NONE);
+        assert!(
+            (got - want).abs() < 1e-6,
+            "model {got} vs independent {want}"
+        );
+        // Swapping two exchangeabilities changes the distance noticeably: the check can fail.
+        let mut swapped = rates.clone();
+        swapped.swap(1, 4);
+        let other = ml_distance(Gtr::new(&swapped, &pi).unwrap().model(), &f, RateHet::NONE);
+        assert!(
+            (other - want).abs() > 1e-3,
+            "swapping AG and CT must matter ({other} vs {want})"
+        );
+    }
+
     #[test]
     fn test_gaps_and_n_change_nothing_and_identical_sequences_are_zero() {
         let a = "ACGTACGTACGTACGGACGT";

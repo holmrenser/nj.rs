@@ -46,6 +46,7 @@
 //! | `Kimura2P` | ✓ | — |
 //! | `TajimaNei` | ✓ | — |
 //! | `Tamura` | ✓ | — |
+//! | `Gtr` (ML, explicit rates in [`NJConfig::gtr_rates`]) | ✓ | — |
 //! | `Poisson` | — | ✓ |
 //! | `KimuraProtein` | — | ✓ |
 //! | `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` (ML, empirical matrix) | — | ✓ |
