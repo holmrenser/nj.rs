@@ -164,6 +164,105 @@ fn row_minima_impl<S: Simd>(simd: S, data: &[f64], s: &[f64], m: usize, scale: f
     best
 }
 
+
+/// Scalar reference for [`plane_counts`]: the 4×4 pair-count table of two sequences from
+/// their bit-planes (`4 * words` words each, plane-major: plane `a` is `a[a*words..(a+1)*words]`).
+///
+/// Per word, 16 ANDs, popcounts and adds; `F[x][y] = Σ_words popcount(a_x & b_y)`.
+pub(crate) fn plane_counts_scalar(a: &[u64], b: &[u64], words: usize) -> [[u32; 4]; 4] {
+    debug_assert_eq!(a.len(), 4 * words);
+    debug_assert_eq!(b.len(), 4 * words);
+    let mut acc = [[0u64; 4]; 4];
+    for k in 0..words {
+        let av = [a[k], a[words + k], a[2 * words + k], a[3 * words + k]];
+        let bv = [b[k], b[words + k], b[2 * words + k], b[3 * words + k]];
+        for x in 0..4 {
+            for y in 0..4 {
+                acc[x][y] += (av[x] & bv[y]).count_ones() as u64;
+            }
+        }
+    }
+    narrow(acc)
+}
+
+fn narrow(acc: [[u64; 4]; 4]) -> [[u32; 4]; 4] {
+    let mut f = [[0u32; 4]; 4];
+    for x in 0..4 {
+        for y in 0..4 {
+            f[x][y] = u32::try_from(acc[x][y]).expect("alignment longer than u32::MAX columns");
+        }
+    }
+    f
+}
+
+/// SIMD version of [`plane_counts_scalar`] (same contract, exact integer results).
+#[inline]
+pub(crate) fn plane_counts(level: Level, a: &[u64], b: &[u64], words: usize) -> [[u32; 4]; 4] {
+    dispatch!(level, simd => plane_counts_impl(simd, a, b, words))
+}
+
+/// One vector of byte counters per `(a, b)` cell is kept across up to 31 loop steps.
+///
+/// The words are popcounted as bytes (a single `cnt` on NEON), which adds at most 8 to a
+/// byte counter per step, so 31 steps (248) cannot overflow. The counters are then folded
+/// into 16-bit lanes (low byte plus high byte, at most 496 per lane) and reduced to a
+/// scalar; the whole loop therefore needs no per-step widening.
+#[simd]
+fn plane_counts_impl<S: Simd>(simd: S, a: &[u64], b: &[u64], words: usize) -> [[u32; 4]; 4] {
+    debug_assert_eq!(a.len(), 4 * words);
+    debug_assert_eq!(b.len(), 4 * words);
+    let l = S::u64s::LEN;
+    let zero = S::u8s::splat(simd, 0);
+    let low_byte = S::u16s::splat(simd, 0x00FF);
+
+    let mut total = [0u64; 16];
+    let mut k = 0usize;
+    while k + l <= words {
+        let mut acc = [zero; 16];
+        let steps = ((words - k) / l).min(31);
+        for _ in 0..steps {
+            let av = [
+                S::u64s::from_slice(simd, &a[k..k + l]),
+                S::u64s::from_slice(simd, &a[words + k..words + k + l]),
+                S::u64s::from_slice(simd, &a[2 * words + k..2 * words + k + l]),
+                S::u64s::from_slice(simd, &a[3 * words + k..3 * words + k + l]),
+            ];
+            let bv = [
+                S::u64s::from_slice(simd, &b[k..k + l]),
+                S::u64s::from_slice(simd, &b[words + k..words + k + l]),
+                S::u64s::from_slice(simd, &b[2 * words + k..2 * words + k + l]),
+                S::u64s::from_slice(simd, &b[3 * words + k..3 * words + k + l]),
+            ];
+            for x in 0..4 {
+                for y in 0..4 {
+                    acc[x * 4 + y] = acc[x * 4 + y] + (av[x] & bv[y]).to_bytes().count_ones();
+                }
+            }
+            k += l;
+        }
+        for c in 0..16 {
+            let pairs = S::u16s::from_bytes(acc[c]);
+            total[c] += ((pairs & low_byte) + (pairs >> 8)).reduce_sum() as u64;
+        }
+    }
+
+    while k < words {
+        for x in 0..4 {
+            for y in 0..4 {
+                total[x * 4 + y] += (a[x * words + k] & b[y * words + k]).count_ones() as u64;
+            }
+        }
+        k += 1;
+    }
+    let mut f = [[0u64; 4]; 4];
+    for x in 0..4 {
+        for y in 0..4 {
+            f[x][y] = total[x * 4 + y];
+        }
+    }
+    narrow(f)
+}
+
 #[cfg(test)]
 pub(crate) mod testing {
     //! Every instruction-set level that can run on this machine, plus the scalar fallback.
@@ -252,6 +351,21 @@ mod tests {
                 for r in 0..m {
                     assert_eq!(got[r].to_bits(), want[r].to_bits(), "level {name}, m {m}, row {r}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_plane_counts_match_scalar_at_every_level() {
+        let mut rng = Rng(0x5EED_0003);
+        for words in [0usize, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 100, 255, 256, 257, 700] {
+            // Planes of a real sequence pair are disjoint within a sequence, but the kernel
+            // does not rely on that: random words exercise every popcount path.
+            let a: Vec<u64> = (0..4 * words).map(|_| rng.next()).collect();
+            let b: Vec<u64> = (0..4 * words).map(|_| rng.next()).collect();
+            let want = plane_counts_scalar(&a, &b, words);
+            for (name, level) in levels() {
+                assert_eq!(plane_counts(level, &a, &b, words), want, "level {name}, words {words}");
             }
         }
     }

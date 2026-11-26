@@ -15,7 +15,9 @@
 
 use crate::alphabet::{AlphabetEncoding, DNA};
 use crate::counts::DnaCounts;
+use crate::kernels;
 use crate::msa::MSA;
+use fearless_simd::Level;
 
 /// Bit-planes of every sequence of a DNA alignment.
 struct Planes {
@@ -52,11 +54,18 @@ impl Planes {
 pub struct Prepared<'a, A: AlphabetEncoding> {
     sequences: &'a [Vec<A::Symbol>],
     planes: Option<Planes>,
+    /// SIMD level chosen once, so pair counting does not detect it per pair.
+    level: Level,
 }
 
 impl<'a, A: AlphabetEncoding> Prepared<'a, A> {
     /// Prepares `msa`. Builds bit-planes when the alphabet has four states (DNA).
     pub fn new(msa: &'a MSA<A>) -> Self {
+        Self::new_at(msa, Level::new())
+    }
+
+    /// Like [`new`](Prepared::new) with an explicit SIMD level (tests run every level).
+    pub(crate) fn new_at(msa: &'a MSA<A>, level: Level) -> Self {
         let planes = (A::N_STATES == 4).then(|| {
             Planes::build(
                 msa.sequences.iter().map(|s| A::as_bytes(s)),
@@ -67,6 +76,7 @@ impl<'a, A: AlphabetEncoding> Prepared<'a, A> {
         Prepared {
             sequences: &msa.sequences,
             planes,
+            level,
         }
     }
 
@@ -92,34 +102,10 @@ impl Prepared<'_, DNA> {
     #[inline]
     pub fn dna_counts(&self, i: usize, j: usize) -> DnaCounts {
         let planes = self.planes.as_ref().expect("DNA alignments always have planes");
-        plane_counts(planes.sequence(i), planes.sequence(j), planes.words)
-    }
-}
-
-/// Pair-count table from two sequences' planes (`4 * words` words each).
-///
-/// Scalar reference: per word, 16 ANDs, popcounts and adds. A vector of
-/// accumulators per `(a, b)` cell is what the SIMD version keeps across the loop.
-fn plane_counts(a: &[u64], b: &[u64], words: usize) -> DnaCounts {
-    debug_assert_eq!(a.len(), 4 * words);
-    debug_assert_eq!(b.len(), 4 * words);
-    let mut acc = [[0u64; 4]; 4];
-    for k in 0..words {
-        let av = [a[k], a[words + k], a[2 * words + k], a[3 * words + k]];
-        let bv = [b[k], b[words + k], b[2 * words + k], b[3 * words + k]];
-        for x in 0..4 {
-            for y in 0..4 {
-                acc[x][y] += (av[x] & bv[y]).count_ones() as u64;
-            }
+        DnaCounts {
+            f: kernels::plane_counts(self.level, planes.sequence(i), planes.sequence(j), planes.words),
         }
     }
-    let mut f = [[0u32; 4]; 4];
-    for x in 0..4 {
-        for y in 0..4 {
-            f[x][y] = u32::try_from(acc[x][y]).expect("alignment longer than u32::MAX columns");
-        }
-    }
-    DnaCounts { f }
 }
 
 #[cfg(test)]
@@ -162,11 +148,13 @@ mod tests {
         // Lengths around the word boundaries, and a few long ones.
         for len in [1usize, 2, 7, 63, 64, 65, 127, 128, 129, 191, 193, 640, 1000] {
             let msa = random_dna(&mut rng, 6, len);
-            let prepared = Prepared::new(&msa);
-            for i in 0..6 {
-                for j in 0..6 {
-                    let want = DnaCounts::from_symbols(&msa.sequences[i], &msa.sequences[j]);
-                    assert_eq!(prepared.dna_counts(i, j), want, "len {len}, pair ({i},{j})");
+            for (name, level) in crate::kernels::testing::levels() {
+                let prepared = Prepared::new_at(&msa, level);
+                for i in 0..6 {
+                    for j in 0..6 {
+                        let want = DnaCounts::from_symbols(&msa.sequences[i], &msa.sequences[j]);
+                        assert_eq!(prepared.dna_counts(i, j), want, "level {name}, len {len}, pair ({i},{j})");
+                    }
                 }
             }
         }

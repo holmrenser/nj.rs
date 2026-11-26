@@ -16,10 +16,10 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 | 1 | NJ: contiguous rows, symmetric `Q`, oracle under `cfg(test)` | done |
 | 2a | Missing data: `N`/`X` dropped per pair; DNA models consume a 4×4 pair-count table | done |
 | 2b | `Prepared` alignment, bit-planes for DNA, tiled parallel pair loop | done (scalar popcount) |
-| 2c | Bootstrap: fuse column gather with packing | pending: decide after SIMD, when counting is cheaper and the gather+pack share is known |
+| 2c | Bootstrap: fuse column gather with packing | not pursued (see below) |
 | 3a | `fearless_simd` on stable: port the byte kernel, remove nightly and the `simd` gate | done |
 | 3b | SIMD NJ row-minimum | done |
-| 3c | SIMD popcount loop over the planes | pending |
+| 3c | SIMD popcount loop over the planes | done |
 | 4 | ML solver SIMD | blocked: the ML solver does not exist yet (`substitution-models.md` plan step 4) |
 
 ## Decisions and deviations
@@ -47,6 +47,17 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 - **Kernel tests run every level** (`kernels::testing::levels`): best, scalar fallback and, on x86, SSE2/SSE4.2/AVX2/AVX-512
   where the CPU offers them. Checked natively on NEON and, cross-compiled, under `qemu-x86_64` with CPU models
   Nehalem, Haswell and `max` (correctness only; AVX-512 was not offered by the emulator).
+- **Plane popcount keeps byte counters (step 3c).** First version: one `u64` vector accumulator per cell, `count_ones`
+  on `u64` lanes (on NEON that is `cnt` plus three widening adds per cell and step). Second version: popcount the
+  words as bytes, accumulate in byte counters for up to 31 steps (at most 8 per step, 248 < 256), fold to 16-bit
+  lanes and reduce once per group. The second is faster everywhere measured (n=1000 `k2p` distances 23.7 → 19.8 ms,
+  L=10000: 183 → 123 ms) and was kept. The Harley–Seal variant for AVX2 was not written: there is no x86
+  hardware here to time it, and the byte-counter loop already avoids the per-step widening that variant targets.
+- **2c not pursued.** Measured per replicate (`K2P`, no NJ): gather is 1–10% and packing 2–18% of the distance work
+  (smallest at n=1000, L=1000: 1.2% + 2.4%; largest at n=200, L=10000: 8% + 18%). A fused gather-and-pack still does
+  one random read and one bit write per site, so it could save only part of that, roughly 1–5% of a replicate. A
+  faster `pack` kernel (compare + movemask per plane) is the better lever if bootstrap on long, narrow alignments
+  matters; left as a follow-up.
 - **WASM already builds with `+simd128`** (`wasm/.cargo/config.toml`), so the "WASM needs a second SIMD build"
   caveat in `performance.md` does not apply to this repo.
 
@@ -115,6 +126,16 @@ The whole row loop is one dispatched kernel (`kernels::row_minima`), so dispatch
 per row. It is bit-identical to the scalar reference at every level, and the NJ oracle tests (bit-identical trees)
 also pass on x86 SSE4.2 and AVX2 under emulation.
 
+## After step 3c (SIMD popcount over the planes)
+
+| Case | Distances, scalar popcount | Distances, SIMD popcount |
+|---|---|---|
+| DNA n=1000 L=1000 `pdiff` | 20.9 ms | 15.5 ms |
+| DNA n=1000 L=1000 `k2p` | 27.0 ms | 19.8 ms |
+| DNA n=1000 L=1000 `tn` | 29.7 ms | 22.9 ms |
+| DNA n=2000 L=1000 `k2p` | 105.6 ms | 77.4 ms |
+| DNA n=1000 L=10000 `k2p` | not measured | 122.9 ms |
+
 ## Commits
 
 - `perf: add progress log and perf_probe example` — this file, `nj/examples/perf_probe.rs`, baseline above.
@@ -127,3 +148,4 @@ also pass on x86 SSE4.2 and AVX2 under emulation.
 - `perf(simd): port the byte kernel to fearless_simd and drop nightly` — `nj/src/kernels.rs`, `fearless_simd` dependency,
   `simd` feature is a no-op, CI/release on stable, `rust-version = "1.89"`.
 - `perf(nj): SIMD row-minimum kernel` — `kernels::row_minima` (+ scalar reference and per-level test), used by `select_min_q_pair`.
+- `perf(distances): SIMD popcount over the bit-planes` — `kernels::plane_counts` (byte counters), `Prepared` stores the SIMD level.
