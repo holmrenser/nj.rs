@@ -28,6 +28,8 @@ fn config(pairs: &[(&str, &str)], model: SubstitutionModel) -> NJConfig {
         gamma_shape: None,
         p_invar: None,
         matrix: None,
+        gtr_rates: None,
+        base_frequencies: None,
     }
 }
 

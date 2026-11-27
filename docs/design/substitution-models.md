@@ -1,7 +1,7 @@
 # Design: generalised substitution models and ML distances
 
-Status: agreed 2026-11-25; the protein ML engine, the `Custom` model and six built-in matrices are implemented on branch
-`feat/protein-ml` (§6). The DNA presets (K2P/HKY/GTR as ML) are not started. Why ML distances belong in a distance method, how other tools do it, and the statistical
+Status: agreed 2026-11-25; the protein ML engine, the `Custom` model and six built-in matrices (branch `feat/protein-ml`) and
+the DNA `Gtr` model (branch `feat/dna-gtr`) are implemented (§6). Empirical GTR (§5.1) and estimating exchangeabilities are not. Why ML distances belong in a distance method, how other tools do it, and the statistical
 guarantees: [`theory/distance-estimation.md`](../theory/distance-estimation.md). Performance work (NJ restructure,
 packed pair counts, SIMD) and the `Prepared` alignment it requires: [`performance.md`](performance.md).
 
@@ -169,7 +169,9 @@ against chemically conservative and dissimilar pairs). The JTT file's stated sou
 3. `Prepared` alignment, pair counts and the missing-data policy (§5.2). **Done**, together with the packed DNA counts
    ([`performance.md`](performance.md), [`performance-log.md`](performance-log.md)).
 4. `ReversibleModel` and solver (§5.4), gamma and `p_inv`. **Done** (`reversible.rs`, `ml.rs`), exposed for protein through the
-   `Custom` model. **Open:** DNA presets (JC, K2P, HKY/F84, GTR with explicit parameters) and a DNA `Custom`.
+   `Custom` model and for DNA through `Gtr` (`gtr.rs`: six explicit exchangeabilities, base frequencies pooled from the
+   alignment unless given). HKY85, Tamura–Nei and F81 are `Gtr` with particular rates; JC and K2P keep their closed forms,
+   which estimate κ per pair. **Open:** F84 as a named preset, and a DNA `Custom` with a user-supplied full matrix.
 5. Protein matrices. **Done:** `Custom` takes any matrix as PAML text, and LG, WAG, JTT, JTT-DCMut, Dayhoff and DCMut-Dayhoff
    are built in (§5.6): one data file and one `protein_matrix!` line each.
 6. Later: empirical GTR, estimating exchangeabilities, set-likelihood for partial codes, NJ*.
@@ -190,7 +192,15 @@ against chemically conservative and dissimilar pairs). The JTT file's stated sou
   The one pair whose `protdist` distance is 12.6 lies beyond `t_max` and is reported saturated (§5.3). The original `Jtt`
   and `Dayhoff` files differ from `protdist` by 0.2–0.5%, which is the size of the data-version differences Kosiol and
   Goldman (2005) report, so `protdist` evidently uses the recomputed matrices. A five-taxon excerpt is kept as a
-  regression test (`nj/tests/protdist_reference.rs`). A PAML cross-check is still open.
+  regression test (`nj/tests/protdist_reference.rs`).
+- **Cross-check of `Gtr` against PAML 4.9j `baseml` (done).** HKY85 with a fixed κ, one two-sequence run per pair (so
+  `baseml`'s frequencies are those of the pair, as `Gtr`'s default pools over the sequences present): all 28 pairs of an
+  8-taxon, 600-site alignment (composition skewed, 70:30 transition bias, distances up to 2.2) at κ = 0.7, 3 and 10 agree to
+  `baseml`'s printed precision (≤ 5·10⁻⁶ absolute). With gamma shape 0.5 `baseml`'s discrete gamma approaches the exact
+  continuous value used here as its category count grows (8.3% apart at 5 categories, 2.7% at 10, 0.4% at 40). `baseml`'s
+  `runmode = -2` is not implemented for DNA and its TN93 could not be fixed per pair, so AG and CT are separated by a test
+  with fully distinct exchangeabilities against an unrelated matrix exponential instead. A ten-pair excerpt is kept as
+  `nj/tests/paml_reference.rs`.
 
 ## References
 

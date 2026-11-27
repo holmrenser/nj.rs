@@ -9,6 +9,13 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 ## [Unreleased]
 
 ### Added
+- **`Gtr` model: maximum-likelihood DNA distances under a general time-reversible model.** The six
+  exchangeabilities are explicit (`gtr_rates`, order `AC, AG, AT, CG, CT, GT`; CLI `--gtr-rates`,
+  Python `gtr_rates=`), with no default; the base frequencies (`base_frequencies`) default to those
+  pooled over the alignment. Gamma rates, invariant sites, `max_distance` and bootstrap work as for
+  the other models. HKY85 (`[1, κ, 1, 1, κ, 1]`), Tamura–Nei and F81 are special cases. HKY85
+  distances agree with PAML `baseml` to its printed precision. About 0.15 s for 1000 sequences of
+  1000 sites.
 - **Empirical protein models with maximum-likelihood distances: `Lg`, `Wag`, `Jtt`, `JttDcmut`,
   `Dayhoff`, `DayhoffDcmut`** (CLI `lg`, `wag`, `jtt`, `jtt-dcmut`, `dayhoff`, `dayhoff-dcmut`).
   For each pair the distance is the `t` that maximises the likelihood of its aligned residue
@@ -23,7 +30,8 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   residue pairs, with gamma rates and invariant sites. Saturated pairs are capped by
   `max_distance` like every other model. About 5–10 µs per pair for the ML models, so
   n = 1000 takes several seconds. New `NJError::InvalidMatrix` (`ValueError` in
-  Python).
+  Python). The per-model options (`matrix`, `gtr_rates`, `base_frequencies`) are each an
+  error with any model but their own.
 - `max_distance` option (default 10.0 substitutions per site) on `NJConfig`, the
   CLI (`--max-distance`) and the Python `nj()` function: the distance given to a
   sequence pair whose distance is not finite because the sequences are saturated

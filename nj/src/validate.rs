@@ -8,18 +8,42 @@ use crate::error::NJError;
 use crate::event::{LogLevel, NJEvent};
 use crate::models::{RateHet, SubstitutionModel};
 
-/// Checks that the `matrix` option is present exactly when the model is `Custom`.
-pub(crate) fn validate_matrix(model: &SubstitutionModel, matrix: Option<&str>) -> Result<(), NJError> {
-    match (model, matrix) {
-        (SubstitutionModel::Custom, None) => Err(NJError::InvalidMatrix {
-            reason: "the 'Custom' model needs a rate matrix in the `matrix` option".into(),
-        }),
-        (SubstitutionModel::Custom, Some(_)) => Ok(()),
-        (_, Some(_)) => Err(NJError::InvalidMatrix {
-            reason: "`matrix` is only used with the 'Custom' model".into(),
-        }),
-        (_, None) => Ok(()),
+/// The per-model options of a run: the rate matrix of `Custom`, the exchangeabilities and base
+/// frequencies of `Gtr`. Borrowed from the configuration.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ModelOptions<'a> {
+    pub matrix: Option<&'a str>,
+    pub gtr_rates: Option<&'a [f64]>,
+    pub base_frequencies: Option<&'a [f64]>,
+}
+
+/// Checks that each option is present exactly for the model that uses it: `matrix` for `Custom`,
+/// `gtr_rates` for `Gtr` (`base_frequencies` is optional there), and none for any other model.
+pub(crate) fn validate_model_options(model: &SubstitutionModel, opts: &ModelOptions<'_>) -> Result<(), NJError> {
+    let err = |reason: &str| Err(NJError::InvalidMatrix { reason: reason.to_string() });
+    match model {
+        SubstitutionModel::Custom => {
+            if opts.matrix.is_none() {
+                return err("the 'Custom' model needs a rate matrix in the `matrix` option");
+            }
+        }
+        SubstitutionModel::Gtr => {
+            if opts.gtr_rates.is_none() {
+                return err("the 'Gtr' model needs its six exchangeabilities (AC, AG, AT, CG, CT, GT) in `gtr_rates`");
+            }
+        }
+        _ => {}
     }
+    if opts.matrix.is_some() && !matches!(model, SubstitutionModel::Custom) {
+        return err("`matrix` is only used with the 'Custom' model");
+    }
+    if opts.gtr_rates.is_some() && !matches!(model, SubstitutionModel::Gtr) {
+        return err("`gtr_rates` is only used with the 'Gtr' model");
+    }
+    if opts.base_frequencies.is_some() && !matches!(model, SubstitutionModel::Gtr) {
+        return err("`base_frequencies` is only used with the 'Gtr' model");
+    }
+    Ok(())
 }
 
 /// Validates that the MSA is non-empty, all sequences have equal length, and
