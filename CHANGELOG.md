@@ -9,6 +9,9 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 ## [Unreleased]
 
 ### Added
+- **`Hky` model** (explicit `kappa`, the transition/transversion rate ratio; CLI `--kappa`, Python `kappa=`):
+  maximum-likelihood DNA distances under HKY85, i.e. `Gtr` with rates `[1, κ, 1, 1, κ, 1]`; pooled or given base
+  frequencies. Agrees with PAML `baseml` (`model = 4`, fixed κ) to its printed precision.
 - **`F84` model** (explicit `kappa`; CLI `--kappa`, Python `kappa=`): maximum-likelihood DNA distances under
   Felsenstein's F84 with PAML's `kappa` (`kappa = 0` is F81), with pooled or given base
   frequencies. Agrees with PAML `baseml` (`model = 3`) to its printed precision.

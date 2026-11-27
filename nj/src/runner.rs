@@ -208,7 +208,7 @@ where
 /// model, enforcing the model–alphabet compatibility table in a single place.
 ///
 /// `$opts` is a [`ModelOptions`](crate::validate::ModelOptions): the `matrix` of the `Custom` model,
-/// the `gtr_rates` / `base_frequencies` of `Gtr` and the `kappa` of `F84`, each required for, and only
+/// the `gtr_rates` / `base_frequencies` of `Gtr` and the `kappa` of `Hky` and `F84`, each required for, and only
 /// for, its model. The models that need them are built here (`Gtr` and `F84` pool their base
 /// frequencies from the alignment unless given). `$pairs` is consumed to build the typed [`MSA`];
 /// `$run` is the generic runner (`run_nj`, `run_distance_matrix`, `run_average_distance`), called
@@ -234,6 +234,12 @@ macro_rules! dispatch_run {
                     Sm::Kimura2P => $run(msa, &Static::<$crate::models::Kimura2P>::new(), $($arg),*).map_err(fail),
                     Sm::TajimaNei => $run(msa, &Static::<$crate::models::TajimaNei>::new(), $($arg),*).map_err(fail),
                     Sm::Tamura => $run(msa, &Static::<$crate::models::Tamura>::new(), $($arg),*).map_err(fail),
+                    Sm::Hky => {
+                        let kappa = opts.kappa.expect("validate_model_options guarantees kappa for Hky");
+                        let hky = $crate::gtr::Gtr::hky_from_alignment(kappa, opts.base_frequencies, &msa)
+                            .map_err(|reason| $crate::error::NJError::InvalidMatrix { reason })?;
+                        $run(msa, &hky, $($arg),*).map_err(fail)
+                    }
                     Sm::F84 => {
                         let kappa = opts.kappa.expect("validate_model_options guarantees kappa for F84");
                         let f84 = $crate::gtr::Gtr::f84_from_alignment(kappa, opts.base_frequencies, &msa)
@@ -284,6 +290,7 @@ macro_rules! dispatch_run {
                     | Sm::TajimaNei
                     | Sm::Tamura
                     | Sm::Gtr
+                    | Sm::Hky
                     | Sm::F84
                     | Sm::EmpiricalGtr => {
                         Err($crate::error::NJError::IncompatibleModel {

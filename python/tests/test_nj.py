@@ -535,7 +535,7 @@ class TestF84AndEmpiricalGtr:
             nj(DNA, substitution_model="F84")
 
     def test_kappa_with_another_model_raises(self):
-        with pytest.raises(ValueError, match="only used with the 'F84' model"):
+        with pytest.raises(ValueError, match="only used with the 'F84' and 'Hky' models"):
             nj(DNA, substitution_model="Gtr", gtr_rates=HKY, kappa=1.0)
 
     def test_empirical_gtr_runs_and_takes_no_options(self):
@@ -558,3 +558,28 @@ class TestF84AndEmpiricalGtr:
             nj(PROTEINS, substitution_model="F84", kappa=1.0)
         with pytest.raises(ValueError):
             nj(PROTEINS, substitution_model="EmpiricalGtr")
+
+
+class TestHky:
+    def test_equals_gtr_with_the_hky_rates(self):
+        hky = distance_matrix(DNA, substitution_model="Hky", kappa=4.0)
+        gtr = distance_matrix(DNA, substitution_model="Gtr", gtr_rates=HKY)
+        assert hky["matrix"] == gtr["matrix"]
+
+    def test_kappa_one_is_f81_and_differs_from_f84_with_the_same_number(self):
+        hky = distance_matrix(DNA, substitution_model="Hky", kappa=1.0)
+        f81 = distance_matrix(DNA, substitution_model="Gtr", gtr_rates=[1] * 6)
+        assert hky["matrix"] == f81["matrix"]
+        f84 = distance_matrix(DNA, substitution_model="F84", kappa=3.0)
+        hky3 = distance_matrix(DNA, substitution_model="Hky", kappa=3.0)
+        assert f84["matrix"] != hky3["matrix"]
+
+    def test_runs_with_frequencies_and_rate_variation(self):
+        tree = nj(DNA, substitution_model="Hky", kappa=2.5, base_frequencies=[0.3, 0.2, 0.2, 0.3], gamma_shape=0.6, n_bootstrap_samples=5)
+        assert tree["newick"].endswith(";")
+
+    def test_needs_kappa_and_is_dna_only(self):
+        with pytest.raises(ValueError, match="kappa"):
+            nj(DNA, substitution_model="Hky")
+        with pytest.raises(ValueError):
+            nj(PROTEINS, substitution_model="Hky", kappa=2.0)

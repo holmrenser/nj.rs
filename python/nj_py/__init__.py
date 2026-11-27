@@ -13,6 +13,7 @@ SubstitutionModel = Literal[
     "TajimaNei",
     "Tamura",
     "Gtr",
+    "Hky",
     "F84",
     "EmpiricalGtr",
     "Poisson",
@@ -119,7 +120,7 @@ def nj(
         msa: Aligned sequences as a list of ``{"identifier": ..., "sequence": ...}``
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
-            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``), ``"F84"`` (needs ``kappa``),
+            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``), ``"Hky"`` and ``"F84"`` (need ``kappa``),
             ``"EmpiricalGtr"``. Protein: ``"PDiff"``,
             ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
             ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
@@ -143,12 +144,12 @@ def nj(
             values in the order ``AC, AG, AT, CG, CT, GT``. There is no default. HKY85 is
             ``[1, k, 1, 1, k, 1]``; all equal is F81. The distance of each pair is the
             maximum-likelihood estimate under the model (DNA only).
-        base_frequencies: Base frequencies ``A, C, G, T`` for ``"Gtr"`` and ``"F84"``.
+        base_frequencies: Base frequencies ``A, C, G, T`` for ``"Gtr"``, ``"Hky"`` and ``"F84"``.
             ``None`` (default) pools them over all unambiguous bases of the alignment.
-        kappa: The F84 parameter, ``>= 0``, required for ``"F84"`` (and only then): transitions
-            get an extra rate ``kappa / piR`` (A<->G) and ``kappa / piY`` (C<->T) on top of the
-            transversion rate, so ``0`` is F81. ``base_frequencies`` is optional for ``"F84"``
-            too.
+        kappa: ``>= 0``, required for ``"Hky"`` and ``"F84"`` (and only then). For ``"Hky"`` it is the
+            ratio of the transition rate to the transversion rate (``1`` is F81). For ``"F84"``
+            transitions get an extra rate ``kappa / piR`` (A<->G) and ``kappa / piY`` (C<->T) on top
+            of the transversion rate, so ``0`` is F81. ``base_frequencies`` is optional for both.
         max_distance: Distance (substitutions per site) given to sequence pairs
             whose distance is not finite because they are saturated for the model.
             Neighbor-joining cannot use infinite distances, so these pairs are set to
@@ -233,7 +234,7 @@ def distance_matrix(
         msa: Aligned sequences as a list of ``{"identifier": ..., "sequence": ...}``
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
-            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``), ``"F84"`` (needs ``kappa``),
+            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``), ``"Hky"`` and ``"F84"`` (need ``kappa``),
             ``"EmpiricalGtr"``. Protein: ``"PDiff"``,
             ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
             ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
@@ -243,8 +244,8 @@ def distance_matrix(
         matrix: Rate matrix for ``"Custom"`` (and only then), as PAML-layout text;
             see :func:`nj`.
         gtr_rates: Exchangeabilities of ``"Gtr"``; see :func:`nj`.
-        base_frequencies: Base frequencies of ``"Gtr"`` and ``"F84"``; see :func:`nj`.
-        kappa: The F84 parameter of ``"F84"``; see :func:`nj`.
+        base_frequencies: Base frequencies of ``"Gtr"``, ``"Hky"`` and ``"F84"``; see :func:`nj`.
+        kappa: The ``kappa`` of ``"Hky"`` and ``"F84"``; see :func:`nj`.
 
     Returns:
         A dict with keys ``"names"`` (list of taxon names) and ``"matrix"``
@@ -299,7 +300,7 @@ def average_distance(
         msa: Aligned sequences as a list of ``{"identifier": ..., "sequence": ...}``
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
-            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``), ``"F84"`` (needs ``kappa``),
+            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``), ``"Hky"`` and ``"F84"`` (need ``kappa``),
             ``"EmpiricalGtr"``. Protein: ``"PDiff"``,
             ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
             ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
@@ -309,8 +310,8 @@ def average_distance(
         matrix: Rate matrix for ``"Custom"`` (and only then), as PAML-layout text;
             see :func:`nj`.
         gtr_rates: Exchangeabilities of ``"Gtr"``; see :func:`nj`.
-        base_frequencies: Base frequencies of ``"Gtr"`` and ``"F84"``; see :func:`nj`.
-        kappa: The F84 parameter of ``"F84"``; see :func:`nj`.
+        base_frequencies: Base frequencies of ``"Gtr"``, ``"Hky"`` and ``"F84"``; see :func:`nj`.
+        kappa: The ``kappa`` of ``"Hky"`` and ``"F84"``; see :func:`nj`.
 
     Returns:
         Mean pairwise distance as a float. Returns ``0.0`` for fewer than 2 taxa.

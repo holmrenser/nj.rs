@@ -10,7 +10,7 @@
 //! Only the distance of each pair is fitted ([`crate::ml`]).
 //!
 //! Special cases are GTR with particular rates: all equal is F81 (JC with equal frequencies),
-//! `[1, κ, 1, 1, κ, 1]` is HKY85 with ts/tv rate ratio `κ`, and so on.
+//! `[1, κ, 1, 1, κ, 1]` is HKY85 with ts/tv rate ratio `κ` ([`Gtr::hky`]), F84 is [`Gtr::f84`], and so on.
 //!
 //! The order of the exchangeabilities is `AC, AG, AT, CG, CT, GT` and of the frequencies
 //! `A, C, G, T`.
@@ -71,6 +71,30 @@ impl Gtr {
         match frequencies {
             Some(f) => Self::new(rates, f),
             None => Self::new(rates, &pooled_base_frequencies(msa)?),
+        }
+    }
+
+    /// The HKY85 model of Hasegawa, Kishino and Yano (1985): exchangeabilities `[1, κ, 1, 1, κ, 1]`, so
+    /// `κ` is the ratio of the transition rate to the transversion rate. `κ = 1` is F81.
+    pub fn hky(kappa: f64, frequencies: &[f64]) -> Result<Self, String> {
+        if !(kappa.is_finite() && kappa >= 0.0) {
+            return Err(format!(
+                "HKY85: kappa must be finite and non-negative, got {kappa}"
+            ));
+        }
+        Self::new(&[1.0, kappa, 1.0, 1.0, kappa, 1.0], frequencies)
+            .map_err(|e| e.replacen("GTR", "HKY85", 1))
+    }
+
+    /// Like [`hky`](Gtr::hky), with the frequencies pooled from `msa` when `frequencies` is `None`.
+    pub fn hky_from_alignment(
+        kappa: f64,
+        frequencies: Option<&[f64]>,
+        msa: &MSA<DNA>,
+    ) -> Result<Self, String> {
+        match frequencies {
+            Some(f) => Self::hky(kappa, f),
+            None => Self::hky(kappa, &pooled_base_frequencies(msa)?),
         }
     }
 
@@ -973,6 +997,75 @@ mod tests {
         assert_eq!(
             a.model().transition_matrix(0.5, RateHet::NONE),
             b.model().transition_matrix(0.5, RateHet::NONE)
+        );
+    }
+
+    #[test]
+    fn test_hky_is_gtr_with_equal_transition_rates() {
+        let (kappa, pi) = (3.2, [0.1, 0.4, 0.3, 0.2]);
+        let hky = Gtr::hky(kappa, &pi).unwrap();
+        let gtr = Gtr::new(&[1.0, kappa, 1.0, 1.0, kappa, 1.0], &pi).unwrap();
+        for &t in &[0.05, 0.6, 2.0] {
+            assert_eq!(
+                hky.model().transition_matrix(t, RateHet::NONE),
+                gtr.model().transition_matrix(t, RateHet::NONE)
+            );
+        }
+        // kappa = 1 is F81; frequencies are renormalised.
+        assert_eq!(
+            Gtr::hky(1.0, &pi)
+                .unwrap()
+                .model()
+                .transition_matrix(0.4, RateHet::NONE),
+            Gtr::new(&[1.0; 6], &pi)
+                .unwrap()
+                .model()
+                .transition_matrix(0.4, RateHet::NONE)
+        );
+        assert_eq!(
+            Gtr::hky(kappa, &[1.0, 4.0, 3.0, 2.0])
+                .unwrap()
+                .model()
+                .transition_matrix(0.7, RateHet::NONE),
+            hky.model().transition_matrix(0.7, RateHet::NONE)
+        );
+        // HKY85's kappa is not F84's: with unequal purine and pyrimidine frequencies the same number
+        // gives different models.
+        let f84 = Gtr::f84(kappa, &pi).unwrap();
+        assert_ne!(
+            hky.model().transition_matrix(0.6, RateHet::NONE),
+            f84.model().transition_matrix(0.6, RateHet::NONE)
+        );
+    }
+
+    #[test]
+    fn test_hky_invalid_parameters_are_rejected_and_frequencies_are_pooled() {
+        let pi = [0.25; 4];
+        assert!(Gtr::hky(-1.0, &pi).unwrap_err().contains("kappa"));
+        assert!(Gtr::hky(f64::NAN, &pi).is_err());
+        assert!(
+            Gtr::hky(2.0, &[0.5, 0.5, 0.0, 0.0])
+                .unwrap_err()
+                .contains("HKY85")
+        );
+        assert!(
+            Gtr::hky(2.0, &[0.25; 3])
+                .unwrap_err()
+                .contains("4 base frequencies")
+        );
+        // kappa = 0 (transversions only) is still a valid, connected model.
+        assert!(Gtr::hky(0.0, &pi).is_ok());
+        let m = skewed_alignment(4, 500, 41);
+        let pooled = pooled_base_frequencies(&m).unwrap();
+        assert_eq!(
+            Gtr::hky_from_alignment(2.5, None, &m)
+                .unwrap()
+                .model()
+                .transition_matrix(0.5, RateHet::NONE),
+            Gtr::hky(2.5, &pooled)
+                .unwrap()
+                .model()
+                .transition_matrix(0.5, RateHet::NONE)
         );
     }
 }

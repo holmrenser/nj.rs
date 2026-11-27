@@ -1,7 +1,7 @@
 # Design: generalised substitution models and ML distances
 
 Status: agreed 2026-11-25; the protein ML engine, the `Custom` model and six built-in matrices (branch `feat/protein-ml`) and
-the DNA `Gtr` model (branch `feat/dna-gtr`), `F84` and `EmpiricalGtr` (branch `feat/dna-gtr-extras`) are implemented (§6). Estimating exchangeabilities is not. Why ML distances belong in a distance method, how other tools do it, and the statistical
+the DNA `Gtr` model (branch `feat/dna-gtr`), `F84` and `EmpiricalGtr` (branch `feat/dna-gtr-extras`) and `Hky` (branch `feat/hky-and-ml-no-alloc`) are implemented (§6). Estimating exchangeabilities is not. Why ML distances belong in a distance method, how other tools do it, and the statistical
 guarantees: [`theory/distance-estimation.md`](../theory/distance-estimation.md). Performance work (NJ restructure,
 packed pair counts, SIMD) and the `Prepared` alignment it requires: [`performance.md`](performance.md).
 
@@ -119,6 +119,8 @@ model is one impl, one registry entry and a changelog line.
   five, three had a negative implied rate and differed by 2–9% (and two had no closed form while `baseml` gave a
   finite distance). The closed form is the one in the literature [Lanave 1984; Rodríguez 1990; Tavaré 1986] and is
   kept; the constrained estimate would need a numerical fit of all rates.
+- **HKY85** (`Hky`, explicit `kappa`) is `Gtr` with `[1, κ, 1, 1, κ, 1]`; κ is the transition/transversion *rate* ratio
+  (Hasegawa, Kishino & Yano 1985, *J Mol Evol* 22:160–174); `κ = 1` is F81. Checked against `baseml` `model = 4`.
 - **F84** (`F84`, explicit `kappa`) is `Gtr` with exchangeabilities `[1, 1 + κ/π_R, 1, 1, 1 + κ/π_Y, 1]`; `κ = 0` is F81.
   It is *not* HKY85's rate ratio (the two transition rates differ unless `π_R = π_Y`). Its κ is the one PAML's `baseml`
   uses for `model = 3`, which was verified numerically rather than taken from a reference.
@@ -196,7 +198,7 @@ against chemically conservative and dissimilar pairs). The JTT file's stated sou
 4. `ReversibleModel` and solver (§5.4), gamma and `p_inv`. **Done** (`reversible.rs`, `ml.rs`), exposed for protein through the
    `Custom` model and for DNA through `Gtr` (`gtr.rs`: six explicit exchangeabilities, base frequencies pooled from the
    alignment unless given). HKY85, Tamura–Nei and F81 are `Gtr` with particular rates; JC and K2P keep their closed forms,
-   which estimate κ per pair. `F84` is a named preset of `Gtr` (explicit κ) and `EmpiricalGtr` the closed-form GTR
+   which estimate κ per pair. `Hky` and `F84` are named presets of `Gtr` (explicit κ) and `EmpiricalGtr` the closed-form GTR
    distance (§5.1). A DNA `Custom` would be `Gtr` again (a reversible 4×4 matrix with frequencies); only non-reversible
    matrices would add something, and the eigendecomposition does not support them.
 5. Protein matrices. **Done:** `Custom` takes any matrix as PAML text, and LG, WAG, JTT, JTT-DCMut, Dayhoff and DCMut-Dayhoff

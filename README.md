@@ -26,6 +26,7 @@ Takes a multiple sequence alignment and returns a Newick tree. The alphabet (DNA
 | `TajimaNei` | ✓ | | ✓ |
 | `Tamura` | ✓ | | ✓ |
 | `Gtr` (ML distance, explicit rates) | ✓ | | ✓ |
+| `Hky` (ML distance, explicit `kappa`) | ✓ | | ✓ |
 | `F84` (ML distance, explicit `kappa`) | ✓ | | ✓ |
 | `EmpiricalGtr` (closed form, estimated per pair) | ✓ | | ✓ |
 | `Poisson` | | ✓ | ✓ |
@@ -33,7 +34,9 @@ Takes a multiple sequence alignment and returns a Newick tree. The alphabet (DNA
 | `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` (ML distance, empirical matrix) | | ✓ | ✓ |
 | `Custom` (ML distance, your rate matrix) | | ✓ | ✓ |
 
-**GTR (maximum likelihood, DNA).** `Gtr` gives, for each pair of sequences, the distance `t` that maximises the likelihood of its aligned base pairs under a general time-reversible model, with gamma rates and invariant sites if requested. The six exchangeabilities are **explicit**, in the order `AC, AG, AT, CG, CT, GT` (`gtr_rates`; CLI `--gtr-rates 1,4,1,1,4,1`; Python `gtr_rates=[1, 4, 1, 1, 4, 1]`), because any built-in default would be arbitrary: estimate them with a maximum-likelihood program on a tree (IQ-TREE, RAxML, PAML) and pass them in. Only their ratios matter. The base frequencies `A, C, G, T` (`base_frequencies`, `--base-frequencies`) default to those pooled over all unambiguous bases of the alignment, and, like the exchangeabilities, are fixed model parameters rather than fitted per pair. Special cases: HKY85 is `[1, κ, 1, 1, κ, 1]` (κ the transition/transversion *rate* ratio, as in PAML), Tamura–Nei `[1, κ₁, 1, 1, κ₂, 1]`, F81 all rates equal, and Jukes–Cantor all rates equal with frequencies `0.25`. This differs from `Kimura2P`, `TajimaNei` and `Tamura`, which estimate their extra parameters from each pair. Gaps and `N` are dropped per pair, saturated pairs go through `max_distance`, and `Gtr` is DNA-only. HKY85 distances reproduce PAML `baseml` (fixed κ, per pair) to its printed precision. Cost: about 0.15 s for 1000 sequences of 1000 sites.
+**GTR (maximum likelihood, DNA).** `Gtr` gives, for each pair of sequences, the distance `t` that maximises the likelihood of its aligned base pairs under a general time-reversible model, with gamma rates and invariant sites if requested. The six exchangeabilities are **explicit**, in the order `AC, AG, AT, CG, CT, GT` (`gtr_rates`; CLI `--gtr-rates 1,4,1,1,4,1`; Python `gtr_rates=[1, 4, 1, 1, 4, 1]`), because any built-in default would be arbitrary: estimate them with a maximum-likelihood program on a tree (IQ-TREE, RAxML, PAML) and pass them in. Only their ratios matter. The base frequencies `A, C, G, T` (`base_frequencies`, `--base-frequencies`) default to those pooled over all unambiguous bases of the alignment, and, like the exchangeabilities, are fixed model parameters rather than fitted per pair. Special cases: HKY85 is `[1, κ, 1, 1, κ, 1]` (κ the transition/transversion *rate* ratio, as in PAML; see `Hky` below), Tamura–Nei `[1, κ₁, 1, 1, κ₂, 1]`, F81 all rates equal, and Jukes–Cantor all rates equal with frequencies `0.25`. This differs from `Kimura2P`, `TajimaNei` and `Tamura`, which estimate their extra parameters from each pair. Gaps and `N` are dropped per pair, saturated pairs go through `max_distance`, and `Gtr` is DNA-only. HKY85 distances reproduce PAML `baseml` (fixed κ, per pair) to its printed precision. Cost: about 0.15 s for 1000 sequences of 1000 sites.
+
+**HKY85.** `Hky` is the ML distance under the model of Hasegawa, Kishino and Yano (1985) with an explicit `kappa >= 0` (`--kappa`, `kappa=`), the ratio of the transition rate to the transversion rate; `kappa = 1` is F81. It is `Gtr` with rates `[1, κ, 1, 1, κ, 1]`, named so that the common case needs no list of six numbers. Base frequencies are as for `Gtr`. Distances reproduce PAML `baseml` (`model = 4`, fixed `κ`) to its printed precision, and, unlike `Kimura2P`, `κ` is fixed rather than estimated from each pair.
 
 **F84.** `F84` is the ML distance under Felsenstein's (1984) model with an explicit `kappa >= 0` (`--kappa`, `kappa=`): transversions have rate 1 and the two kinds of transition get the extra rates `κ/π_R` (A↔G) and `κ/π_Y` (C↔T), with `π_R = π_A + π_G` and `π_Y = π_C + π_T`, so `κ = 0` is F81. This is the `κ` of PAML's F84, not the transition/transversion rate ratio of HKY85 (F84 has two different transition rates unless `π_R = π_Y`). Base frequencies are as for `Gtr`; PAML `baseml` reproduces the distances to its printed precision.
 
@@ -74,11 +77,11 @@ nj -t 4 --n-bootstrap-samples 1000 sequences.fasta > tree.nwk
 | `[FASTA]` | Input alignment (stdin if omitted) |
 | `-o, --output <FILE>` | Write output to a file instead of stdout |
 | `-b, --n-bootstrap-samples <N>` | Bootstrap replicates, `0` to disable (default `100`) |
-| `-m, --substitution-model <MODEL>` | `p-diff` (default), `jukes-cantor`, `kimura2-p`, `tajima-nei`, `tamura`, `gtr`, `f84`, `empirical-gtr`, `poisson`, `kimura-protein`, `lg`, `wag`, `jtt`, `jtt-dcmut`, `dayhoff`, `dayhoff-dcmut`, `custom` |
+| `-m, --substitution-model <MODEL>` | `p-diff` (default), `jukes-cantor`, `kimura2-p`, `tajima-nei`, `tamura`, `gtr`, `hky`, `f84`, `empirical-gtr`, `poisson`, `kimura-protein`, `lg`, `wag`, `jtt`, `jtt-dcmut`, `dayhoff`, `dayhoff-dcmut`, `custom` |
 | `-a, --alphabet <ALPHABET>` | Override alphabet auto-detection |
 | `--gtr-rates <AC,AG,AT,CG,CT,GT>` | Exchangeabilities for `-m gtr` (required there) |
-| `--kappa <K>` | F84 parameter for `-m f84` (required there) |
-| `--base-frequencies <A,C,G,T>` | Base frequencies for `-m gtr` and `-m f84` (default: pooled from the alignment) |
+| `--kappa <K>` | `kappa` for `-m hky` and `-m f84` (required there) |
+| `--base-frequencies <A,C,G,T>` | Base frequencies for `-m gtr`, `-m hky` and `-m f84` (default: pooled from the alignment) |
 | `--matrix <FILE>` | Rate matrix (PAML layout) for `-m custom` |
 | `-g, --gamma-shape <ALPHA>` | Gamma rate-heterogeneity shape |
 | `-i, --p-invar <FRACTION>` | Proportion of invariant sites |
