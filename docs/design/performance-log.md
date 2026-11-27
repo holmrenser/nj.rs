@@ -20,7 +20,7 @@ execution were not measured. Timings guide the work; they are not pass/fail gate
 | 3a | `fearless_simd` on stable: port the byte kernel, remove nightly and the `simd` gate | done |
 | 3b | SIMD NJ row-minimum | done |
 | 3c | SIMD popcount loop over the planes | done |
-| 4 | ML solver SIMD | unblocked: the scalar solver exists (`ml.rs`, 4.5–9.5 µs per protein pair, `ml_probe`); SIMD per `performance.md` §2 not started |
+| 4 | ML solver SIMD | unblocked: the scalar solver exists (`ml.rs`, 3.6–6.1 µs per protein pair, `ml_probe`); SIMD per `performance.md` §2 not started |
 
 ## Decisions and deviations
 
@@ -161,19 +161,43 @@ real x86 and WASM timings.
 
 ## Follow-ups (not done)
 
-- DNA ML (`Gtr`, `Hky`, `F84`) costs 0.19 µs per pair beyond counting (n=1000, L=1000: 121 ms against 20 ms for
-  `Kimura2P`); empirical GTR 0.55 µs. Steps taken, single thread: the four heap allocations per pair moved to the stack
-  (153 → 133 ms; they were about 40 ns of a 260 ns pair, not the 100 ns first estimated; empirical GTR 277 → 272 ms,
-  protein unchanged), then the dot products evaluated four *entries* at a time with `kernels::combine4` (`f64x4`,
-  structure-of-arrays layout, products and sums in the scalar order, so results are bit-identical at every level:
-  133 → 121 ms). Both leave all distances byte-for-byte unchanged. The gain is modest because the arithmetic is
-  dominated by other work: every DNA pair takes exactly 4 likelihood evaluations (counted) of about 50 ns, and removing the
-  `ln` calls altogether (a timing-only experiment) gives 106 ms, so `ln` is about 12%; the four `exp` calls and the
-  two divisions per entry are the rest and were not isolated. Not tried: computing `ln` only once, after convergence
-  (the log-likelihood is only needed for the final saturation check), a better start to save one evaluation, and for
-  empirical GTR a cheaper 4×4 eigenproblem. A 4-lane type is one 256-bit register on AVX2 and two 128-bit ones on NEON,
-  so the gain may differ on x86; only correctness was checked there (emulated).
-- ML solver SIMD (step 4): the `X_ab[m]` precompute already exists; padding `K` to the vector width and two accumulators remain (`performance.md` §2.4). The scalar solver costs 4.5–9.5 µs per protein pair, so n = 1000 takes several seconds.
+- DNA ML (`Gtr`, `Hky`, `F84`) now costs 0.12 µs per pair beyond counting (n=1000, L=1000: 96 ms against 20 ms for
+  `Kimura2P`); protein ML 3.6–6.1 µs per pair; empirical GTR 0.55 µs. Steps, single thread, in order:
+
+  | step | `Gtr` n=1000 | with gamma + p_invar | protein µs/pair (L=300 low divergence, L=300 high, L=1000) |
+  |---|---|---|---|
+  | as first implemented | 153 ms | | 4.47 / 6.58 / 7.87 |
+  | solver storage on the stack (no heap) | 133 ms | | unchanged |
+  | four entries per vector (`kernels::combine4`) | 121 ms | 215 ms | unchanged |
+  | log-likelihood summed once; no `exp` for the zero eigenvalue (bit-identical) | 113 ms | 187 ms | 4.18 / 6.11 |
+  | gamma-aware start; Newton steps stop at 3·10⁻⁵·t (and a few-ulp step counts as converged) | **96 ms** | **143 ms** | **3.55 / 5.14 / 6.11** |
+
+  Where the time goes (doubling experiments: calling a component twice, which leaves every value unchanged): per
+  likelihood evaluation of about 46 ns, `factors` (the `exp`s) takes 3 ns (15 ns with gamma, where it is `powf`), the
+  dot-product kernel 6.5 ns, the per-entry tail (probability, two divisions, accumulation) most of the rest; halving the
+  divisions bought 3%. So the lever was the *number* of evaluations: 4 per pair for uniform rates, 6 with gamma and
+  invariant sites (the start ignored rate variation; its first step was 32%).
+
+  **The stopping rule** is Newton's quadratic convergence: after a step of relative size `s` the error is about `c·s²`.
+  `c` was measured over consecutive Newton steps of thousands of simulated pairs (4 and 20 states, 300 to 100,000
+  sites, with and without gamma and invariant sites): median 1.2–1.9, 99.9th percentile 2.7, maximum 2.9. A step of at
+  most 3·10⁻⁵ of `t` is applied and ends the iteration, so the error is at most about 2.6·10⁻⁹ (typically 10⁻¹¹ or less);
+  10⁻⁵ saved less (the third step averages 1.3·10⁻⁵ on the benchmark data) and 10⁻⁴ barely more. This changes the last
+  digits of every ML distance: against a converged reference (stopping at 10⁻⁷, error ~10⁻¹⁴) on 91 pairs the old values
+  had median error 0 and worst 5.4·10⁻⁹, the new ones median 1.2·10⁻¹² and worst 2.2·10⁻⁹.
+
+  **A latent defect this exposed.** The old rule stopped at a step of 10⁻⁸·t. When the last-but-one step fell just above
+  that (about 0.3% of pairs), the solver evaluated the slope where its rounding noise (a few ulps) is as large as the
+  step; the computed Newton step then landed on the edge of the bracket, counted as unusable, and the solver doubled `t`
+  and bisected back for about 30 evaluations, ending with an error of up to 10⁻⁸. A Newton step of a few ulps now
+  counts as converged, and the new rule rarely gets there.
+
+  Not done: a vector tail for the per-entry divisions and a model-aware start for HKY/F84 (they take more evaluations
+  than `Gtr` on the benchmark data, 110 against 96 ms, because the start ignores the transition bias). Empirical GTR
+  (0.55 µs per pair) is the slowest DNA model: its 4×4 Jacobi eigenproblem dominates, and a tridiagonal QL
+  solver or fewer sweeps would help. A 4-lane type is one 256-bit register on AVX2 and two 128-bit ones on NEON, so
+  the vector kernel's gain may differ on x86; only correctness was checked there (emulated).
+- ML solver SIMD (step 4): the `X_ab[m]` precompute already exists; padding `K` to the vector width and two accumulators remain (`performance.md` §2.4). The scalar solver costs 3.6–6.1 µs per protein pair, so n = 1000 takes about 2–3 s.
 - A SIMD `pack` kernel for bit-plane construction (matters for bootstrap on long, narrow alignments).
 - Harley–Seal accumulation on AVX2 (needs x86 hardware to evaluate); AVX-512 correctness.
 - Pruned NJ search (RapidNJ/NINJA style) for n ≫ 10⁴; NJ is the serial part in multi-threaded runs.

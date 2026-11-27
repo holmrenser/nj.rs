@@ -25,7 +25,7 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   Python `gtr_rates=`), with no default; the base frequencies (`base_frequencies`) default to those
   pooled over the alignment. Gamma rates, invariant sites, `max_distance` and bootstrap work as for
   the other models. HKY85 (`[1, κ, 1, 1, κ, 1]`), Tamura–Nei and F81 are special cases. HKY85
-  distances agree with PAML `baseml` to its printed precision. About 0.12 s for 1000 sequences of
+  distances agree with PAML `baseml` to its printed precision. About 0.1 s for 1000 sequences of
   1000 sites.
 - **Empirical protein models with maximum-likelihood distances: `Lg`, `Wag`, `Jtt`, `JttDcmut`,
   `Dayhoff`, `DayhoffDcmut`** (CLI `lg`, `wag`, `jtt`, `jtt-dcmut`, `dayhoff`, `dayhoff-dcmut`).
@@ -39,8 +39,8 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   text in the new `matrix` option (CLI `--matrix FILE`, Python `matrix=`, config field
   `matrix`); each pair's distance is the `t` that maximises the likelihood of its aligned
   residue pairs, with gamma rates and invariant sites. Saturated pairs are capped by
-  `max_distance` like every other model. About 5–10 µs per pair for the ML models, so
-  n = 1000 takes several seconds. New `NJError::InvalidMatrix` (`ValueError` in
+  `max_distance` like every other model. About 3.5–6 µs per pair for the protein ML models, so
+  n = 1000 takes 2–3 s. ML distances are accurate to better than 3·10⁻⁹ relative. New `NJError::InvalidMatrix` (`ValueError` in
   Python). The per-model options (`matrix`, `gtr_rates`, `base_frequencies`, `kappa`) are each an
   error with any model but their own.
 - `max_distance` option (default 10.0 substitutions per site) on `NJConfig`, the

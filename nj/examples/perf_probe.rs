@@ -5,7 +5,7 @@
 //! ```
 //!
 //! Prints the distance stage (`distance_matrix`), the whole `nj` run without bootstrap, the NJ stage
-//! (their difference) and, if requested, a bootstrap run. Models: pdiff, jc, k2p, tn, tamura, gtr, f84, empirical-gtr (DNA);
+//! (their difference) and, if requested, a bootstrap run. Models: pdiff, jc, k2p, tn, tamura, gtr, hky, f84, empirical-gtr (DNA); PROBE_GAMMA / PROBE_PINV set rate variation;
 //! pdiff, poisson, kimura-protein (protein). Best of `reps` (default 3).
 
 use nj::models::SubstitutionModel as M;
@@ -70,6 +70,7 @@ fn main() {
         "tn" => M::TajimaNei,
         "tamura" => M::Tamura,
         "gtr" => M::Gtr,
+        "hky" => M::Hky,
         "f84" => M::F84,
         "empirical-gtr" => M::EmpiricalGtr,
         "poisson" => M::Poisson,
@@ -78,7 +79,10 @@ fn main() {
     };
     // GTR needs explicit exchangeabilities: an HKY85-like set.
     let gtr_rates = matches!(model, M::Gtr).then(|| vec![1.0, 4.0, 1.0, 1.0, 4.0, 1.0]);
-    let kappa = matches!(model, M::F84).then_some(2.0);
+    let kappa = matches!(model, M::F84 | M::Hky).then_some(2.0);
+    // Rate variation from the environment: PROBE_GAMMA=0.5 PROBE_PINV=0.1
+    let env = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
+    let (gamma_shape, p_invar) = (env("PROBE_GAMMA"), env("PROBE_PINV"));
     let msa = match a[0].as_str() {
         "dna" => synthetic(b"ACGT", n, l, 0.12),
         "protein" => synthetic(b"ARNDCQEGHILKMFPSTWYV", n, l, 0.15),
@@ -90,8 +94,8 @@ fn main() {
             substitution_model: model.clone(),
             alphabet: None,
             num_threads: None,
-            gamma_shape: None,
-            p_invar: None,
+            gamma_shape,
+            p_invar,
             matrix: None,
             gtr_rates: gtr_rates.clone(),
             base_frequencies: None,
@@ -108,8 +112,8 @@ fn main() {
         return_distance_matrix: false,
         return_average_distance: false,
         max_distance: None,
-        gamma_shape: None,
-        p_invar: None,
+        gamma_shape,
+        p_invar,
         matrix: None,
         gtr_rates: gtr_rates.clone(),
         base_frequencies: None,
