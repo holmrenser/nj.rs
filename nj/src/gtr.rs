@@ -24,7 +24,7 @@ use crate::ml::{T_MAX, ml_distance};
 use crate::models::{DistanceModel, ModelCalculation, RateHet};
 use crate::msa::MSA;
 use crate::prepared::Prepared;
-use crate::reversible::{ReversibleModel, jacobi_eigen};
+use crate::reversible::{ReversibleModel, jacobi_eigen_into};
 
 /// Number of exchangeabilities of a GTR model.
 pub const N_RATES: usize = 6;
@@ -205,19 +205,28 @@ pub(crate) fn empirical_gtr_distance(table: &[[f64; 4]; 4], het: RateHet) -> f64
             pi[a] += joint[a][b];
         }
     }
-    let kept: Vec<usize> = (0..4).filter(|&a| pi[a] > 0.0).collect();
-    let k = kept.len();
-    let mut s = vec![0.0; k * k];
+    // The bases that occur in the pair, and the 4×4 problem on them: all on the stack.
+    let mut kept = [0usize; 4];
+    let mut k = 0;
+    for a in 0..4 {
+        if pi[a] > 0.0 {
+            kept[k] = a;
+            k += 1;
+        }
+    }
+    let kept = &kept[..k];
+    let mut s = [0.0; 16];
     for (x, &a) in kept.iter().enumerate() {
         for (y, &b) in kept.iter().enumerate() {
             s[x * k + y] = joint[a][b] / (pi[a] * pi[b]).sqrt();
         }
     }
-    let (eigenvalues, v) = jacobi_eigen(&mut s, k);
+    let (mut eigenvalues, mut v) = ([0.0; 4], [0.0; 16]);
+    jacobi_eigen_into(&mut s[..k * k], k, &mut eigenvalues[..k], &mut v[..k * k]);
 
     let p_inv = het.p_invar;
     let mut d = 0.0;
-    for (m, &lambda) in eigenvalues.iter().enumerate() {
+    for (m, &lambda) in eigenvalues[..k].iter().enumerate() {
         let lambda = (lambda - p_inv) / (1.0 - p_inv);
         if !(lambda > 1e-9) {
             return f64::INFINITY;
