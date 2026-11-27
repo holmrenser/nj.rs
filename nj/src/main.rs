@@ -86,12 +86,12 @@ mod cli {
 
         /// GTR exchangeabilities for `--substitution-model gtr` (and only then): six comma-separated
         /// relative values in the order AC,AG,AT,CG,CT,GT. HKY85 is `1,K,1,1,K,1`; all equal is F81.
-        #[arg(long, value_name = "AC,AG,AT,CG,CT,GT", value_delimiter = ',', num_args = 1..)]
+        #[arg(long, value_name = "AC,AG,AT,CG,CT,GT", value_delimiter = ',')]
         pub gtr_rates: Option<Vec<f64>>,
 
         /// Base frequencies A,C,G,T (comma-separated) for the gtr and f84 models. Default: pooled
         /// over the alignment.
-        #[arg(long, value_name = "A,C,G,T", value_delimiter = ',', num_args = 1..)]
+        #[arg(long, value_name = "A,C,G,T", value_delimiter = ',')]
         pub base_frequencies: Option<Vec<f64>>,
 
         /// F84 parameter for `--substitution-model f84` (and only then), `>= 0`: the extra transition
@@ -453,6 +453,30 @@ mod main_tests {
             ..base_args(fixture("simple_dna.fasta"))
         };
         assert!(run(args).is_ok());
+    }
+
+    #[test]
+    fn test_list_options_do_not_swallow_the_input_file() {
+        use clap::Parser;
+        // The comma-separated lists take exactly one argument, so a positional file may follow them.
+        let args = Args::try_parse_from([
+            "nj",
+            "-m",
+            "gtr",
+            "--gtr-rates",
+            "1,4,1,1,4,1",
+            "--base-frequencies",
+            "0.3,0.2,0.2,0.3",
+            "sequences.fasta",
+        ])
+        .unwrap();
+        assert_eq!(args.gtr_rates, Some(vec![1.0, 4.0, 1.0, 1.0, 4.0, 1.0]));
+        assert_eq!(args.base_frequencies, Some(vec![0.3, 0.2, 0.2, 0.3]));
+        assert_eq!(args.input, Some(PathBuf::from("sequences.fasta")));
+        // And the same with the file first.
+        let args = Args::try_parse_from(["nj", "sequences.fasta", "-m", "gtr", "--gtr-rates", "1,2,3,4,5,6"]).unwrap();
+        assert_eq!(args.gtr_rates, Some(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
+        assert_eq!(args.input, Some(PathBuf::from("sequences.fasta")));
     }
 
     #[test]
