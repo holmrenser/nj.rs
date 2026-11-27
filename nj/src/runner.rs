@@ -8,7 +8,7 @@ use crate::bootstrap::{add_bootstrap_to_tree, bootstrap_clade_counts};
 use crate::config::{MSA, NJResult};
 use crate::distance_matrix::DistanceResult;
 use crate::event::{LogLevel, NJEvent};
-use crate::models::{ModelCalculation, RateHet};
+use crate::models::{DistanceModel, RateHet};
 
 /// Builds a Rayon thread pool with `num_threads` workers.
 ///
@@ -24,48 +24,50 @@ pub(crate) fn build_thread_pool(num_threads: Option<usize>) -> Result<rayon::Thr
 }
 
 /// Runs distance matrix computation with model `M` on alphabet `A`.
-pub(crate) fn run_distance_matrix<A, M>(
+pub(crate) fn run_distance_matrix<A, D>(
     msa: MSA<A>,
+    model: &D,
     num_threads: Option<usize>,
     rates: RateHet,
 ) -> Result<DistanceResult, String>
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
+    D: DistanceModel<A>,
 {
     #[cfg(feature = "parallel")]
     {
         let pool = build_thread_pool(num_threads)?;
-        Ok(pool.install(|| msa.into_dist::<M>(rates)).into_result())
+        Ok(pool.install(|| msa.into_dist_with(model, rates)).into_result())
     }
     #[cfg(not(feature = "parallel"))]
     {
         let _ = num_threads;
-        Ok(msa.into_dist::<M>(rates).into_result())
+        Ok(msa.into_dist_with(model, rates).into_result())
     }
 }
 
 /// Runs average distance computation with model `M` on alphabet `A`.
-pub(crate) fn run_average_distance<A, M>(
+pub(crate) fn run_average_distance<A, D>(
     msa: MSA<A>,
+    model: &D,
     num_threads: Option<usize>,
     rates: RateHet,
 ) -> Result<f64, String>
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
+    D: DistanceModel<A>,
 {
     #[cfg(feature = "parallel")]
     {
         let pool = build_thread_pool(num_threads)?;
-        Ok(pool.install(|| msa.into_dist::<M>(rates)).average())
+        Ok(pool.install(|| msa.into_dist_with(model, rates)).average())
     }
     #[cfg(not(feature = "parallel"))]
     {
         let _ = num_threads;
-        Ok(msa.into_dist::<M>(rates).average())
+        Ok(msa.into_dist_with(model, rates).average())
     }
 }
 
@@ -99,8 +101,9 @@ fn saturation_message(names: &[String], capped: &[(usize, usize)], max_distance:
 /// When `include_distance_matrix` or `include_average_distance` is `true`,
 /// the corresponding values are captured from the distance matrix before NJ
 /// consumes it and included in the returned [`NJResult`].
-pub(crate) fn run_nj<A, M>(
+pub(crate) fn run_nj<A, D>(
     msa: MSA<A>,
+    model: &D,
     n_bootstrap_samples: usize,
     on_event: Option<&dyn Fn(NJEvent)>,
     num_threads: Option<usize>,
@@ -112,9 +115,10 @@ pub(crate) fn run_nj<A, M>(
 where
     A: AlphabetEncoding + Send + Sync,
     A::Symbol: Send + Sync,
-    M: ModelCalculation<A> + Send + Sync,
+    D: DistanceModel<A>,
 {
-    let tally = bootstrap_clade_counts::<A, M>(
+    let tally = bootstrap_clade_counts(
+        model,
         &msa,
         n_bootstrap_samples,
         on_event,
@@ -143,10 +147,10 @@ where
     #[cfg(feature = "parallel")]
     let mut dist = {
         let pool = build_thread_pool(num_threads)?;
-        pool.install(|| msa.into_dist::<M>(rates))
+        pool.install(|| msa.into_dist_with(model, rates))
     };
     #[cfg(not(feature = "parallel"))]
-    let mut dist = msa.into_dist::<M>(rates);
+    let mut dist = msa.into_dist_with(model, rates);
 
     // Neighbor-joining cannot use infinite distances: cap them (and report) before
     // anything else reads the matrix, so the tree, the returned distance matrix and
@@ -203,63 +207,69 @@ where
 /// Dispatches to a generic runner based on the runtime alphabet and substitution
 /// model, enforcing the model–alphabet compatibility table in a single place.
 ///
-/// `$pairs` is consumed to build the typed [`MSA`]; `$run` is the generic runner
-/// (`run_nj`, `run_distance_matrix`, `run_average_distance`) and its trailing
-/// arguments follow the `msa` it receives. Each runner returns `Result<_, String>`,
-/// mapped here to [`NJError::AlgorithmFailure`]; unsupported (alphabet, model)
-/// pairs yield [`NJError::IncompatibleModel`].
+/// `$matrix` is the `matrix` option (`Option<&str>`): required for, and only for, the `Custom`
+/// model, whose rate matrix is parsed here. `$pairs` is consumed to build the typed [`MSA`];
+/// `$run` is the generic runner (`run_nj`, `run_distance_matrix`, `run_average_distance`), called
+/// as `$run(msa, &model, args…)` with the model as a value (the stateless models through
+/// [`Static`](crate::models::Static)). Each runner returns `Result<_, String>`, mapped here to
+/// [`NJError::AlgorithmFailure`]; unsupported (alphabet, model) pairs yield
+/// [`NJError::IncompatibleModel`].
 macro_rules! dispatch_run {
-    ($alphabet:expr, $model:expr, $pairs:expr, $run:ident ( $($arg:expr),* $(,)? )) => {{
+    ($alphabet:expr, $model:expr, $matrix:expr, $pairs:expr, $run:ident ( $($arg:expr),* $(,)? )) => {{
+        use $crate::config::SubstitutionModel as Sm;
+        use $crate::models::Static;
         let alphabet = $alphabet;
         let model = $model;
+        let matrix: Option<&str> = $matrix;
+        $crate::validate::validate_matrix(&model, matrix)?;
+        let fail = $crate::error::NJError::AlgorithmFailure;
         match alphabet {
             $crate::alphabet::Alphabet::DNA => {
-                let msa = $crate::config::MSA::<$crate::alphabet::DNA>::try_from_pairs($pairs).map_err($crate::error::NJError::AlgorithmFailure)?;
+                let msa = $crate::config::MSA::<$crate::alphabet::DNA>::try_from_pairs($pairs).map_err(fail)?;
                 match model {
-                    $crate::config::SubstitutionModel::PDiff => {
-                        $run::<$crate::alphabet::DNA, $crate::models::PDiff>(msa, $($arg),*).map_err($crate::error::NJError::AlgorithmFailure)
-                    }
-                    $crate::config::SubstitutionModel::JukesCantor => {
-                        $run::<$crate::alphabet::DNA, $crate::models::JukesCantor>(msa, $($arg),*).map_err($crate::error::NJError::AlgorithmFailure)
-                    }
-                    $crate::config::SubstitutionModel::Kimura2P => {
-                        $run::<$crate::alphabet::DNA, $crate::models::Kimura2P>(msa, $($arg),*).map_err($crate::error::NJError::AlgorithmFailure)
-                    }
-                    $crate::config::SubstitutionModel::TajimaNei => {
-                        $run::<$crate::alphabet::DNA, $crate::models::TajimaNei>(msa, $($arg),*).map_err($crate::error::NJError::AlgorithmFailure)
-                    }
-                    $crate::config::SubstitutionModel::Tamura => {
-                        $run::<$crate::alphabet::DNA, $crate::models::Tamura>(msa, $($arg),*).map_err($crate::error::NJError::AlgorithmFailure)
-                    }
-                    $crate::config::SubstitutionModel::Poisson | $crate::config::SubstitutionModel::KimuraProtein => {
-                        Err($crate::error::NJError::IncompatibleModel {
-                            model,
-                            alphabet: $crate::alphabet::Alphabet::DNA,
-                        })
-                    }
+                    Sm::PDiff => $run(msa, &Static::<$crate::models::PDiff>::new(), $($arg),*).map_err(fail),
+                    Sm::JukesCantor => $run(msa, &Static::<$crate::models::JukesCantor>::new(), $($arg),*).map_err(fail),
+                    Sm::Kimura2P => $run(msa, &Static::<$crate::models::Kimura2P>::new(), $($arg),*).map_err(fail),
+                    Sm::TajimaNei => $run(msa, &Static::<$crate::models::TajimaNei>::new(), $($arg),*).map_err(fail),
+                    Sm::Tamura => $run(msa, &Static::<$crate::models::Tamura>::new(), $($arg),*).map_err(fail),
+                    Sm::Poisson
+                    | Sm::KimuraProtein
+                    | Sm::Lg
+                    | Sm::Wag
+                    | Sm::Jtt
+                    | Sm::JttDcmut
+                    | Sm::Dayhoff
+                    | Sm::DayhoffDcmut
+                    | Sm::Custom => Err($crate::error::NJError::IncompatibleModel {
+                        model,
+                        alphabet: $crate::alphabet::Alphabet::DNA,
+                    }),
                 }
             }
             $crate::alphabet::Alphabet::Protein => {
-                let msa =
-                    $crate::config::MSA::<$crate::alphabet::Protein>::try_from_pairs($pairs).map_err($crate::error::NJError::AlgorithmFailure)?;
+                let msa = $crate::config::MSA::<$crate::alphabet::Protein>::try_from_pairs($pairs).map_err(fail)?;
                 match model {
-                    $crate::config::SubstitutionModel::Poisson => {
-                        $run::<$crate::alphabet::Protein, $crate::models::Poisson>(msa, $($arg),*).map_err($crate::error::NJError::AlgorithmFailure)
+                    Sm::Poisson => $run(msa, &Static::<$crate::models::Poisson>::new(), $($arg),*).map_err(fail),
+                    Sm::KimuraProtein => $run(msa, &Static::<$crate::models::KimuraProtein>::new(), $($arg),*).map_err(fail),
+                    Sm::PDiff => $run(msa, &Static::<$crate::models::PDiff>::new(), $($arg),*).map_err(fail),
+                    Sm::Lg => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::Lg>>::new(), $($arg),*).map_err(fail),
+                    Sm::Wag => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::Wag>>::new(), $($arg),*).map_err(fail),
+                    Sm::Jtt => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::Jtt>>::new(), $($arg),*).map_err(fail),
+                    Sm::JttDcmut => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::JttDcmut>>::new(), $($arg),*).map_err(fail),
+                    Sm::Dayhoff => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::Dayhoff>>::new(), $($arg),*).map_err(fail),
+                    Sm::DayhoffDcmut => $run(msa, &Static::<$crate::empirical::ProteinMl<$crate::empirical::DayhoffDcmut>>::new(), $($arg),*).map_err(fail),
+                    Sm::Custom => {
+                        let text = matrix.expect("validate_matrix guarantees the matrix for Custom");
+                        let custom = $crate::empirical::CustomProtein::from_paml(text)
+                            .map_err(|reason| $crate::error::NJError::InvalidMatrix { reason })?;
+                        $run(msa, &custom, $($arg),*).map_err(fail)
                     }
-                    $crate::config::SubstitutionModel::KimuraProtein => {
-                        $run::<$crate::alphabet::Protein, $crate::models::KimuraProtein>(msa, $($arg),*)
-                            .map_err($crate::error::NJError::AlgorithmFailure)
+                    Sm::JukesCantor | Sm::Kimura2P | Sm::TajimaNei | Sm::Tamura => {
+                        Err($crate::error::NJError::IncompatibleModel {
+                            model,
+                            alphabet: $crate::alphabet::Alphabet::Protein,
+                        })
                     }
-                    $crate::config::SubstitutionModel::PDiff => {
-                        $run::<$crate::alphabet::Protein, $crate::models::PDiff>(msa, $($arg),*).map_err($crate::error::NJError::AlgorithmFailure)
-                    }
-                    $crate::config::SubstitutionModel::JukesCantor
-                    | $crate::config::SubstitutionModel::Kimura2P
-                    | $crate::config::SubstitutionModel::TajimaNei
-                    | $crate::config::SubstitutionModel::Tamura => Err($crate::error::NJError::IncompatibleModel {
-                        model,
-                        alphabet: $crate::alphabet::Alphabet::Protein,
-                    }),
                 }
             }
         }

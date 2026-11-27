@@ -31,6 +31,9 @@ pub enum NJError {
     InvalidPInvar { value: f64 },
     /// `max_distance` is not finite and positive.
     InvalidMaxDistance { value: f64 },
+    /// The `matrix` option is missing for the `Custom` model, given for another model, or is not
+    /// a valid reversible rate matrix (see [`crate::reversible::ReversibleModel::from_paml`]).
+    InvalidMatrix { reason: String },
     /// An internal NJ algorithm failure (should be unreachable for valid input).
     AlgorithmFailure(String),
     /// Failed to collect entropy from the OS PRNG (bootstrap only).
@@ -55,6 +58,7 @@ impl NJError {
             NJError::InvalidGammaShape { .. } => "InvalidGammaShape",
             NJError::InvalidPInvar { .. } => "InvalidPInvar",
             NJError::InvalidMaxDistance { .. } => "InvalidMaxDistance",
+            NJError::InvalidMatrix { .. } => "InvalidMatrix",
             NJError::AlgorithmFailure(_) => "AlgorithmFailure",
             NJError::RngError(_) => "RngError",
             NJError::ParseError(_) => "ParseError",
@@ -90,6 +94,7 @@ impl fmt::Display for NJError {
                 f,
                 "max_distance must be a finite positive number, got {value}"
             ),
+            NJError::InvalidMatrix { reason } => write!(f, "Invalid substitution matrix: {reason}"),
             NJError::AlgorithmFailure(msg) => write!(f, "NJ algorithm failure: {msg}"),
             NJError::RngError(msg) => write!(f, "RNG error: {msg}"),
             NJError::ParseError(msg) => write!(f, "FASTA parse error: {msg}"),

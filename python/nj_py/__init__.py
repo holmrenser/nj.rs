@@ -14,6 +14,13 @@ SubstitutionModel = Literal[
     "Tamura",
     "Poisson",
     "KimuraProtein",
+    "Lg",
+    "Wag",
+    "Jtt",
+    "JttDcmut",
+    "Dayhoff",
+    "DayhoffDcmut",
+    "Custom",
 ]
 Alphabet = Literal["DNA", "Protein"]
 LogLevel = Literal["Info", "Warning"]
@@ -96,6 +103,7 @@ def nj(
     return_average_distance: bool = False,
     gamma_shape: float | None = None,
     p_invar: float | None = None,
+    matrix: str | None = None,
     max_distance: float | None = None,
     on_event: Callable[[NJEvent], None] | None = None,
 ) -> NJResult:
@@ -106,8 +114,11 @@ def nj(
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
             ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``. Protein: ``"PDiff"``,
-            ``"Poisson"``, ``"KimuraProtein"``. Alphabet is auto-detected;
-            passing an incompatible model raises ``ValueError``.
+            ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
+            ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
+            ``"Custom"`` (needs ``matrix``).
+            Alphabet is auto-detected; passing an incompatible model raises
+            ``ValueError``.
         n_bootstrap_samples: Number of bootstrap replicates used to annotate
             internal nodes with support values. ``0`` disables bootstrapping.
         gamma_shape: Gamma rate-heterogeneity shape parameter ``alpha`` (must be
@@ -115,6 +126,12 @@ def nj(
             on the ``"PDiff"`` model.
         p_invar: Proportion of invariant sites in ``[0, 1)``. ``None`` (default)
             disables the invariant-sites correction. No effect on ``"PDiff"``.
+        matrix: Rate matrix for ``substitution_model="Custom"`` (and only then), as
+            text in PAML layout: the strict lower triangle of the symmetric
+            exchangeability matrix by rows (1, 2, ..., 19 numbers), then the 20
+            amino-acid frequencies, in the order ``ARNDCQEGHILKMFPSTWYV``. The
+            distance of each pair is the maximum-likelihood estimate under this
+            model (protein only for now). Anything after the numbers is ignored.
         max_distance: Distance (substitutions per site) given to sequence pairs
             whose distance is not finite because they are saturated for the model.
             Neighbor-joining cannot use infinite distances, so these pairs are set to
@@ -172,6 +189,7 @@ def nj(
             "return_average_distance": return_average_distance,
             "gamma_shape": gamma_shape,
             "p_invar": p_invar,
+            "matrix": matrix,
             "max_distance": max_distance,
         },
         on_event,
@@ -184,6 +202,7 @@ def distance_matrix(
     substitution_model: SubstitutionModel = "PDiff",
     gamma_shape: float | None = None,
     p_invar: float | None = None,
+    matrix: str | None = None,
 ) -> DistanceResult:
     """Compute pairwise distances and return a full symmetric distance matrix.
 
@@ -192,8 +211,13 @@ def distance_matrix(
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
             ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``. Protein: ``"PDiff"``,
-            ``"Poisson"``, ``"KimuraProtein"``. Alphabet is auto-detected;
-            passing an incompatible model raises ``ValueError``.
+            ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
+            ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
+            ``"Custom"`` (needs ``matrix``).
+            Alphabet is auto-detected; passing an incompatible model raises
+            ``ValueError``.
+        matrix: Rate matrix for ``"Custom"`` (and only then), as PAML-layout text;
+            see :func:`nj`.
 
     Returns:
         A dict with keys ``"names"`` (list of taxon names) and ``"matrix"``
@@ -223,6 +247,7 @@ def distance_matrix(
             "substitution_model": substitution_model,
             "gamma_shape": gamma_shape,
             "p_invar": p_invar,
+            "matrix": matrix,
         }
     )
 
@@ -233,6 +258,7 @@ def average_distance(
     substitution_model: SubstitutionModel = "PDiff",
     gamma_shape: float | None = None,
     p_invar: float | None = None,
+    matrix: str | None = None,
 ) -> float:
     """Compute the mean of all n*(n-1)/2 unique pairwise distances.
 
@@ -241,8 +267,13 @@ def average_distance(
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
             ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``. Protein: ``"PDiff"``,
-            ``"Poisson"``, ``"KimuraProtein"``. Alphabet is auto-detected;
-            passing an incompatible model raises ``ValueError``.
+            ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
+            ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
+            ``"Custom"`` (needs ``matrix``).
+            Alphabet is auto-detected; passing an incompatible model raises
+            ``ValueError``.
+        matrix: Rate matrix for ``"Custom"`` (and only then), as PAML-layout text;
+            see :func:`nj`.
 
     Returns:
         Mean pairwise distance as a float. Returns ``0.0`` for fewer than 2 taxa.
@@ -257,6 +288,7 @@ def average_distance(
             "substitution_model": substitution_model,
             "gamma_shape": gamma_shape,
             "p_invar": p_invar,
+            "matrix": matrix,
         }
     )
 

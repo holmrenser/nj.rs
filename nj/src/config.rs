@@ -79,6 +79,13 @@ pub struct DistConfig {
     /// See [`crate::models::RateHet`].
     #[serde(default)]
     pub p_invar: Option<f64>,
+    /// Reversible rate matrix for the [`SubstitutionModel::Custom`] model, as text in PAML
+    /// layout: the strict lower triangle of the symmetric exchangeability matrix by rows
+    /// (1, 2, …, K−1 numbers), then the K state frequencies, in the order `ARNDCQEGHILKMFPSTWYV`
+    /// for protein. Must be set for `Custom` and only then. See
+    /// [`crate::reversible::ReversibleModel::from_paml`].
+    #[serde(default)]
+    pub matrix: Option<String>,
 }
 
 /// Full configuration for a single Neighbor-Joining run.
@@ -130,6 +137,13 @@ pub struct NJConfig {
     /// See [`crate::models::RateHet`].
     #[serde(default)]
     pub p_invar: Option<f64>,
+    /// Reversible rate matrix for the [`SubstitutionModel::Custom`] model, as text in PAML
+    /// layout: the strict lower triangle of the symmetric exchangeability matrix by rows
+    /// (1, 2, …, K−1 numbers), then the K state frequencies, in the order `ARNDCQEGHILKMFPSTWYV`
+    /// for protein. Must be set for `Custom` and only then. See
+    /// [`crate::reversible::ReversibleModel::from_paml`].
+    #[serde(default)]
+    pub matrix: Option<String>,
     /// Distance (substitutions per site) assigned to any pair whose distance is not
     /// finite, i.e. the sequences are saturated and the model has no finite estimate.
     /// Must be finite and positive; `None` uses [`DEFAULT_MAX_DISTANCE`] (10.0).

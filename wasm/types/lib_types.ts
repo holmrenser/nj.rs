@@ -54,7 +54,15 @@ gamma_shape: number | null,
  * invariant-sites correction is applied. Has no effect on the `PDiff` model.
  * See [`crate::models::RateHet`].
  */
-p_invar: number | null, };
+p_invar: number | null, 
+/**
+ * Reversible rate matrix for the [`SubstitutionModel::Custom`] model, as text in PAML
+ * layout: the strict lower triangle of the symmetric exchangeability matrix by rows
+ * (1, 2, …, K−1 numbers), then the K state frequencies, in the order `ARNDCQEGHILKMFPSTWYV`
+ * for protein. Must be set for `Custom` and only then. See
+ * [`crate::reversible::ReversibleModel::from_paml`].
+ */
+matrix: string | null, };
 
 /**
  * Serializable pairwise distance matrix returned by [`crate::distance_matrix`].
@@ -140,6 +148,14 @@ gamma_shape: number | null,
  */
 p_invar: number | null, 
 /**
+ * Reversible rate matrix for the [`SubstitutionModel::Custom`] model, as text in PAML
+ * layout: the strict lower triangle of the symmetric exchangeability matrix by rows
+ * (1, 2, …, K−1 numbers), then the K state frequencies, in the order `ARNDCQEGHILKMFPSTWYV`
+ * for protein. Must be set for `Custom` and only then. See
+ * [`crate::reversible::ReversibleModel::from_paml`].
+ */
+matrix: string | null, 
+/**
  * Distance (substitutions per site) assigned to any pair whose distance is not
  * finite, i.e. the sequences are saturated and the model has no finite estimate.
  * Must be finite and positive; `None` uses [`DEFAULT_MAX_DISTANCE`] (10.0).
@@ -217,7 +233,9 @@ sequence: string, };
  * | `Tamura` | DNA only | `-h · ln(1 - P/h - Q) - 0.5(1-h)·ln(1-2Q)` |
  * | `Poisson` | Protein only | `-ln(1 - p)` |
  * | `KimuraProtein` | Protein only | `-ln(1 - p - 0.2 p²)` |
+ * | `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` | Protein only | ML distance under the named empirical matrix |
+ * | `Custom` | Protein only (for now) | ML distance under the matrix in the `matrix` option |
  *
  * Model–alphabet compatibility is enforced at runtime in [`crate::nj`].
  */
-export type SubstitutionModel = "PDiff" | "JukesCantor" | "Kimura2P" | "TajimaNei" | "Tamura" | "Poisson" | "KimuraProtein";
+export type SubstitutionModel = "PDiff" | "JukesCantor" | "Kimura2P" | "TajimaNei" | "Tamura" | "Poisson" | "KimuraProtein" | "Lg" | "Wag" | "Jtt" | "JttDcmut" | "Dayhoff" | "DayhoffDcmut" | "Custom";

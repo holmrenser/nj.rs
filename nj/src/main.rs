@@ -78,6 +78,12 @@ mod cli {
         #[arg(short = 'i', long = "p-invar", value_name = "FRACTION")]
         pub p_invar: Option<f64>,
 
+        /// Rate matrix file for `--substitution-model custom` (and only then): PAML layout, the
+        /// lower triangle of the symmetric exchangeability matrix by rows, then the 20
+        /// amino-acid frequencies in the order ARNDCQEGHILKMFPSTWYV.
+        #[arg(long, value_name = "FILE")]
+        pub matrix: Option<PathBuf>,
+
         /// Distance (substitutions per site) given to pairs whose distance is not finite
         /// because the sequences are saturated for the model. Default: 10.
         #[arg(long, value_name = "D")]
@@ -113,6 +119,13 @@ mod cli {
         };
 
         let msa = ::nj::parse_fasta(&fasta).map_err(|e| e.to_string())?;
+        let matrix = match &args.matrix {
+            Some(path) => Some(
+                fs::read_to_string(path)
+                    .map_err(|e| format!("failed to read {}: {e}", path.display()))?,
+            ),
+            None => None,
+        };
         let n_bootstrap = args.n_bootstrap_samples;
         let nj_conf = NJConfig {
             msa,
@@ -124,6 +137,7 @@ mod cli {
             return_average_distance: args.average_distance,
             gamma_shape: args.gamma_shape,
             p_invar: args.p_invar,
+            matrix,
             max_distance: args.max_distance,
         };
 
@@ -248,6 +262,7 @@ mod main_tests {
             num_threads: None,
             gamma_shape: None,
             p_invar: None,
+            matrix: None,
             max_distance: None,
             verbose: false,
         }
@@ -380,5 +395,78 @@ mod main_tests {
     #[test]
     fn test_run_protein_pdiff_succeeds() {
         assert!(run(base_args(fixture("simple_protein.fasta"))).is_ok());
+    }
+
+    #[test]
+    fn test_run_protein_builtin_matrices_succeed() {
+        for model in [
+            SubstitutionModel::Lg,
+            SubstitutionModel::Wag,
+            SubstitutionModel::Jtt,
+            SubstitutionModel::JttDcmut,
+            SubstitutionModel::Dayhoff,
+            SubstitutionModel::DayhoffDcmut,
+        ] {
+            let args = Args {
+                substitution_model: model.clone(),
+                ..base_args(fixture("simple_protein.fasta"))
+            };
+            assert!(run(args).is_ok(), "{model:?}");
+        }
+    }
+
+    fn matrix_file(content: &str) -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!("nj_test_{}_{}.dat", std::process::id(), n));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_run_protein_custom_matrix_succeeds() {
+        let matrix = matrix_file(include_str!("../tests/data/equal_rates_protein.dat"));
+        let args = Args {
+            substitution_model: SubstitutionModel::Custom,
+            matrix: Some(matrix),
+            distance_matrix: true,
+            ..base_args(fixture("simple_protein.fasta"))
+        };
+        assert!(run(args).is_ok());
+    }
+
+    #[test]
+    fn test_run_custom_without_matrix_is_error() {
+        let args = Args {
+            substitution_model: SubstitutionModel::Custom,
+            ..base_args(fixture("simple_protein.fasta"))
+        };
+        let err = run(args).unwrap_err();
+        assert!(err.contains("matrix"), "{err}");
+    }
+
+    #[test]
+    fn test_run_matrix_with_another_model_is_error() {
+        let matrix = matrix_file(include_str!("../tests/data/equal_rates_protein.dat"));
+        let args = Args {
+            matrix: Some(matrix),
+            ..base_args(fixture("simple_protein.fasta"))
+        };
+        assert!(run(args).is_err());
+    }
+
+    #[test]
+    fn test_run_missing_or_malformed_matrix_file_is_error() {
+        let missing = Args {
+            substitution_model: SubstitutionModel::Custom,
+            matrix: Some(PathBuf::from("/nonexistent/matrix.dat")),
+            ..base_args(fixture("simple_protein.fasta"))
+        };
+        assert!(run(missing).unwrap_err().contains("failed to read"));
+        let malformed = Args {
+            substitution_model: SubstitutionModel::Custom,
+            matrix: Some(matrix_file("1 2 3")),
+            ..base_args(fixture("simple_protein.fasta"))
+        };
+        assert!(run(malformed).unwrap_err().contains("Invalid substitution matrix"));
     }
 }

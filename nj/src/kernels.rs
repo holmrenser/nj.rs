@@ -84,6 +84,7 @@ fn count_diff_comparable_impl<S: Simd>(simd: S, a: &[u8], b: &[u8], n_states: u8
 /// `out[0]` is set to `+inf` (row 0 has no entries) and `out[r]` to row `r`'s minimum.
 /// Every element is computed with the same two separately rounded operations and `min`
 /// is exact, so the result does not depend on how a kernel vectorises the loop.
+#[cfg(test)]
 pub(crate) fn row_minima_scalar(data: &[f64], s: &[f64], m: usize, scale: f64, out: &mut [f64]) -> f64 {
     let mut best = f64::INFINITY;
     out[0] = f64::INFINITY;
@@ -169,6 +170,7 @@ fn row_minima_impl<S: Simd>(simd: S, data: &[f64], s: &[f64], m: usize, scale: f
 /// their bit-planes (`4 * words` words each, plane-major: plane `a` is `a[a*words..(a+1)*words]`).
 ///
 /// Per word, 16 ANDs, popcounts and adds; `F[x][y] = Σ_words popcount(a_x & b_y)`.
+#[cfg(test)]
 pub(crate) fn plane_counts_scalar(a: &[u64], b: &[u64], words: usize) -> [[u32; 4]; 4] {
     debug_assert_eq!(a.len(), 4 * words);
     debug_assert_eq!(b.len(), 4 * words);

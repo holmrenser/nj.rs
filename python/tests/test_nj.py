@@ -393,3 +393,74 @@ class TestSaturatedPairs:
     def test_standalone_distance_matrix_is_raw(self):
         result = distance_matrix(msa(*self.SEQS), substitution_model="JukesCantor")
         assert math.isinf(result["matrix"][0][1])
+
+
+# 190 equal exchangeabilities and 20 equal frequencies: the 20-state equal-rates model.
+EQUAL_RATES_MATRIX = (
+    "\n".join(" ".join(["1"] * i) for i in range(1, 20)) + "\n\n" + " ".join(["0.05"] * 20) + "\n"
+)
+
+PROTEINS = [
+    {"identifier": "a", "sequence": "ARNDCQEGHILKMFPSTWYVARNDCQEGHILKMFPSTWYV"},
+    {"identifier": "b", "sequence": "ARNDCQEGHILKMFPSTWYVARNDCQEGHILKMFPSTWYA"},
+    {"identifier": "c", "sequence": "ARNDCQEGHILKMFPSTWYAARNDCQEGHILKMFPSTAYA"},
+]
+
+
+class TestCustomMatrix:
+    def test_equal_rates_matrix_matches_the_closed_form(self):
+        # Two sequences of 40 columns that differ in 6 of them.
+        a = "ARNDCQEGHILKMFPSTWYV" * 2
+        b = "WWWWWW" + a[6:]
+        result = distance_matrix(
+            [{"identifier": "a", "sequence": a}, {"identifier": "b", "sequence": b}],
+            substitution_model="Custom",
+            matrix=EQUAL_RATES_MATRIX,
+        )
+        p = 6 / 40
+        want = -(19 / 20) * math.log(1 - p / (19 / 20))
+        assert result["matrix"][0][1] == pytest.approx(want, rel=1e-8)
+
+    def test_nj_and_average_distance_run(self):
+        tree = nj(PROTEINS, substitution_model="Custom", matrix=EQUAL_RATES_MATRIX, n_bootstrap_samples=10)
+        assert tree["newick"].endswith(";")
+        for name in "abc":
+            assert f"{name}:" in tree["newick"]
+        mean = average_distance(PROTEINS, substitution_model="Custom", matrix=EQUAL_RATES_MATRIX)
+        assert mean > 0
+
+    def test_missing_matrix_raises(self):
+        with pytest.raises(ValueError, match="InvalidMatrix"):
+            nj(PROTEINS, substitution_model="Custom")
+
+    def test_matrix_with_another_model_raises(self):
+        with pytest.raises(ValueError, match="InvalidMatrix"):
+            nj(PROTEINS, substitution_model="Poisson", matrix=EQUAL_RATES_MATRIX)
+
+    def test_malformed_matrix_raises(self):
+        with pytest.raises(ValueError, match="Invalid substitution matrix"):
+            nj(PROTEINS, substitution_model="Custom", matrix="1 2 3")
+
+    def test_custom_on_dna_raises(self):
+        dna = [{"identifier": "a", "sequence": "ACGTACGT"}, {"identifier": "b", "sequence": "ACGTACGA"}]
+        with pytest.raises(ValueError):
+            nj(dna, substitution_model="Custom", matrix=EQUAL_RATES_MATRIX)
+
+
+class TestBuiltinMatrices:
+    @pytest.mark.parametrize("model", ["Lg", "Wag", "Jtt", "JttDcmut", "Dayhoff", "DayhoffDcmut"])
+    def test_runs_and_is_finite(self, model):
+        result = distance_matrix(PROTEINS, substitution_model=model)
+        assert result["matrix"][0][1] > 0
+        assert math.isfinite(result["matrix"][0][2])
+        tree = nj(PROTEINS, substitution_model=model, n_bootstrap_samples=5)
+        assert tree["newick"].endswith(";")
+
+    def test_builtin_rejects_a_matrix(self):
+        with pytest.raises(ValueError, match="InvalidMatrix"):
+            nj(PROTEINS, substitution_model="Lg", matrix=EQUAL_RATES_MATRIX)
+
+    def test_builtin_on_dna_raises(self):
+        dna = [{"identifier": "a", "sequence": "ACGTACGT"}, {"identifier": "b", "sequence": "ACGTACGA"}]
+        with pytest.raises(ValueError):
+            nj(dna, substitution_model="Wag")
