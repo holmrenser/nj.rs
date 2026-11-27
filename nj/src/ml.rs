@@ -45,9 +45,10 @@ pub const T_MAX: f64 = 10.0;
 /// Smallest distance considered; below this `P_ab(t)` loses its relative accuracy.
 const T_MIN: f64 = 1e-9;
 
-/// Value of `ℓ`, `ℓ′` and `ℓ″` at one `t`.
+/// `ℓ′` and `ℓ″` at one `t`. The iteration needs only these two, which are sums of ratios of
+/// probabilities; the log-likelihood itself is needed once, at the end, and is summed from the
+/// probabilities of the last evaluation ([`Pair::loglik`]).
 struct Eval {
-    ll: f64,
     d1: f64,
     d2: f64,
 }
@@ -76,6 +77,12 @@ struct Pair<'a> {
     g: &'a mut [f64],
     g1: &'a mut [f64],
     g2: &'a mut [f64],
+    /// `P_ab(t)` of every entry (after rate variation) at the last *successful* evaluation, and the
+    /// buffer the next evaluation writes into; swapped on success, so a failed evaluation (`None`)
+    /// never leaves a half-written `p_last`.
+    p_last: &'a mut [f64],
+    p_next: &'a mut [f64],
+    has_last: bool,
 }
 
 impl Pair<'_> {
@@ -99,11 +106,7 @@ impl Pair<'_> {
             kernels::combine4(l.level, l.xt, l.ep, g, &mut dots[..3 * l.ep]);
         }
 
-        let mut e = Eval {
-            ll: 0.0,
-            d1: 0.0,
-            d2: 0.0,
-        };
+        let mut e = Eval { d1: 0.0, d2: 0.0 };
         for (j, &(a, b, n)) in self.entries.iter().enumerate() {
             let (a, b) = (a as usize, b as usize);
             let (p, p1, p2) = match &self.lanes {
@@ -126,11 +129,23 @@ impl Pair<'_> {
             if !(p > 0.0) {
                 return None;
             }
-            e.ll += n * p.ln();
+            self.p_next[j] = p;
             e.d1 += n * p1 / p;
             e.d2 += n * (p2 * p - p1 * p1) / (p * p);
         }
+        std::mem::swap(&mut self.p_last, &mut self.p_next);
+        self.has_last = true;
         Some(e)
+    }
+
+    /// `ℓ(t) = Σ n·ln P_ab(t)` for the last successful evaluation, summed in entry order. Summing
+    /// logarithms (rather than multiplying probabilities) keeps this finite for any number of sites.
+    fn loglik(&self) -> f64 {
+        let mut ll = 0.0;
+        for (&(_, _, n), &p) in self.entries.iter().zip(self.p_last.iter()) {
+            ll += n * p.ln();
+        }
+        ll
     }
 
     /// `ℓ(∞)`: every `P_ab` at its limit, `p_inv·δ_ab + (1 − p_inv)·π_b`.
@@ -174,58 +189,83 @@ pub(crate) fn ml_distance_with(
     // protein (20), the two sizes in use, so a pair costs no heap allocation; a model with more
     // states falls back to the heap.
     if k <= 4 {
-        fit(
-            model,
-            counts,
-            het,
-            level,
-            &mut [(0, 0, 0.0); 10],
-            &mut [0.0; 48],
-            &mut [0.0; 4],
-            &mut [0.0; 4],
-            &mut [0.0; 4],
-        )
+        on_stack::<10, 4, 48>(model, counts, het, level)
     } else if k <= 20 {
-        fit(
-            model,
-            counts,
-            het,
-            None,
-            &mut [(0, 0, 0.0); 210],
-            &mut [],
-            &mut [0.0; 20],
-            &mut [0.0; 20],
-            &mut [0.0; 20],
-        )
+        on_stack::<210, 20, 0>(model, counts, het, None)
     } else {
+        let e = k * (k + 1) / 2;
         fit(
             model,
             counts,
             het,
             None,
-            &mut vec![(0, 0, 0.0); k * (k + 1) / 2],
-            &mut [],
-            &mut vec![0.0; k],
-            &mut vec![0.0; k],
-            &mut vec![0.0; k],
+            Storage {
+                entries: &mut vec![(0, 0, 0.0); e],
+                xt: &mut [],
+                g: &mut vec![0.0; k],
+                g1: &mut vec![0.0; k],
+                g2: &mut vec![0.0; k],
+                p_a: &mut vec![0.0; e],
+                p_b: &mut vec![0.0; e],
+            },
         )
     }
 }
 
-/// [`ml_distance`] on caller-provided storage: `entries` holds up to `K(K+1)/2` pairs, `g`, `g1`
-/// and `g2` at least `K` values each (4 when `level` is given), and `xt` 48 values when `level` is
-/// given (the vector layout of up to 12 entries) and nothing otherwise.
+/// Scratch storage for one pair: `entries` holds up to `K(K+1)/2` pairs and `p_a`, `p_b` as many
+/// values; `g`, `g1` and `g2` at least `K` values each (4 when the vector kernel is used); `xt` is
+/// the 48 values of the vector layout of up to 12 entries, or empty.
+struct Storage<'a> {
+    entries: &'a mut [Entry],
+    xt: &'a mut [f64],
+    g: &'a mut [f64],
+    g1: &'a mut [f64],
+    g2: &'a mut [f64],
+    p_a: &'a mut [f64],
+    p_b: &'a mut [f64],
+}
+
+/// Runs [`fit`] on stack arrays for at most `E` entries, `K` factors and `X` vector-layout values.
+fn on_stack<const E: usize, const K: usize, const X: usize>(
+    model: &ReversibleModel,
+    counts: &[f64],
+    het: RateHet,
+    level: Option<Level>,
+) -> f64 {
+    fit(
+        model,
+        counts,
+        het,
+        level,
+        Storage {
+            entries: &mut [(0, 0, 0.0); E],
+            xt: &mut [0.0; X],
+            g: &mut [0.0; K],
+            g1: &mut [0.0; K],
+            g2: &mut [0.0; K],
+            p_a: &mut [0.0; E],
+            p_b: &mut [0.0; E],
+        },
+    )
+}
+
+/// [`ml_distance`] on caller-provided storage.
 fn fit(
     model: &ReversibleModel,
     counts: &[f64],
     het: RateHet,
     level: Option<Level>,
-    entries: &mut [Entry],
-    xt: &mut [f64],
-    g: &mut [f64],
-    g1: &mut [f64],
-    g2: &mut [f64],
+    storage: Storage<'_>,
 ) -> f64 {
+    let Storage {
+        entries,
+        xt,
+        g,
+        g1,
+        g2,
+        p_a,
+        p_b,
+    } = storage;
     let k = model.n_states();
 
     // Unordered pairs a <= b (see the module docs); `total` and `differing` use the raw table.
@@ -283,6 +323,9 @@ fn fit(
         g,
         g1,
         g2,
+        p_last: &mut p_a[..n_entries],
+        p_next: &mut p_b[..n_entries],
+        has_last: false,
     };
     let Some(t) = solve(&mut pair, total, differing) else {
         return f64::INFINITY;
@@ -302,7 +345,6 @@ fn solve(pair: &mut Pair<'_>, total: f64, differing: f64) -> Option<f64> {
     // Bracket: ℓ′ > 0 at `lo` (0 = nothing known yet), ℓ′ < 0 at `hi` (∞ = nothing known yet).
     let (mut lo, mut hi) = (0.0f64, f64::INFINITY);
     let mut t = start.clamp(10.0 * T_MIN, T_MAX / 2.0);
-    let mut ll = f64::NEG_INFINITY;
     for _ in 0..200 {
         let mut next;
         match pair.eval(t) {
@@ -316,7 +358,6 @@ fn solve(pair: &mut Pair<'_>, total: f64, differing: f64) -> Option<f64> {
                 };
             }
             Some(e) => {
-                ll = e.ll;
                 if e.d1 == 0.0 {
                     next = t;
                 } else {
@@ -360,7 +401,10 @@ fn solve(pair: &mut Pair<'_>, total: f64, differing: f64) -> Option<f64> {
 
     // The maximum must beat "the sequences are independent" (ℓ from the last evaluation,
     // which is at a point within the convergence tolerance of `t`).
-    (ll > pair.loglik_at_infinity()).then_some(t)
+    if !pair.has_last {
+        return None;
+    }
+    (pair.loglik() > pair.loglik_at_infinity()).then_some(t)
 }
 
 #[cfg(test)]

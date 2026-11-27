@@ -207,6 +207,12 @@ impl ReversibleModel {
         match gamma_shape {
             None => {
                 for (m, &l) in self.lambda.iter().enumerate() {
+                    if l == 0.0 {
+                        // The stationary eigenvalue: exactly the values the formulas give, without
+                        // the transcendental call.
+                        (g[m], g1[m], g2[m]) = (1.0, 0.0, 0.0);
+                        continue;
+                    }
                     let e = (l * t).exp();
                     g[m] = e;
                     g1[m] = l * e;
@@ -215,6 +221,10 @@ impl ReversibleModel {
             }
             Some(alpha) => {
                 for (m, &l) in self.lambda.iter().enumerate() {
+                    if l == 0.0 {
+                        (g[m], g1[m], g2[m]) = (1.0, 0.0, 0.0);
+                        continue;
+                    }
                     let base = 1.0 - l * t / alpha;
                     let v = base.powf(-alpha);
                     g[m] = v;
