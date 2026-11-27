@@ -158,17 +158,24 @@ sums become `NaN` in the NJ update. Instead:
   interior global maximum.
 - Do not assume unimodality: in 19,200 random trials (K=4 and 20, L=100) 16 had two interior maxima, always
   with the second at `t ≥ 11`, beyond `t_max`, with a gain over `ℓ(∞)` of at most 0.013 log-likelihood units.
-- Tolerance `|Δt| ≤ 10⁻¹² + 10⁻⁹·t`, far below the standard error (`≈ √(t/L)`). Accuracy at very small `t` is limited by
-  cancellation in the eigen-expansion of `P_ab(t)` (about 4·10⁻⁹ relative at `t = 10⁻⁶`).
-  `t_max = 10`: Jukes–Cantor at `p = 0.7499` is already 6.7.
-- Cost control: one `exp(λt)` vector per iteration, shortcut for identical pairs.
+- Stopping: Newton converges quadratically, with error `≈ c·s²` after a step of relative size `s` and `c` of order 1
+  (measured over consecutive Newton steps of simulated pairs: median 1.2–1.9, maximum 2.9). A Newton step of at most
+  `3·10⁻⁵·t` is applied and ends the iteration, leaving a relative error of at most about 2.6·10⁻⁹, far below the
+  standard error (`≈ √(t/L)`). Bisection and doubling steps stop only at `10⁻⁸`. A Newton step of a few ulps counts as
+  converged: the slope's rounding noise is as large as such a step, and treating it as unusable sent the solver
+  doubling and bisecting for ~30 evaluations. The start is the equal-rates closed form including gamma and `p_inv`.
+  Accuracy at very small `t` is limited by cancellation in the eigen-expansion of `P_ab(t)` (about 4·10⁻⁹ relative at
+  `t = 10⁻⁶`). `t_max = 10`: Jukes–Cantor at `p = 0.7499` is already 6.7.
+- Cost control: one `exp(λt)` vector per iteration (none for the zero eigenvalue); the log-likelihood is summed once at
+  the end (the iteration needs only `ℓ′` and `ℓ″`); shortcut for identical pairs.
 
 ### 5.5 Cost
 
 The solver sits in the O(n²) distance stage, never in NJ's O(n³) loop, but runs once per bootstrap replicate.
 Scalar prototype on simulated pairs: DNA 0.23–0.37 µs per pair; protein 2.6–12.6 µs at L=300–1000 (68–292
-nonzero entries, ≈4 iterations). The implementation measures 4.5–9.5 µs per pair for a random 20-state model
-(`ml_probe`, L=300–1000, divergence up to 30–70%), after working on unordered pairs and starting Newton directly. At n=1000 that is roughly 1.3–6 s per distance matrix, against ≈1.4 s for a
+nonzero entries, ≈4 iterations). The implementation measures 3.6–6.1 µs per pair for a random 20-state model
+(`ml_probe`, L=300–1000, divergence up to 30–70%), after working on unordered pairs, starting Newton directly and the stopping rule of §5.4; DNA
+takes 0.12 µs per pair beyond counting (`performance-log.md`). At n=1000 that is roughly 1.3–6 s per distance matrix, against ≈1.4 s for a
 whole `PDiff` run (almost all NJ; measured), times (B+1) with bootstrap. Warm starts did not reduce iterations.
 Confirm with a criterion benchmark in the repo before the protein step.
 
