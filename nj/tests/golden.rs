@@ -30,6 +30,7 @@ fn config(pairs: &[(&str, &str)], model: SubstitutionModel) -> NJConfig {
         matrix: None,
         gtr_rates: None,
         base_frequencies: None,
+        kappa: None,
     }
 }
 

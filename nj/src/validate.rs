@@ -9,16 +9,18 @@ use crate::event::{LogLevel, NJEvent};
 use crate::models::{RateHet, SubstitutionModel};
 
 /// The per-model options of a run: the rate matrix of `Custom`, the exchangeabilities and base
-/// frequencies of `Gtr`. Borrowed from the configuration.
+/// frequencies of `Gtr`, the `kappa` of `F84`. Borrowed from the configuration.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ModelOptions<'a> {
     pub matrix: Option<&'a str>,
     pub gtr_rates: Option<&'a [f64]>,
     pub base_frequencies: Option<&'a [f64]>,
+    pub kappa: Option<f64>,
 }
 
 /// Checks that each option is present exactly for the model that uses it: `matrix` for `Custom`,
-/// `gtr_rates` for `Gtr` (`base_frequencies` is optional there), and none for any other model.
+/// `gtr_rates` for `Gtr` and `kappa` for `F84` (`base_frequencies` is optional for both), and none for
+/// any other model.
 pub(crate) fn validate_model_options(model: &SubstitutionModel, opts: &ModelOptions<'_>) -> Result<(), NJError> {
     let err = |reason: &str| Err(NJError::InvalidMatrix { reason: reason.to_string() });
     match model {
@@ -32,6 +34,11 @@ pub(crate) fn validate_model_options(model: &SubstitutionModel, opts: &ModelOpti
                 return err("the 'Gtr' model needs its six exchangeabilities (AC, AG, AT, CG, CT, GT) in `gtr_rates`");
             }
         }
+        SubstitutionModel::F84 => {
+            if opts.kappa.is_none() {
+                return err("the 'F84' model needs its `kappa` (the extra transition rate; 0 is F81)");
+            }
+        }
         _ => {}
     }
     if opts.matrix.is_some() && !matches!(model, SubstitutionModel::Custom) {
@@ -40,8 +47,13 @@ pub(crate) fn validate_model_options(model: &SubstitutionModel, opts: &ModelOpti
     if opts.gtr_rates.is_some() && !matches!(model, SubstitutionModel::Gtr) {
         return err("`gtr_rates` is only used with the 'Gtr' model");
     }
-    if opts.base_frequencies.is_some() && !matches!(model, SubstitutionModel::Gtr) {
-        return err("`base_frequencies` is only used with the 'Gtr' model");
+    if opts.kappa.is_some() && !matches!(model, SubstitutionModel::F84) {
+        return err("`kappa` is only used with the 'F84' model");
+    }
+    if opts.base_frequencies.is_some()
+        && !matches!(model, SubstitutionModel::Gtr | SubstitutionModel::F84)
+    {
+        return err("`base_frequencies` is only used with the 'Gtr' and 'F84' models");
     }
     Ok(())
 }

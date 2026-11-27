@@ -89,10 +89,16 @@ mod cli {
         #[arg(long, value_name = "AC,AG,AT,CG,CT,GT", value_delimiter = ',', num_args = 1..)]
         pub gtr_rates: Option<Vec<f64>>,
 
-        /// Base frequencies A,C,G,T (comma-separated) for the gtr model. Default: pooled over
-        /// the alignment.
+        /// Base frequencies A,C,G,T (comma-separated) for the gtr and f84 models. Default: pooled
+        /// over the alignment.
         #[arg(long, value_name = "A,C,G,T", value_delimiter = ',', num_args = 1..)]
         pub base_frequencies: Option<Vec<f64>>,
+
+        /// F84 parameter for `--substitution-model f84` (and only then), `>= 0`: the extra transition
+        /// rate within purines (kappa/piR) and pyrimidines (kappa/piY); 0 is F81. Base frequencies
+        /// come from `--base-frequencies` or are pooled from the alignment.
+        #[arg(long, value_name = "KAPPA")]
+        pub kappa: Option<f64>,
 
         /// Distance (substitutions per site) given to pairs whose distance is not finite
         /// because the sequences are saturated for the model. Default: 10.
@@ -150,6 +156,7 @@ mod cli {
             matrix,
             gtr_rates: args.gtr_rates,
             base_frequencies: args.base_frequencies,
+            kappa: args.kappa,
             max_distance: args.max_distance,
         };
 
@@ -277,6 +284,7 @@ mod main_tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
             max_distance: None,
             verbose: false,
         }
@@ -468,6 +476,38 @@ mod main_tests {
         let protein = Args {
             substitution_model: SubstitutionModel::Gtr,
             gtr_rates: Some(vec![1.0; 6]),
+            ..base_args(fixture("simple_protein.fasta"))
+        };
+        assert!(run(protein).is_err());
+    }
+
+    #[test]
+    fn test_run_f84_and_empirical_gtr() {
+        let f84 = Args {
+            substitution_model: SubstitutionModel::F84,
+            kappa: Some(1.5),
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(f84).is_ok());
+        let missing = Args {
+            substitution_model: SubstitutionModel::F84,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(missing).unwrap_err().contains("kappa"));
+        let stray = Args {
+            kappa: Some(2.0),
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(stray).unwrap_err().contains("only used with the 'F84' model"));
+        // The empirical GTR distance takes no options; the tiny fixture may have saturated pairs, which
+        // are capped, so the run succeeds either way.
+        let empirical = Args {
+            substitution_model: SubstitutionModel::EmpiricalGtr,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(empirical).is_ok());
+        let protein = Args {
+            substitution_model: SubstitutionModel::EmpiricalGtr,
             ..base_args(fixture("simple_protein.fasta"))
         };
         assert!(run(protein).is_err());

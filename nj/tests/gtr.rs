@@ -51,6 +51,7 @@ fn dist_conf(
         matrix: None,
         gtr_rates: rates.map(<[f64]>::to_vec),
         base_frequencies: freqs.map(<[f64]>::to_vec),
+        kappa: None,
     }
 }
 
@@ -68,6 +69,7 @@ fn nj_conf(msa: Vec<SequenceObject>, rates: Option<&[f64]>, bootstrap: usize) ->
         matrix: None,
         gtr_rates: rates.map(<[f64]>::to_vec),
         base_frequencies: None,
+        kappa: None,
         max_distance: None,
     }
 }
@@ -296,4 +298,233 @@ fn saturated_pairs_are_infinite_raw_and_capped_in_nj() {
         result.newick
     );
     assert_eq!(result.distance_matrix.unwrap().matrix[0][1], 10.0);
+}
+
+fn kappa_conf(
+    msa: Vec<SequenceObject>,
+    model: SubstitutionModel,
+    kappa: Option<f64>,
+) -> DistConfig {
+    let mut conf = dist_conf(msa, model, None, None);
+    conf.kappa = kappa;
+    conf
+}
+
+#[test]
+fn f84_with_kappa_zero_is_f81_and_kappa_changes_the_distances() {
+    let msa = family(6);
+    let f84 = distance_matrix(kappa_conf(msa.clone(), SubstitutionModel::F84, Some(0.0))).unwrap();
+    let f81 = distance_matrix(dist_conf(
+        msa.clone(),
+        SubstitutionModel::Gtr,
+        Some(&[1.0; 6]),
+        None,
+    ))
+    .unwrap();
+    assert_eq!(f84.matrix, f81.matrix);
+    let bigger = distance_matrix(kappa_conf(msa, SubstitutionModel::F84, Some(3.0))).unwrap();
+    assert_ne!(bigger.matrix, f84.matrix);
+    assert!(bigger.matrix[5][0].is_finite() && bigger.matrix[5][0] > 0.0);
+}
+
+#[test]
+fn f84_takes_optional_frequencies_and_runs_nj_with_rate_variation() {
+    let mut conf = kappa_conf(family(5), SubstitutionModel::F84, Some(1.0));
+    conf.base_frequencies = Some(vec![0.3, 0.2, 0.2, 0.3]);
+    assert!(distance_matrix(conf).unwrap().matrix[1][0] > 0.0);
+
+    let mut nj = nj_conf(family(7), None, 10);
+    nj.substitution_model = SubstitutionModel::F84;
+    nj.kappa = Some(2.0);
+    nj.gamma_shape = Some(0.7);
+    nj.p_invar = Some(0.1);
+    let result = run_nj(nj, None).unwrap();
+    for i in 0..7 {
+        assert!(
+            result.newick.contains(&format!("s{i}:")),
+            "{}",
+            result.newick
+        );
+    }
+    assert!(!result.newick.contains("NaN") && !result.newick.contains("inf"));
+}
+
+#[test]
+fn f84_needs_kappa_and_kappa_is_only_for_f84() {
+    let msa = family(4);
+    let missing =
+        distance_matrix(kappa_conf(msa.clone(), SubstitutionModel::F84, None)).unwrap_err();
+    assert!(
+        matches!(&missing, NJError::InvalidMatrix { reason } if reason.contains("kappa")),
+        "{missing:?}"
+    );
+    for model in [
+        SubstitutionModel::Gtr,
+        SubstitutionModel::Kimura2P,
+        SubstitutionModel::EmpiricalGtr,
+    ] {
+        let stray = distance_matrix(kappa_conf(msa.clone(), model, Some(1.0))).unwrap_err();
+        assert!(matches!(&stray, NJError::InvalidMatrix { .. }), "{stray:?}");
+    }
+    for bad in [-1.0, f64::NAN, f64::INFINITY] {
+        let err = distance_matrix(kappa_conf(msa.clone(), SubstitutionModel::F84, Some(bad)))
+            .unwrap_err();
+        assert!(
+            matches!(&err, NJError::InvalidMatrix { reason } if reason.contains("kappa")),
+            "{bad}: {err:?}"
+        );
+    }
+    // F84 does not take the GTR rates.
+    let mut conf = kappa_conf(msa, SubstitutionModel::F84, Some(1.0));
+    conf.gtr_rates = Some(HKY.to_vec());
+    assert!(matches!(
+        distance_matrix(conf).unwrap_err(),
+        NJError::InvalidMatrix { .. }
+    ));
+}
+
+#[test]
+fn f84_and_empirical_gtr_are_dna_only() {
+    let protein = vec![
+        seq("a", "ARNDCQEGHILKMFPSTWYV"),
+        seq("b", "ARNDCQEGHILKMFPSTWYA"),
+    ];
+    let err = distance_matrix(kappa_conf(
+        protein.clone(),
+        SubstitutionModel::F84,
+        Some(1.0),
+    ))
+    .unwrap_err();
+    assert!(matches!(err, NJError::IncompatibleModel { .. }), "{err:?}");
+    let err = distance_matrix(dist_conf(
+        protein,
+        SubstitutionModel::EmpiricalGtr,
+        None,
+        None,
+    ))
+    .unwrap_err();
+    assert!(matches!(err, NJError::IncompatibleModel { .. }), "{err:?}");
+}
+
+/// Two sequences of `len` sites that differ in the given proportion of sites, with the changed bases
+/// chosen so that the pair table is rich (all 12 off-diagonal cells occur).
+fn diverged_pair(len: usize, proportion: f64) -> Vec<SequenceObject> {
+    let bases = b"ACGT";
+    let a: Vec<u8> = (0..len).map(|i| bases[(i * 5 + i / 7) % 4]).collect();
+    let b: Vec<u8> = a
+        .iter()
+        .enumerate()
+        .map(|(i, &x)| {
+            if ((i * 37) % 1000) as f64 / 1000.0 < proportion {
+                let k = bases.iter().position(|&y| y == x).unwrap();
+                bases[(k + 1 + (i / 3) % 3) % 4]
+            } else {
+                x
+            }
+        })
+        .collect();
+    vec![
+        seq("a", &String::from_utf8(a).unwrap()),
+        seq("b", &String::from_utf8(b).unwrap()),
+    ]
+}
+
+#[test]
+fn empirical_gtr_needs_no_options_and_agrees_with_ml_on_a_long_low_divergence_pair() {
+    let msa = diverged_pair(20_000, 0.15);
+    let empirical = distance_matrix(dist_conf(
+        msa.clone(),
+        SubstitutionModel::EmpiricalGtr,
+        None,
+        None,
+    ))
+    .unwrap()
+    .matrix[0][1];
+    let ml = distance_matrix(dist_conf(
+        msa.clone(),
+        SubstitutionModel::Gtr,
+        Some(&[1.0; 6]),
+        None,
+    ))
+    .unwrap()
+    .matrix[0][1];
+    assert!(
+        empirical.is_finite() && empirical > 0.1 && empirical < 0.4,
+        "{empirical}"
+    );
+    assert!(
+        (empirical - ml).abs() < 0.05 * ml,
+        "empirical {empirical} vs ML {ml}"
+    );
+
+    for opts in [(Some(&HKY[..]), None), (None, Some(&[0.25; 4][..]))] {
+        let err = distance_matrix(dist_conf(
+            msa.clone(),
+            SubstitutionModel::EmpiricalGtr,
+            opts.0,
+            opts.1,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, NJError::InvalidMatrix { .. }), "{err:?}");
+    }
+}
+
+#[test]
+fn empirical_gtr_rate_variation_and_nj_with_a_saturated_pair() {
+    // Gamma and invariant sites are accepted and change the distance.
+    let msa = diverged_pair(20_000, 0.15);
+    let plain = distance_matrix(dist_conf(
+        msa.clone(),
+        SubstitutionModel::EmpiricalGtr,
+        None,
+        None,
+    ))
+    .unwrap()
+    .matrix[0][1];
+    let mut gamma = dist_conf(msa, SubstitutionModel::EmpiricalGtr, None, None);
+    gamma.gamma_shape = Some(0.5);
+    let with_gamma = distance_matrix(gamma).unwrap().matrix[0][1];
+    assert!(
+        with_gamma > plain,
+        "gamma rates imply more hidden changes: {with_gamma} vs {plain}"
+    );
+
+    // A pair with no closed form is infinite in the raw matrix and capped, with a warning, in nj().
+    let swapped = vec![
+        seq("a", &"AC".repeat(30)),
+        seq("b", &"CA".repeat(30)),
+        seq("c", &"AC".repeat(30)),
+    ];
+    let raw = distance_matrix(dist_conf(
+        swapped.clone(),
+        SubstitutionModel::EmpiricalGtr,
+        None,
+        None,
+    ))
+    .unwrap();
+    assert!(raw.matrix[0][1].is_infinite() && raw.matrix[0][2] == 0.0);
+    let mut conf = nj_conf(swapped, None, 5);
+    conf.substitution_model = SubstitutionModel::EmpiricalGtr;
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let result = run_nj(
+        conf,
+        Some(Box::new(move |e| {
+            sink.lock().unwrap().push(format!("{e:?}"))
+        })),
+    )
+    .unwrap();
+    assert!(
+        !result.newick.contains("inf") && !result.newick.contains("NaN"),
+        "{}",
+        result.newick
+    );
+    assert_eq!(result.distance_matrix.unwrap().matrix[0][1], 10.0);
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e.contains("saturated"))
+    );
 }

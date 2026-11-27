@@ -207,9 +207,10 @@ where
 /// Dispatches to a generic runner based on the runtime alphabet and substitution
 /// model, enforcing the model–alphabet compatibility table in a single place.
 ///
-/// `$opts` is a [`ModelOptions`](crate::validate::ModelOptions): the `matrix` of the `Custom` model
-/// and the `gtr_rates` / `base_frequencies` of `Gtr`, each required for, and only for, its model.
-/// The models that need them are built here (`Gtr` pools its base frequencies from the alignment). `$pairs` is consumed to build the typed [`MSA`];
+/// `$opts` is a [`ModelOptions`](crate::validate::ModelOptions): the `matrix` of the `Custom` model,
+/// the `gtr_rates` / `base_frequencies` of `Gtr` and the `kappa` of `F84`, each required for, and only
+/// for, its model. The models that need them are built here (`Gtr` and `F84` pool their base
+/// frequencies from the alignment unless given). `$pairs` is consumed to build the typed [`MSA`];
 /// `$run` is the generic runner (`run_nj`, `run_distance_matrix`, `run_average_distance`), called
 /// as `$run(msa, &model, args…)` with the model as a value (the stateless models through
 /// [`Static`](crate::models::Static)). Each runner returns `Result<_, String>`, mapped here to
@@ -233,6 +234,13 @@ macro_rules! dispatch_run {
                     Sm::Kimura2P => $run(msa, &Static::<$crate::models::Kimura2P>::new(), $($arg),*).map_err(fail),
                     Sm::TajimaNei => $run(msa, &Static::<$crate::models::TajimaNei>::new(), $($arg),*).map_err(fail),
                     Sm::Tamura => $run(msa, &Static::<$crate::models::Tamura>::new(), $($arg),*).map_err(fail),
+                    Sm::F84 => {
+                        let kappa = opts.kappa.expect("validate_model_options guarantees kappa for F84");
+                        let f84 = $crate::gtr::Gtr::f84_from_alignment(kappa, opts.base_frequencies, &msa)
+                            .map_err(|reason| $crate::error::NJError::InvalidMatrix { reason })?;
+                        $run(msa, &f84, $($arg),*).map_err(fail)
+                    }
+                    Sm::EmpiricalGtr => $run(msa, &Static::<$crate::gtr::EmpiricalGtr>::new(), $($arg),*).map_err(fail),
                     Sm::Gtr => {
                         let rates = opts.gtr_rates.expect("validate_model_options guarantees gtr_rates for Gtr");
                         let gtr = $crate::gtr::Gtr::from_alignment(rates, opts.base_frequencies, &msa)
@@ -271,7 +279,13 @@ macro_rules! dispatch_run {
                             .map_err(|reason| $crate::error::NJError::InvalidMatrix { reason })?;
                         $run(msa, &custom, $($arg),*).map_err(fail)
                     }
-                    Sm::JukesCantor | Sm::Kimura2P | Sm::TajimaNei | Sm::Tamura | Sm::Gtr => {
+                    Sm::JukesCantor
+                    | Sm::Kimura2P
+                    | Sm::TajimaNei
+                    | Sm::Tamura
+                    | Sm::Gtr
+                    | Sm::F84
+                    | Sm::EmpiricalGtr => {
                         Err($crate::error::NJError::IncompatibleModel {
                             model,
                             alphabet: $crate::alphabet::Alphabet::Protein,

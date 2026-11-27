@@ -72,9 +72,15 @@ gtr_rates: Array<number> | null,
 /**
  * Base frequencies `A, C, G, T` for the [`SubstitutionModel::Gtr`] model (four positive
  * numbers, renormalised to sum to one). When `None`, the frequencies are pooled over all
- * unambiguous bases of the alignment. Only used with `Gtr`.
+ * unambiguous bases of the alignment. Only used with `Gtr` and `F84`.
  */
-base_frequencies: Array<number> | null, };
+base_frequencies: Array<number> | null, 
+/**
+ * The F84 parameter `kappa >= 0` of the [`SubstitutionModel::F84`] model: transitions get an
+ * extra rate `kappa/π_R` (A↔G) and `kappa/π_Y` (C↔T) on top of the transversion rate, so
+ * `kappa = 0` is F81. Required for `F84` and only then. See [`crate::gtr::Gtr::f84`].
+ */
+kappa: number | null, };
 
 /**
  * Serializable pairwise distance matrix returned by [`crate::distance_matrix`].
@@ -176,9 +182,15 @@ gtr_rates: Array<number> | null,
 /**
  * Base frequencies `A, C, G, T` for the [`SubstitutionModel::Gtr`] model (four positive
  * numbers, renormalised to sum to one). When `None`, the frequencies are pooled over all
- * unambiguous bases of the alignment. Only used with `Gtr`.
+ * unambiguous bases of the alignment. Only used with `Gtr` and `F84`.
  */
 base_frequencies: Array<number> | null, 
+/**
+ * The F84 parameter `kappa >= 0` of the [`SubstitutionModel::F84`] model: transitions get an
+ * extra rate `kappa/π_R` (A↔G) and `kappa/π_Y` (C↔T) on top of the transversion rate, so
+ * `kappa = 0` is F81. Required for `F84` and only then. See [`crate::gtr::Gtr::f84`].
+ */
+kappa: number | null, 
 /**
  * Distance (substitutions per site) assigned to any pair whose distance is not
  * finite, i.e. the sequences are saturated and the model has no finite estimate.
@@ -258,9 +270,11 @@ sequence: string, };
  * | `Poisson` | Protein only | `-ln(1 - p)` |
  * | `KimuraProtein` | Protein only | `-ln(1 - p - 0.2 p²)` |
  * | `Gtr` | DNA only | ML distance under explicit GTR rates (`gtr_rates`, `base_frequencies`) |
+ * | `F84` | DNA only | ML distance under F84 with explicit `kappa` (`base_frequencies` optional) |
+ * | `EmpiricalGtr` | DNA only | closed-form GTR distance estimated from each pair |
  * | `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` | Protein only | ML distance under the named empirical matrix |
  * | `Custom` | Protein only (for now) | ML distance under the matrix in the `matrix` option |
  *
  * Model–alphabet compatibility is enforced at runtime in [`crate::nj`].
  */
-export type SubstitutionModel = "PDiff" | "JukesCantor" | "Kimura2P" | "TajimaNei" | "Tamura" | "Poisson" | "KimuraProtein" | "Gtr" | "Lg" | "Wag" | "Jtt" | "JttDcmut" | "Dayhoff" | "DayhoffDcmut" | "Custom";
+export type SubstitutionModel = "PDiff" | "JukesCantor" | "Kimura2P" | "TajimaNei" | "Tamura" | "Poisson" | "KimuraProtein" | "Gtr" | "F84" | "EmpiricalGtr" | "Lg" | "Wag" | "Jtt" | "JttDcmut" | "Dayhoff" | "DayhoffDcmut" | "Custom";

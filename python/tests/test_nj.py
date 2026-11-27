@@ -509,3 +509,52 @@ class TestGtr:
     def test_gtr_on_protein_raises(self):
         with pytest.raises(ValueError):
             nj(PROTEINS, substitution_model="Gtr", gtr_rates=HKY)
+
+
+class TestF84AndEmpiricalGtr:
+    def test_f84_with_kappa_zero_is_f81(self):
+        f84 = distance_matrix(DNA, substitution_model="F84", kappa=0.0)
+        f81 = distance_matrix(DNA, substitution_model="Gtr", gtr_rates=[1] * 6)
+        for i in range(4):
+            for j in range(4):
+                assert f84["matrix"][i][j] == pytest.approx(f81["matrix"][i][j], abs=1e-12)
+
+    def test_f84_runs_with_frequencies_and_rate_variation(self):
+        tree = nj(
+            DNA,
+            substitution_model="F84",
+            kappa=2.0,
+            base_frequencies=[0.3, 0.2, 0.2, 0.3],
+            gamma_shape=0.5,
+            n_bootstrap_samples=5,
+        )
+        assert tree["newick"].endswith(";")
+
+    def test_f84_needs_kappa(self):
+        with pytest.raises(ValueError, match="kappa"):
+            nj(DNA, substitution_model="F84")
+
+    def test_kappa_with_another_model_raises(self):
+        with pytest.raises(ValueError, match="only used with the 'F84' model"):
+            nj(DNA, substitution_model="Gtr", gtr_rates=HKY, kappa=1.0)
+
+    def test_empirical_gtr_runs_and_takes_no_options(self):
+        # Four short sequences: some pairs may have no closed form and are capped, but the call works.
+        tree = nj(DNA, substitution_model="EmpiricalGtr")
+        assert tree["newick"].endswith(";")
+        with pytest.raises(ValueError, match="InvalidMatrix"):
+            nj(DNA, substitution_model="EmpiricalGtr", gtr_rates=HKY)
+
+    def test_empirical_gtr_saturated_pair_is_infinite_in_the_raw_matrix(self):
+        swapped = [
+            {"identifier": "a", "sequence": "AC" * 30},
+            {"identifier": "b", "sequence": "CA" * 30},
+        ]
+        result = distance_matrix(swapped, substitution_model="EmpiricalGtr")
+        assert math.isinf(result["matrix"][0][1])
+
+    def test_f84_and_empirical_gtr_on_protein_raise(self):
+        with pytest.raises(ValueError):
+            nj(PROTEINS, substitution_model="F84", kappa=1.0)
+        with pytest.raises(ValueError):
+            nj(PROTEINS, substitution_model="EmpiricalGtr")

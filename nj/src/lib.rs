@@ -47,6 +47,8 @@
 //! | `TajimaNei` | ✓ | — |
 //! | `Tamura` | ✓ | — |
 //! | `Gtr` (ML, explicit rates in [`NJConfig::gtr_rates`]) | ✓ | — |
+//! | `F84` (ML, explicit [`NJConfig::kappa`]) | ✓ | — |
+//! | `EmpiricalGtr` (closed form, estimated per pair) | ✓ | — |
 //! | `Poisson` | — | ✓ |
 //! | `KimuraProtein` | — | ✓ |
 //! | `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` (ML, empirical matrix) | — | ✓ |
@@ -140,11 +142,13 @@ pub fn nj(conf: NJConfig, on_event: Option<Box<dyn Fn(NJEvent)>>) -> Result<NJRe
     let rates = validate_rate_params(conf.gamma_shape, conf.p_invar)?;
     let max_distance = validate_max_distance(conf.max_distance)?;
     let model = conf.substitution_model;
-    let (matrix, gtr_rates, base_frequencies) = (conf.matrix, conf.gtr_rates, conf.base_frequencies);
+    let (matrix, gtr_rates, base_frequencies, kappa) =
+        (conf.matrix, conf.gtr_rates, conf.base_frequencies, conf.kappa);
     let opts = ModelOptions {
         matrix: matrix.as_deref(),
         gtr_rates: gtr_rates.as_deref(),
         base_frequencies: base_frequencies.as_deref(),
+        kappa,
     };
     if matches!(model, SubstitutionModel::PDiff)
         && (rates.gamma_shape.is_some() || rates.p_invar > 0.0)
@@ -187,11 +191,13 @@ pub fn distance_matrix(conf: DistConfig) -> Result<DistanceResult, NJError> {
     let rates = validate_rate_params(conf.gamma_shape, conf.p_invar)?;
     let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
     let model = conf.substitution_model;
-    let (matrix, gtr_rates, base_frequencies) = (conf.matrix, conf.gtr_rates, conf.base_frequencies);
+    let (matrix, gtr_rates, base_frequencies, kappa) =
+        (conf.matrix, conf.gtr_rates, conf.base_frequencies, conf.kappa);
     let opts = ModelOptions {
         matrix: matrix.as_deref(),
         gtr_rates: gtr_rates.as_deref(),
         base_frequencies: base_frequencies.as_deref(),
+        kappa,
     };
     let pairs = conf.msa.into_iter().map(|s| (s.identifier, s.sequence));
     dispatch_run!(
@@ -214,11 +220,13 @@ pub fn average_distance(conf: DistConfig) -> Result<f64, NJError> {
     let rates = validate_rate_params(conf.gamma_shape, conf.p_invar)?;
     let alphabet = conf.alphabet.unwrap_or_else(|| detect_alphabet(&conf.msa));
     let model = conf.substitution_model;
-    let (matrix, gtr_rates, base_frequencies) = (conf.matrix, conf.gtr_rates, conf.base_frequencies);
+    let (matrix, gtr_rates, base_frequencies, kappa) =
+        (conf.matrix, conf.gtr_rates, conf.base_frequencies, conf.kappa);
     let opts = ModelOptions {
         matrix: matrix.as_deref(),
         gtr_rates: gtr_rates.as_deref(),
         base_frequencies: base_frequencies.as_deref(),
+        kappa,
     };
     let pairs = conf.msa.into_iter().map(|s| (s.identifier, s.sequence));
     dispatch_run!(
@@ -259,6 +267,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         }
     }
 
@@ -323,6 +332,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         };
         let result = nj(conf, None).expect("NJ failed");
         assert_eq!(result.newick, "(A:0.200,B:0.200);");
@@ -354,6 +364,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         };
         let out = nj(conf, None).unwrap();
         assert!(out.newick.ends_with(';'));
@@ -389,6 +400,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         };
 
         let t1 = nj(conf.clone(), None).unwrap();
@@ -412,6 +424,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -443,6 +456,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -474,6 +488,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         };
         let result = nj(conf, None);
         assert!(result.is_err());
@@ -521,6 +536,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         };
         let result = nj(conf, None).expect("NJ on lowercase protein should succeed");
         let dm = result.distance_matrix.unwrap();
@@ -673,6 +689,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         })
         .unwrap();
         assert!(result.matrix[0][1].is_infinite());
@@ -754,6 +771,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         }
     }
 
@@ -866,6 +884,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         };
         assert!(distance_matrix(conf).is_err());
     }
@@ -934,6 +953,7 @@ mod tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         };
         assert!(average_distance(conf).is_err());
     }
@@ -1024,6 +1044,7 @@ mod parallel_tests {
             matrix: None,
             gtr_rates: None,
             base_frequencies: None,
+            kappa: None,
         }
     }
 
