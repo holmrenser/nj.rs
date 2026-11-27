@@ -19,8 +19,8 @@ pub(crate) struct ModelOptions<'a> {
 }
 
 /// Checks that each option is present exactly for the model that uses it: `matrix` for `Custom`,
-/// `gtr_rates` for `Gtr` and `kappa` for `F84` (`base_frequencies` is optional for both), and none for
-/// any other model.
+/// `gtr_rates` for `Gtr` and `kappa` for `F84` and `Hky` (`base_frequencies` is optional for all three),
+/// and none for any other model.
 pub(crate) fn validate_model_options(model: &SubstitutionModel, opts: &ModelOptions<'_>) -> Result<(), NJError> {
     let err = |reason: &str| Err(NJError::InvalidMatrix { reason: reason.to_string() });
     match model {
@@ -39,6 +39,11 @@ pub(crate) fn validate_model_options(model: &SubstitutionModel, opts: &ModelOpti
                 return err("the 'F84' model needs its `kappa` (the extra transition rate; 0 is F81)");
             }
         }
+        SubstitutionModel::Hky => {
+            if opts.kappa.is_none() {
+                return err("the 'Hky' model needs its `kappa` (the transition/transversion rate ratio)");
+            }
+        }
         _ => {}
     }
     if opts.matrix.is_some() && !matches!(model, SubstitutionModel::Custom) {
@@ -47,13 +52,16 @@ pub(crate) fn validate_model_options(model: &SubstitutionModel, opts: &ModelOpti
     if opts.gtr_rates.is_some() && !matches!(model, SubstitutionModel::Gtr) {
         return err("`gtr_rates` is only used with the 'Gtr' model");
     }
-    if opts.kappa.is_some() && !matches!(model, SubstitutionModel::F84) {
-        return err("`kappa` is only used with the 'F84' model");
+    if opts.kappa.is_some() && !matches!(model, SubstitutionModel::F84 | SubstitutionModel::Hky) {
+        return err("`kappa` is only used with the 'F84' and 'Hky' models");
     }
     if opts.base_frequencies.is_some()
-        && !matches!(model, SubstitutionModel::Gtr | SubstitutionModel::F84)
+        && !matches!(
+            model,
+            SubstitutionModel::Gtr | SubstitutionModel::F84 | SubstitutionModel::Hky
+        )
     {
-        return err("`base_frequencies` is only used with the 'Gtr' and 'F84' models");
+        return err("`base_frequencies` is only used with the 'Gtr', 'F84' and 'Hky' models");
     }
     Ok(())
 }

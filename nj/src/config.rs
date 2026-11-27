@@ -93,12 +93,14 @@ pub struct DistConfig {
     pub gtr_rates: Option<Vec<f64>>,
     /// Base frequencies `A, C, G, T` for the [`SubstitutionModel::Gtr`] model (four positive
     /// numbers, renormalised to sum to one). When `None`, the frequencies are pooled over all
-    /// unambiguous bases of the alignment. Only used with `Gtr` and `F84`.
+    /// unambiguous bases of the alignment. Only used with `Gtr`, `Hky` and `F84`.
     #[serde(default)]
     pub base_frequencies: Option<Vec<f64>>,
-    /// The F84 parameter `kappa >= 0` of the [`SubstitutionModel::F84`] model: transitions get an
-    /// extra rate `kappa/π_R` (A↔G) and `kappa/π_Y` (C↔T) on top of the transversion rate, so
-    /// `kappa = 0` is F81. Required for `F84` and only then. See [`crate::gtr::Gtr::f84`].
+    /// The `kappa >= 0` of the [`SubstitutionModel::Hky`] and [`SubstitutionModel::F84`] models,
+    /// required for them and only then. For `Hky` it is the ratio of the transition rate to the
+    /// transversion rate (`kappa = 1` is F81). For `F84` the transitions get an extra rate `kappa/π_R`
+    /// (A↔G) and `kappa/π_Y` (C↔T) on top of the transversion rate, so `kappa = 0` is F81. See
+    /// [`crate::gtr::Gtr::hky`] and [`crate::gtr::Gtr::f84`].
     #[serde(default)]
     pub kappa: Option<f64>,
 }
@@ -166,12 +168,14 @@ pub struct NJConfig {
     pub gtr_rates: Option<Vec<f64>>,
     /// Base frequencies `A, C, G, T` for the [`SubstitutionModel::Gtr`] model (four positive
     /// numbers, renormalised to sum to one). When `None`, the frequencies are pooled over all
-    /// unambiguous bases of the alignment. Only used with `Gtr` and `F84`.
+    /// unambiguous bases of the alignment. Only used with `Gtr`, `Hky` and `F84`.
     #[serde(default)]
     pub base_frequencies: Option<Vec<f64>>,
-    /// The F84 parameter `kappa >= 0` of the [`SubstitutionModel::F84`] model: transitions get an
-    /// extra rate `kappa/π_R` (A↔G) and `kappa/π_Y` (C↔T) on top of the transversion rate, so
-    /// `kappa = 0` is F81. Required for `F84` and only then. See [`crate::gtr::Gtr::f84`].
+    /// The `kappa >= 0` of the [`SubstitutionModel::Hky`] and [`SubstitutionModel::F84`] models,
+    /// required for them and only then. For `Hky` it is the ratio of the transition rate to the
+    /// transversion rate (`kappa = 1` is F81). For `F84` the transitions get an extra rate `kappa/π_R`
+    /// (A↔G) and `kappa/π_Y` (C↔T) on top of the transversion rate, so `kappa = 0` is F81. See
+    /// [`crate::gtr::Gtr::hky`] and [`crate::gtr::Gtr::f84`].
     #[serde(default)]
     pub kappa: Option<f64>,
     /// Distance (substitutions per site) assigned to any pair whose distance is not

@@ -50,15 +50,18 @@ struct Eval {
     d2: f64,
 }
 
-/// Likelihood evaluation for one pair: the nonzero entries of `F` plus scratch space.
+/// One nonzero entry of the reduced pair table: `(a, b, F_ab)` (see the module docs).
+type Entry = (u8, u8, f64);
+
+/// Likelihood evaluation for one pair: the nonzero entries of `F` plus scratch space. Everything
+/// is borrowed from storage owned by [`ml_distance`], which keeps it on the stack.
 struct Pair<'a> {
     model: &'a ReversibleModel,
     het: RateHet,
-    /// `(a, b, F_ab)` for every `F_ab > 0`.
-    entries: Vec<(usize, usize, f64)>,
-    g: Vec<f64>,
-    g1: Vec<f64>,
-    g2: Vec<f64>,
+    entries: &'a [Entry],
+    g: &'a mut [f64],
+    g1: &'a mut [f64],
+    g2: &'a mut [f64],
 }
 
 impl Pair<'_> {
@@ -79,7 +82,8 @@ impl Pair<'_> {
             d1: 0.0,
             d2: 0.0,
         };
-        for &(a, b, n) in &self.entries {
+        for &(a, b, n) in self.entries {
+            let (a, b) = (a as usize, b as usize);
             let x = model.coefficients(a, b);
             let (mut p, mut p1, mut p2) = (0.0, 0.0, 0.0);
             for m in 0..x.len() {
@@ -108,7 +112,10 @@ impl Pair<'_> {
         let pi = self.model.frequencies();
         self.entries
             .iter()
-            .map(|&(a, b, n)| n * (w * pi[b] + if a == b { p_inv } else { 0.0 }).ln())
+            .map(|&(a, b, n)| {
+                let (a, b) = (a as usize, b as usize);
+                n * (w * pi[b] + if a == b { p_inv } else { 0.0 }).ln()
+            })
             .sum()
     }
 }
@@ -122,20 +129,72 @@ impl Pair<'_> {
 pub fn ml_distance(model: &ReversibleModel, counts: &[f64], het: RateHet) -> f64 {
     let k = model.n_states();
     debug_assert_eq!(counts.len(), k * k);
+    debug_assert!(k <= 255, "states are stored as u8");
+
+    // Storage for one pair. It is sized by the number of states, on the stack for DNA (4) and
+    // protein (20), the two sizes in use, so a pair costs no heap allocation; a model with more
+    // states falls back to the heap.
+    if k <= 4 {
+        fit(
+            model,
+            counts,
+            het,
+            &mut [(0, 0, 0.0); 10],
+            &mut [0.0; 4],
+            &mut [0.0; 4],
+            &mut [0.0; 4],
+        )
+    } else if k <= 20 {
+        fit(
+            model,
+            counts,
+            het,
+            &mut [(0, 0, 0.0); 210],
+            &mut [0.0; 20],
+            &mut [0.0; 20],
+            &mut [0.0; 20],
+        )
+    } else {
+        fit(
+            model,
+            counts,
+            het,
+            &mut vec![(0, 0, 0.0); k * (k + 1) / 2],
+            &mut vec![0.0; k],
+            &mut vec![0.0; k],
+            &mut vec![0.0; k],
+        )
+    }
+}
+
+/// [`ml_distance`] on caller-provided storage: `entries` holds up to `K(K+1)/2` pairs and `g`, `g1`
+/// and `g2` at least `K` values each.
+fn fit(
+    model: &ReversibleModel,
+    counts: &[f64],
+    het: RateHet,
+    entries: &mut [Entry],
+    g: &mut [f64],
+    g1: &mut [f64],
+    g2: &mut [f64],
+) -> f64 {
+    let k = model.n_states();
 
     // Unordered pairs a <= b (see the module docs); `total` and `differing` use the raw table.
-    let mut entries = Vec::new();
+    let mut n_entries = 0;
     let (mut total, mut differing) = (0.0, 0.0);
     for a in 0..k {
         let n = counts[a * k + a];
         if n > 0.0 {
-            entries.push((a, a, n));
+            entries[n_entries] = (a as u8, a as u8, n);
+            n_entries += 1;
             total += n;
         }
         for b in (a + 1)..k {
             let n = counts[a * k + b] + counts[b * k + a];
             if n > 0.0 {
-                entries.push((a, b, n));
+                entries[n_entries] = (a as u8, b as u8, n);
+                n_entries += 1;
                 total += n;
                 differing += n;
             }
@@ -148,10 +207,10 @@ pub fn ml_distance(model: &ReversibleModel, counts: &[f64], het: RateHet) -> f64
     let mut pair = Pair {
         model,
         het,
-        entries,
-        g: vec![0.0; k],
-        g1: vec![0.0; k],
-        g2: vec![0.0; k],
+        entries: &entries[..n_entries],
+        g: &mut g[..k],
+        g1: &mut g1[..k],
+        g2: &mut g2[..k],
     };
     let Some(t) = solve(&mut pair, total, differing) else {
         return f64::INFINITY;
@@ -543,6 +602,32 @@ mod tests {
         let (f4, s4) = check_against_grid(4, 60_000, 100, 0xABCD_0001);
         let (f20, s20) = check_against_grid(20, 2_500, 300, 0xABCD_0002);
         println!("K=4: {f4} finite, {s4} saturated; K=20: {f20} finite, {s20} saturated");
+    }
+
+    #[test]
+    fn test_every_storage_size_gives_the_closed_form() {
+        // The scratch storage is sized by the number of states: 4 or fewer, 5 to 20, and a heap
+        // fallback above 20. The equal-rates model has a closed form for any K, so check each size
+        // and both sides of each boundary (including with gamma rates and invariant sites).
+        for k in [2usize, 3, 4, 5, 8, 19, 20, 21, 30] {
+            let model = ReversibleModel::equal_rates(k);
+            for het in [
+                RateHet::NONE,
+                RateHet {
+                    gamma_shape: Some(0.7),
+                    p_invar: 0.2,
+                },
+            ] {
+                let (same, diff) = (700.0, 160.0);
+                let f = dense(k, &[(0, 0, same), (0, 1, diff * 0.4), (1, 0, diff * 0.6)]);
+                let want = equal_rates_closed_form(k, diff / (same + diff), het);
+                let got = ml_distance(&model, &f, het);
+                assert!(
+                    (got - want).abs() < 1e-8 * want,
+                    "k {k}, {het:?}: {got} vs {want}"
+                );
+            }
+        }
     }
 
     #[test]

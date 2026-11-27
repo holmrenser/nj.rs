@@ -528,3 +528,78 @@ fn empirical_gtr_rate_variation_and_nj_with_a_saturated_pair() {
             .any(|e| e.contains("saturated"))
     );
 }
+
+#[test]
+fn hky_equals_gtr_with_the_hky_rates_and_kappa_one_is_f81() {
+    let msa = family(6);
+    let hky = distance_matrix(kappa_conf(msa.clone(), SubstitutionModel::Hky, Some(4.0))).unwrap();
+    let gtr = distance_matrix(dist_conf(
+        msa.clone(),
+        SubstitutionModel::Gtr,
+        Some(&HKY),
+        None,
+    ))
+    .unwrap();
+    assert_eq!(hky.matrix, gtr.matrix);
+    let one = distance_matrix(kappa_conf(msa.clone(), SubstitutionModel::Hky, Some(1.0))).unwrap();
+    let f81 = distance_matrix(dist_conf(
+        msa.clone(),
+        SubstitutionModel::Gtr,
+        Some(&[1.0; 6]),
+        None,
+    ))
+    .unwrap();
+    assert_eq!(one.matrix, f81.matrix);
+    // Not the same model as F84 with the same number.
+    let f84 = distance_matrix(kappa_conf(msa, SubstitutionModel::F84, Some(4.0))).unwrap();
+    assert_ne!(hky.matrix, f84.matrix);
+}
+
+#[test]
+fn hky_takes_optional_frequencies_runs_nj_and_validates_its_options() {
+    let mut conf = kappa_conf(family(5), SubstitutionModel::Hky, Some(2.0));
+    conf.base_frequencies = Some(vec![0.3, 0.2, 0.2, 0.3]);
+    assert!(distance_matrix(conf).unwrap().matrix[1][0] > 0.0);
+
+    let mut nj = nj_conf(family(7), None, 10);
+    nj.substitution_model = SubstitutionModel::Hky;
+    nj.kappa = Some(3.0);
+    nj.gamma_shape = Some(0.7);
+    nj.p_invar = Some(0.1);
+    let result = run_nj(nj, None).unwrap();
+    for i in 0..7 {
+        assert!(
+            result.newick.contains(&format!("s{i}:")),
+            "{}",
+            result.newick
+        );
+    }
+
+    let msa = family(4);
+    let missing =
+        distance_matrix(kappa_conf(msa.clone(), SubstitutionModel::Hky, None)).unwrap_err();
+    assert!(
+        matches!(&missing, NJError::InvalidMatrix { reason } if reason.contains("kappa")),
+        "{missing:?}"
+    );
+    for bad in [-1.0, f64::NAN, f64::INFINITY] {
+        let err = distance_matrix(kappa_conf(msa.clone(), SubstitutionModel::Hky, Some(bad)))
+            .unwrap_err();
+        assert!(
+            matches!(&err, NJError::InvalidMatrix { reason } if reason.contains("kappa")),
+            "{bad}: {err:?}"
+        );
+    }
+    let mut stray = kappa_conf(msa.clone(), SubstitutionModel::Hky, Some(1.0));
+    stray.gtr_rates = Some(HKY.to_vec());
+    assert!(matches!(
+        distance_matrix(stray).unwrap_err(),
+        NJError::InvalidMatrix { .. }
+    ));
+    let protein = vec![
+        seq("a", "ARNDCQEGHILKMFPSTWYV"),
+        seq("b", "ARNDCQEGHILKMFPSTWYA"),
+    ];
+    let err = distance_matrix(kappa_conf(protein, SubstitutionModel::Hky, Some(2.0))).unwrap_err();
+    assert!(matches!(err, NJError::IncompatibleModel { .. }), "{err:?}");
+}

@@ -86,17 +86,18 @@ mod cli {
 
         /// GTR exchangeabilities for `--substitution-model gtr` (and only then): six comma-separated
         /// relative values in the order AC,AG,AT,CG,CT,GT. HKY85 is `1,K,1,1,K,1`; all equal is F81.
-        #[arg(long, value_name = "AC,AG,AT,CG,CT,GT", value_delimiter = ',', num_args = 1..)]
+        #[arg(long, value_name = "AC,AG,AT,CG,CT,GT", value_delimiter = ',')]
         pub gtr_rates: Option<Vec<f64>>,
 
-        /// Base frequencies A,C,G,T (comma-separated) for the gtr and f84 models. Default: pooled
+        /// Base frequencies A,C,G,T (comma-separated) for the gtr, hky and f84 models. Default: pooled
         /// over the alignment.
-        #[arg(long, value_name = "A,C,G,T", value_delimiter = ',', num_args = 1..)]
+        #[arg(long, value_name = "A,C,G,T", value_delimiter = ',')]
         pub base_frequencies: Option<Vec<f64>>,
 
-        /// F84 parameter for `--substitution-model f84` (and only then), `>= 0`: the extra transition
-        /// rate within purines (kappa/piR) and pyrimidines (kappa/piY); 0 is F81. Base frequencies
-        /// come from `--base-frequencies` or are pooled from the alignment.
+        /// `kappa >= 0` for `--substitution-model hky` (and f84; only for those): for hky the ratio of
+        /// the transition rate to the transversion rate (1 is F81), for f84 the extra transition rate
+        /// within purines (kappa/piR) and pyrimidines (kappa/piY) (0 is F81). Base frequencies come
+        /// from `--base-frequencies` or are pooled from the alignment.
         #[arg(long, value_name = "KAPPA")]
         pub kappa: Option<f64>,
 
@@ -456,6 +457,30 @@ mod main_tests {
     }
 
     #[test]
+    fn test_list_options_do_not_swallow_the_input_file() {
+        use clap::Parser;
+        // The comma-separated lists take exactly one argument, so a positional file may follow them.
+        let args = Args::try_parse_from([
+            "nj",
+            "-m",
+            "gtr",
+            "--gtr-rates",
+            "1,4,1,1,4,1",
+            "--base-frequencies",
+            "0.3,0.2,0.2,0.3",
+            "sequences.fasta",
+        ])
+        .unwrap();
+        assert_eq!(args.gtr_rates, Some(vec![1.0, 4.0, 1.0, 1.0, 4.0, 1.0]));
+        assert_eq!(args.base_frequencies, Some(vec![0.3, 0.2, 0.2, 0.3]));
+        assert_eq!(args.input, Some(PathBuf::from("sequences.fasta")));
+        // And the same with the file first.
+        let args = Args::try_parse_from(["nj", "sequences.fasta", "-m", "gtr", "--gtr-rates", "1,2,3,4,5,6"]).unwrap();
+        assert_eq!(args.gtr_rates, Some(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]));
+        assert_eq!(args.input, Some(PathBuf::from("sequences.fasta")));
+    }
+
+    #[test]
     fn test_run_gtr_option_errors() {
         let missing = Args {
             substitution_model: SubstitutionModel::Gtr,
@@ -482,6 +507,28 @@ mod main_tests {
     }
 
     #[test]
+    fn test_run_hky() {
+        let hky = Args {
+            substitution_model: SubstitutionModel::Hky,
+            kappa: Some(3.0),
+            base_frequencies: Some(vec![0.3, 0.2, 0.2, 0.3]),
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(hky).is_ok());
+        let missing = Args {
+            substitution_model: SubstitutionModel::Hky,
+            ..base_args(fixture("simple_dna.fasta"))
+        };
+        assert!(run(missing).unwrap_err().contains("kappa"));
+        let protein = Args {
+            substitution_model: SubstitutionModel::Hky,
+            kappa: Some(2.0),
+            ..base_args(fixture("simple_protein.fasta"))
+        };
+        assert!(run(protein).is_err());
+    }
+
+    #[test]
     fn test_run_f84_and_empirical_gtr() {
         let f84 = Args {
             substitution_model: SubstitutionModel::F84,
@@ -498,7 +545,7 @@ mod main_tests {
             kappa: Some(2.0),
             ..base_args(fixture("simple_dna.fasta"))
         };
-        assert!(run(stray).unwrap_err().contains("only used with the 'F84' model"));
+        assert!(run(stray).unwrap_err().contains("only used with the 'F84' and 'Hky' models"));
         // The empirical GTR distance takes no options; the tiny fixture may have saturated pairs, which
         // are capped, so the run succeeds either way.
         let empirical = Args {

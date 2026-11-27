@@ -161,7 +161,13 @@ real x86 and WASM timings.
 
 ## Follow-ups (not done)
 
-- DNA ML (`Gtr`) costs 0.26 µs per pair beyond counting (n=1000, L=1000: 153 ms against 21 ms for `Kimura2P`). About 100 ns of that is the four small heap allocations per pair in `ml_distance`; stack buffers or a reused scratch would remove them.
+- DNA ML (`Gtr`) costs about 0.22 µs per pair beyond counting (n=1000, L=1000: 133 ms against 20 ms for `Kimura2P`).
+  The four heap allocations per pair were moved to the stack (storage sized by the number of states, heap only above 20):
+  `Gtr` 153 → 133 ms, empirical GTR 277 → 272 ms, protein ML unchanged; results bit-identical. They were about 40 ns of a
+  260 ns pair, not the 100 ns first estimated. Every DNA pair takes exactly 4 likelihood evaluations (counted), about
+  55 ns each, which is the arithmetic of ~14 `exp`/`ln` calls and ~30 short dot products. Ideas, none tried: a better
+  start to save one evaluation; evaluating the four-term dot products as one 4-lane vector; for empirical GTR a closed
+  form or fewer sweeps for the 4×4 eigenproblem (it costs 0.55 µs per pair, mostly Jacobi sweeps).
 - ML solver SIMD (step 4): the `X_ab[m]` precompute already exists; padding `K` to the vector width and two accumulators remain (`performance.md` §2.4). The scalar solver costs 4.5–9.5 µs per protein pair, so n = 1000 takes several seconds.
 - A SIMD `pack` kernel for bit-plane construction (matters for bootstrap on long, narrow alignments).
 - Harley–Seal accumulation on AVX2 (needs x86 hardware to evaluate); AVX-512 correctness.

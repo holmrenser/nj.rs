@@ -261,7 +261,16 @@ impl ReversibleModel {
 /// orthonormal eigenvectors. `a` is destroyed. Converges quadratically; a 20×20 matrix
 /// needs about eight sweeps [Press et al. 2007, §11.1].
 pub(crate) fn jacobi_eigen(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut eigenvalues = vec![0.0; n];
     let mut v = vec![0.0; n * n];
+    jacobi_eigen_into(a, n, &mut eigenvalues, &mut v);
+    (eigenvalues, v)
+}
+
+/// [`jacobi_eigen`] writing into caller-provided buffers (`eigenvalues`: `n` values, `v`: `n×n`), so
+/// that a caller with a small fixed size, such as the 4×4 problem of every DNA pair, needs no heap.
+pub(crate) fn jacobi_eigen_into(a: &mut [f64], n: usize, eigenvalues: &mut [f64], v: &mut [f64]) {
+    v[..n * n].fill(0.0);
     for i in 0..n {
         v[i * n + i] = 1.0;
     }
@@ -310,7 +319,9 @@ pub(crate) fn jacobi_eigen(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
             }
         }
     }
-    ((0..n).map(|i| a[i * n + i]).collect(), v)
+    for i in 0..n {
+        eigenvalues[i] = a[i * n + i];
+    }
 }
 
 #[cfg(test)]

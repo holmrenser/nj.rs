@@ -482,6 +482,7 @@ impl ModelCalculation<DNA> for Tamura {
 /// | `Poisson` | Protein only | `-ln(1 - p)` |
 /// | `KimuraProtein` | Protein only | `-ln(1 - p - 0.2 p²)` |
 /// | `Gtr` | DNA only | ML distance under explicit GTR rates (`gtr_rates`, `base_frequencies`) |
+/// | `Hky` | DNA only | ML distance under HKY85 with explicit `kappa` (`base_frequencies` optional) |
 /// | `F84` | DNA only | ML distance under F84 with explicit `kappa` (`base_frequencies` optional) |
 /// | `EmpiricalGtr` | DNA only | closed-form GTR distance estimated from each pair |
 /// | `Lg`, `Wag`, `Jtt`, `JttDcmut`, `Dayhoff`, `DayhoffDcmut` | Protein only | ML distance under the named empirical matrix |
@@ -510,6 +511,10 @@ pub enum SubstitutionModel {
     /// exchangeabilities (`gtr_rates`) and base frequencies (`base_frequencies`, pooled from the
     /// alignment when omitted). HKY85, F81 and Tamura–Nei are special cases.
     Gtr,
+    /// HKY85 (Hasegawa, Kishino & Yano 1985) for DNA: maximum-likelihood distance with an explicit
+    /// `kappa`, the ratio of the transition rate to the transversion rate (`kappa = 1` is F81), and
+    /// base frequencies pooled from the alignment unless `base_frequencies` is given.
+    Hky,
     /// F84 (Felsenstein 1984) for DNA: maximum-likelihood distance with an explicit `kappa` (the
     /// extra within-class transition rate, `kappa = 0` is F81) and base frequencies pooled from the
     /// alignment unless `base_frequencies` is given.

@@ -87,6 +87,23 @@ fn hky_with_kappa_3_matches_baseml() {
 }
 
 #[test]
+fn the_hky_preset_matches_baseml() {
+    // `Hky` with kappa is `Gtr` with [1, kappa, 1, 1, kappa, 1]; check the preset itself against baseml.
+    let pairs: Vec<(usize, usize)> = (0..5).flat_map(|i| (0..i).map(move |j| (i, j))).collect();
+    for (kappa, golden) in [(3.0, &KAPPA_3_0), (0.7, &KAPPA_0_7)] {
+        for (&(i, j), &want) in pairs.iter().zip(golden.iter()) {
+            let mut conf = pair_config(i, j, SubstitutionModel::Hky);
+            conf.kappa = Some(kappa);
+            let got = distance_matrix(conf).unwrap().matrix[0][1];
+            assert!(
+                (got - want).abs() < 1e-5,
+                "Hky kappa {kappa}, pair ({i},{j}): nj {got} vs baseml {want}"
+            );
+        }
+    }
+}
+
+#[test]
 fn hky_with_kappa_below_one_matches_baseml() {
     check(0.7, &KAPPA_0_7);
 }
