@@ -13,6 +13,8 @@ SubstitutionModel = Literal[
     "TajimaNei",
     "Tamura",
     "Gtr",
+    "F84",
+    "EmpiricalGtr",
     "Poisson",
     "KimuraProtein",
     "Lg",
@@ -107,6 +109,7 @@ def nj(
     matrix: str | None = None,
     gtr_rates: list[float] | None = None,
     base_frequencies: list[float] | None = None,
+    kappa: float | None = None,
     max_distance: float | None = None,
     on_event: Callable[[NJEvent], None] | None = None,
 ) -> NJResult:
@@ -116,7 +119,8 @@ def nj(
         msa: Aligned sequences as a list of ``{"identifier": ..., "sequence": ...}``
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
-            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``). Protein: ``"PDiff"``,
+            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``), ``"F84"`` (needs ``kappa``),
+            ``"EmpiricalGtr"``. Protein: ``"PDiff"``,
             ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
             ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
             ``"Custom"`` (needs ``matrix``).
@@ -139,8 +143,12 @@ def nj(
             values in the order ``AC, AG, AT, CG, CT, GT``. There is no default. HKY85 is
             ``[1, k, 1, 1, k, 1]``; all equal is F81. The distance of each pair is the
             maximum-likelihood estimate under the model (DNA only).
-        base_frequencies: Base frequencies ``A, C, G, T`` for ``"Gtr"``. ``None`` (default)
-            pools them over all unambiguous bases of the alignment.
+        base_frequencies: Base frequencies ``A, C, G, T`` for ``"Gtr"`` and ``"F84"``.
+            ``None`` (default) pools them over all unambiguous bases of the alignment.
+        kappa: The F84 parameter, ``>= 0``, required for ``"F84"`` (and only then): transitions
+            get an extra rate ``kappa / piR`` (A<->G) and ``kappa / piY`` (C<->T) on top of the
+            transversion rate, so ``0`` is F81. ``base_frequencies`` is optional for ``"F84"``
+            too.
         max_distance: Distance (substitutions per site) given to sequence pairs
             whose distance is not finite because they are saturated for the model.
             Neighbor-joining cannot use infinite distances, so these pairs are set to
@@ -201,6 +209,7 @@ def nj(
             "matrix": matrix,
             "gtr_rates": gtr_rates,
             "base_frequencies": base_frequencies,
+            "kappa": kappa,
             "max_distance": max_distance,
         },
         on_event,
@@ -216,6 +225,7 @@ def distance_matrix(
     matrix: str | None = None,
     gtr_rates: list[float] | None = None,
     base_frequencies: list[float] | None = None,
+    kappa: float | None = None,
 ) -> DistanceResult:
     """Compute pairwise distances and return a full symmetric distance matrix.
 
@@ -223,7 +233,8 @@ def distance_matrix(
         msa: Aligned sequences as a list of ``{"identifier": ..., "sequence": ...}``
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
-            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``). Protein: ``"PDiff"``,
+            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``), ``"F84"`` (needs ``kappa``),
+            ``"EmpiricalGtr"``. Protein: ``"PDiff"``,
             ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
             ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
             ``"Custom"`` (needs ``matrix``).
@@ -232,7 +243,8 @@ def distance_matrix(
         matrix: Rate matrix for ``"Custom"`` (and only then), as PAML-layout text;
             see :func:`nj`.
         gtr_rates: Exchangeabilities of ``"Gtr"``; see :func:`nj`.
-        base_frequencies: Base frequencies of ``"Gtr"``; see :func:`nj`.
+        base_frequencies: Base frequencies of ``"Gtr"`` and ``"F84"``; see :func:`nj`.
+        kappa: The F84 parameter of ``"F84"``; see :func:`nj`.
 
     Returns:
         A dict with keys ``"names"`` (list of taxon names) and ``"matrix"``
@@ -265,6 +277,7 @@ def distance_matrix(
             "matrix": matrix,
             "gtr_rates": gtr_rates,
             "base_frequencies": base_frequencies,
+            "kappa": kappa,
         }
     )
 
@@ -278,6 +291,7 @@ def average_distance(
     matrix: str | None = None,
     gtr_rates: list[float] | None = None,
     base_frequencies: list[float] | None = None,
+    kappa: float | None = None,
 ) -> float:
     """Compute the mean of all n*(n-1)/2 unique pairwise distances.
 
@@ -285,7 +299,8 @@ def average_distance(
         msa: Aligned sequences as a list of ``{"identifier": ..., "sequence": ...}``
             dicts. All sequences must have the same length.
         substitution_model: Distance model. DNA: ``"PDiff"``, ``"JukesCantor"``,
-            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``). Protein: ``"PDiff"``,
+            ``"Kimura2P"``, ``"TajimaNei"``, ``"Tamura"``, ``"Gtr"`` (needs ``gtr_rates``), ``"F84"`` (needs ``kappa``),
+            ``"EmpiricalGtr"``. Protein: ``"PDiff"``,
             ``"Poisson"``, ``"KimuraProtein"``, the maximum-likelihood matrices ``"Lg"``,
             ``"Wag"``, ``"Jtt"``, ``"JttDcmut"``, ``"Dayhoff"``, ``"DayhoffDcmut"``, and
             ``"Custom"`` (needs ``matrix``).
@@ -294,7 +309,8 @@ def average_distance(
         matrix: Rate matrix for ``"Custom"`` (and only then), as PAML-layout text;
             see :func:`nj`.
         gtr_rates: Exchangeabilities of ``"Gtr"``; see :func:`nj`.
-        base_frequencies: Base frequencies of ``"Gtr"``; see :func:`nj`.
+        base_frequencies: Base frequencies of ``"Gtr"`` and ``"F84"``; see :func:`nj`.
+        kappa: The F84 parameter of ``"F84"``; see :func:`nj`.
 
     Returns:
         Mean pairwise distance as a float. Returns ``0.0`` for fewer than 2 taxa.
@@ -312,6 +328,7 @@ def average_distance(
             "matrix": matrix,
             "gtr_rates": gtr_rates,
             "base_frequencies": base_frequencies,
+            "kappa": kappa,
         }
     )
 

@@ -5,7 +5,7 @@
 //! ```
 //!
 //! Prints the distance stage (`distance_matrix`), the whole `nj` run without bootstrap, the NJ stage
-//! (their difference) and, if requested, a bootstrap run. Models: pdiff, jc, k2p, tn, tamura, gtr (DNA);
+//! (their difference) and, if requested, a bootstrap run. Models: pdiff, jc, k2p, tn, tamura, gtr, f84, empirical-gtr (DNA);
 //! pdiff, poisson, kimura-protein (protein). Best of `reps` (default 3).
 
 use nj::models::SubstitutionModel as M;
@@ -70,12 +70,15 @@ fn main() {
         "tn" => M::TajimaNei,
         "tamura" => M::Tamura,
         "gtr" => M::Gtr,
+        "f84" => M::F84,
+        "empirical-gtr" => M::EmpiricalGtr,
         "poisson" => M::Poisson,
         "kimura-protein" => M::KimuraProtein,
         other => panic!("unknown model {other}"),
     };
     // GTR needs explicit exchangeabilities: an HKY85-like set.
     let gtr_rates = matches!(model, M::Gtr).then(|| vec![1.0, 4.0, 1.0, 1.0, 4.0, 1.0]);
+    let kappa = matches!(model, M::F84).then_some(2.0);
     let msa = match a[0].as_str() {
         "dna" => synthetic(b"ACGT", n, l, 0.12),
         "protein" => synthetic(b"ARNDCQEGHILKMFPSTWYV", n, l, 0.15),
@@ -92,6 +95,7 @@ fn main() {
             matrix: None,
             gtr_rates: gtr_rates.clone(),
             base_frequencies: None,
+            kappa,
         })
         .unwrap();
     });
@@ -109,6 +113,7 @@ fn main() {
         matrix: None,
         gtr_rates: gtr_rates.clone(),
         base_frequencies: None,
+        kappa,
     };
     let t_all = best(reps, || {
         let _ = run_nj(conf(0), None).unwrap();

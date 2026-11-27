@@ -52,6 +52,7 @@ fn dist_config(msa: Vec<SequenceObject>) -> DistConfig {
         matrix: None,
         gtr_rates: None,
         base_frequencies: None,
+        kappa: None,
     }
 }
 
@@ -70,6 +71,7 @@ fn nj_config(msa: Vec<SequenceObject>, n_bootstrap_samples: usize) -> NJConfig {
         matrix: None,
         gtr_rates: None,
         base_frequencies: None,
+        kappa: None,
     }
 }
 

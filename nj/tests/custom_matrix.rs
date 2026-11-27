@@ -54,6 +54,7 @@ fn dist_conf(
         matrix: matrix.map(str::to_string),
         gtr_rates: None,
         base_frequencies: None,
+        kappa: None,
     }
 }
 
@@ -71,6 +72,7 @@ fn nj_conf(msa: Vec<SequenceObject>, matrix: Option<&str>, bootstrap: usize) -> 
         matrix: matrix.map(str::to_string),
         gtr_rates: None,
         base_frequencies: None,
+        kappa: None,
         max_distance: None,
     }
 }

@@ -64,6 +64,22 @@ With `Q = Π^{-½} A Π^{½}`, `A = R Λ Rᵀ`, one eigendecomposition makes eve
 `P(t) = Π^{-½} R e^{Λt} Rᵀ Π^{½}` [9]. This is the same estimator as the closed forms above,
 computed numerically. It is also what existing software does (section 5).
 
+**A closed form when everything is estimated per pair (empirical GTR).** If the rates and frequencies are
+not fixed but all estimated from the pair, there is again a closed form [17][18][19]. Let `J` be the
+table `F` as joint frequencies, symmetrised as `(J + Jᵀ)/2` (a reversible model has `J = Π P(t)`, which is
+symmetric), and `π` its marginal. A GTR model predicts `Π⁻¹J = exp(Qt)`, so `Qt = ln(Π⁻¹J)` and the
+expected number of substitutions per site is `d = −tr(Π ln(Π⁻¹J))`. With `S = Π^{-½} J Π^{-½} = V M Vᵀ`
+(symmetric, so one small eigenproblem) this is `d = −Σ_k w_k ln M_k`, `w_k = Σ_i π_i V_ik²`. It is the ML
+estimate for a model with a free symmetric `J` (ML estimates are invariant under reparametrisation), so it
+is the ML distance of a GTR model with *all* rates free, provided `ln(Π⁻¹J)` is a rate matrix, that is,
+has non-negative off-diagonal entries. If it has negative ones the constrained ML estimate differs from
+this formula (we measured 2–9% on simulated pairs at distances of 1 to 2); if an eigenvalue of `S` is not
+positive, `ln` does not exist and the pair has no estimate. Gamma rates replace `−ln M` by
+`α(M^{−1/α} − 1)`, and invariant sites replace `M` by `(M − p_inv)/(1 − p_inv)`. The price of estimating
+nine parameters from one pair is variance: the formula fails for a rapidly growing share of pairs beyond
+about one substitution per site, and sooner for short sequences (see `docs/design/substitution-models.md`
+§5.1 for measured rates).
+
 **When the estimate is infinite.** If at least one column differs, `ℓ(0⁺) = −∞` and `ℓ′(0⁺) = +∞`, so
 the maximiser is positive (with no differing column, `d̂ = 0`). As `t → ∞`, `P_ab(t) → π_b` and
 

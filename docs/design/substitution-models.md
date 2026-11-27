@@ -1,7 +1,7 @@
 # Design: generalised substitution models and ML distances
 
 Status: agreed 2026-11-25; the protein ML engine, the `Custom` model and six built-in matrices (branch `feat/protein-ml`) and
-the DNA `Gtr` model (branch `feat/dna-gtr`) are implemented (§6). Empirical GTR (§5.1) and estimating exchangeabilities are not. Why ML distances belong in a distance method, how other tools do it, and the statistical
+the DNA `Gtr` model (branch `feat/dna-gtr`), `F84` and `EmpiricalGtr` (branch `feat/dna-gtr-extras`) are implemented (§6). Estimating exchangeabilities is not. Why ML distances belong in a distance method, how other tools do it, and the statistical
 guarantees: [`theory/distance-estimation.md`](../theory/distance-estimation.md). Performance work (NJ restructure,
 packed pair counts, SIMD) and the `Prepared` alignment it requires: [`performance.md`](performance.md).
 
@@ -95,8 +95,33 @@ model is one impl, one registry entry and a changelog line.
   default would be arbitrary. The expected workflow is to estimate them with an ML program on a tree.
 - Per-pair composition stays available through Tajima–Nei and Tamura; compositional heterogeneity calls for
   LogDet [Lockhart 1994].
-- **Empirical GTR** (12 free parameters per pair) is opt-in and DNA-only. It fails whenever an eigenvalue of
-  `S` is non-positive: in simulation 38% of pairs (K=4, L=100, `t`=1.2) and 80% (K=20, L=300, `t`=1).
+- **Empirical GTR** (nine free parameters per pair: three frequencies, five relative rates and the distance) is
+  opt-in and DNA-only (`EmpiricalGtr`). It fails whenever an eigenvalue of `S` is non-positive (the pair is then
+  reported saturated and capped by `max_distance`). Share of simulated pairs that fail, an HKY-like model
+  (κ = 4, π = 0.3/0.2/0.2/0.3), 400 pairs per cell; the ML distance with *explicit* rates saturated in ≤ 4% of
+  pairs, in the 100-site, `t` = 2.5 cell only:
+
+  | sites | t = 0.3 | 0.6 | 1.0 | 1.5 | 2.5 |
+  |---|---|---|---|---|---|
+  | 100 | 0% | 0.5% | 26% | 65% | 89% |
+  | 300 | 0% | 0% | 2% | 34% | 83% |
+  | 1000 | 0% | 0% | 0% | 5.5% | 69% |
+  | 5000 | 0% | 0% | 0% | 0% | 46% |
+
+  Where it exists it is unbiased (median distance ≈ `t`). Use it for alignments of a few hundred sites or more
+  with distances below about one substitution per site; otherwise `Gtr` with rates fitted on a tree. Reproduce
+  with `cargo test --release -p nj --lib empirical_gtr_failure -- --ignored --nocapture`. The same formula
+  would also run for 20 states, but fails more often there (80% at L=300, `t`=1 in the early simulations), so it is
+  not exposed for protein.
+- **Embeddability.** The closed form equals the ML estimate of a GTR model with all rates free only when
+  `ln(Π⁻¹J)` has non-negative off-diagonal entries. Otherwise PAML's constrained ML (REV) and the closed form differ:
+  of 28 simulated pairs (600 sites, distances up to 2) 23 were valid and agreed with `baseml` to 4·10⁻⁶; of the other
+  five, three had a negative implied rate and differed by 2–9% (and two had no closed form while `baseml` gave a
+  finite distance). The closed form is the one in the literature [Lanave 1984; Rodríguez 1990; Tavaré 1986] and is
+  kept; the constrained estimate would need a numerical fit of all rates.
+- **F84** (`F84`, explicit `kappa`) is `Gtr` with exchangeabilities `[1, 1 + κ/π_R, 1, 1, 1 + κ/π_Y, 1]`; `κ = 0` is F81.
+  It is *not* HKY85's rate ratio (the two transition rates differ unless `π_R = π_Y`). Its κ is the one PAML's `baseml`
+  uses for `model = 3`, which was verified numerically rather than taken from a reference.
 - **Deferred:** estimating exchangeabilities from the alignment. Candidates are Dayhoff/JTT-style counting from
   close pairs (`F_ab ≈ π_a π_b s_ab t` at small `t`; biased at high divergence [Müller & Vingron 2000]) and a
   pairwise composite likelihood [Varin 2011]; no precedent for the latter was found.
@@ -171,10 +196,12 @@ against chemically conservative and dissimilar pairs). The JTT file's stated sou
 4. `ReversibleModel` and solver (§5.4), gamma and `p_inv`. **Done** (`reversible.rs`, `ml.rs`), exposed for protein through the
    `Custom` model and for DNA through `Gtr` (`gtr.rs`: six explicit exchangeabilities, base frequencies pooled from the
    alignment unless given). HKY85, Tamura–Nei and F81 are `Gtr` with particular rates; JC and K2P keep their closed forms,
-   which estimate κ per pair. **Open:** F84 as a named preset, and a DNA `Custom` with a user-supplied full matrix.
+   which estimate κ per pair. `F84` is a named preset of `Gtr` (explicit κ) and `EmpiricalGtr` the closed-form GTR
+   distance (§5.1). A DNA `Custom` would be `Gtr` again (a reversible 4×4 matrix with frequencies); only non-reversible
+   matrices would add something, and the eigendecomposition does not support them.
 5. Protein matrices. **Done:** `Custom` takes any matrix as PAML text, and LG, WAG, JTT, JTT-DCMut, Dayhoff and DCMut-Dayhoff
    are built in (§5.6): one data file and one `protein_matrix!` line each.
-6. Later: empirical GTR, estimating exchangeabilities, set-likelihood for partial codes, NJ*.
+6. Later: estimating exchangeabilities, set-likelihood for partial codes, NJ*.
 
 ## 7. Validation
 
@@ -201,6 +228,13 @@ against chemically conservative and dissimilar pairs). The JTT file's stated sou
   `runmode = -2` is not implemented for DNA and its TN93 could not be fixed per pair, so AG and CT are separated by a test
   with fully distinct exchangeabilities against an unrelated matrix exponential instead. A ten-pair excerpt is kept as
   `nj/tests/paml_reference.rs`.
+- **F84 and empirical GTR against `baseml` (done).** F84 with a fixed κ (`model = 3`): all 28 pairs at κ = 0.5, 2 and 5
+  agree to ≤ 5·10⁻⁶, so κ means the same thing in both. Empirical GTR against REV (`model = 7`, all rates free, observed
+  frequencies, which on a two-sequence tree is the saturated symmetric model): the 23 pairs whose implied matrix is a
+  valid rate matrix agree to ≤ 4·10⁻⁶ (distances up to 1.98); the other five do not, as explained under *Embeddability*
+  (§5.1). Both are in `nj/tests/paml_reference.rs` (REV only for the valid pairs).
+- Exact tables: the empirical GTR distance returns `t` exactly from the expected pair table of GTR models built with an
+  independent matrix exponential, and agrees with the ML solver under gamma and invariant sites.
 
 ## References
 
