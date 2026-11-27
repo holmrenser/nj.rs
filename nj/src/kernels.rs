@@ -9,7 +9,7 @@
 //! The `*_at` entry points take the [`Level`] explicitly so tests can run every backend
 //! (and the scalar fallback) on the same input.
 
-use fearless_simd::{Level, Simd, dispatch, prelude::*};
+use fearless_simd::{Level, Simd, dispatch, f64x4, prelude::*};
 use fearless_simd_macros::simd;
 
 /// Scalar reference: `(n_diff, n_comparable)` over two equal-length byte sequences, where
@@ -265,6 +265,65 @@ fn plane_counts_impl<S: Simd>(simd: S, a: &[u64], b: &[u64], words: usize) -> [[
     narrow(f)
 }
 
+/// The instruction-set level of this machine, detected once. `Level::new()` re-runs feature
+/// detection on x86, which is too slow to repeat for every pair of sequences.
+pub(crate) fn level() -> Level {
+    static LEVEL: std::sync::OnceLock<Level> = std::sync::OnceLock::new();
+    *LEVEL.get_or_init(Level::new)
+}
+
+/// Scalar reference for [`combine4`]: for `ep` entries stored structure-of-arrays (`xt[m * ep + j]`, `m` in
+/// `0..4`) and three length-4 factor vectors `g`, `out[q * ep + j] = Σ_m xt[m·ep + j] · g[q][m]`.
+///
+/// This is the likelihood solver's three four-term dot products per table entry, one per quantity
+/// (`P`, `P′`, `P″`). Products and sums are separate IEEE operations accumulated in the order
+/// `m = 0, 1, 2, 3` (no fused multiply-add), so a vector kernel can reproduce every value exactly.
+#[cfg(test)]
+pub(crate) fn combine4_scalar(xt: &[f64], ep: usize, g: [&[f64]; 3], out: &mut [f64]) {
+    for q in 0..3 {
+        for j in 0..ep {
+            let mut v = xt[j] * g[q][0];
+            for m in 1..4 {
+                v += xt[m * ep + j] * g[q][m];
+            }
+            out[q * ep + j] = v;
+        }
+    }
+}
+
+/// SIMD version of [`combine4_scalar`] with the same contract and bit-identical results. `ep` must be a
+/// multiple of 4: four entries sit in the lanes, so nothing is reduced across lanes.
+#[inline]
+pub(crate) fn combine4(level: Level, xt: &[f64], ep: usize, g: [&[f64]; 3], out: &mut [f64]) {
+    dispatch!(level, simd => combine4_impl(simd, xt, ep, g, out))
+}
+
+#[simd]
+fn combine4_impl<S: Simd>(simd: S, xt: &[f64], ep: usize, g: [&[f64]; 3], out: &mut [f64]) {
+    debug_assert_eq!(ep % 4, 0);
+    debug_assert!(xt.len() >= 4 * ep && out.len() >= 3 * ep);
+    // Broadcast the twelve factors once.
+    let mut f = [[f64x4::splat(simd, 0.0); 4]; 3];
+    for q in 0..3 {
+        for m in 0..4 {
+            f[q][m] = f64x4::splat(simd, g[q][m]);
+        }
+    }
+    for j in (0..ep).step_by(4) {
+        let x0 = f64x4::from_slice(simd, &xt[j..j + 4]);
+        let x1 = f64x4::from_slice(simd, &xt[ep + j..ep + j + 4]);
+        let x2 = f64x4::from_slice(simd, &xt[2 * ep + j..2 * ep + j + 4]);
+        let x3 = f64x4::from_slice(simd, &xt[3 * ep + j..3 * ep + j + 4]);
+        for q in 0..3 {
+            let v = x0 * f[q][0];
+            let v = v + x1 * f[q][1];
+            let v = v + x2 * f[q][2];
+            let v = v + x3 * f[q][3];
+            v.store_slice(&mut out[q * ep + j..q * ep + j + 4]);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod testing {
     //! Every instruction-set level that can run on this machine, plus the scalar fallback.
@@ -368,6 +427,35 @@ mod tests {
             let want = plane_counts_scalar(&a, &b, words);
             for (name, level) in levels() {
                 assert_eq!(plane_counts(level, &a, &b, words), want, "level {name}, words {words}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_combine4_matches_the_scalar_reference_at_every_level() {
+        let mut rng = Rng(0x5EED_0050);
+        for ep in [4usize, 8, 12] {
+            for _ in 0..20 {
+                let xt: Vec<f64> = (0..4 * ep)
+                    .map(|_| (rng.next() >> 11) as f64 / (1u64 << 52) as f64 - 1.0)
+                    .collect();
+                let g: Vec<Vec<f64>> = (0..3)
+                    .map(|_| {
+                        (0..4)
+                            .map(|_| (rng.next() >> 11) as f64 / (1u64 << 52) as f64 - 1.0)
+                            .collect()
+                    })
+                    .collect();
+                let gr = [&g[0][..], &g[1][..], &g[2][..]];
+                let mut want = vec![0.0; 3 * ep];
+                combine4_scalar(&xt, ep, gr, &mut want);
+                for (name, level) in levels() {
+                    let mut got = vec![f64::NAN; 3 * ep];
+                    combine4(level, &xt, ep, gr, &mut got);
+                    for (i, (a, b)) in got.iter().zip(&want).enumerate() {
+                        assert_eq!(a.to_bits(), b.to_bits(), "level {name}, ep {ep}, index {i}");
+                    }
+                }
             }
         }
     }

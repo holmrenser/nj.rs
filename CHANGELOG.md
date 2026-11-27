@@ -25,7 +25,7 @@ single version, bumped together via `make bump-{patch,minor,major}`.
   Python `gtr_rates=`), with no default; the base frequencies (`base_frequencies`) default to those
   pooled over the alignment. Gamma rates, invariant sites, `max_distance` and bootstrap work as for
   the other models. HKY85 (`[1, κ, 1, 1, κ, 1]`), Tamura–Nei and F81 are special cases. HKY85
-  distances agree with PAML `baseml` to its printed precision. About 0.15 s for 1000 sequences of
+  distances agree with PAML `baseml` to its printed precision. About 0.12 s for 1000 sequences of
   1000 sites.
 - **Empirical protein models with maximum-likelihood distances: `Lg`, `Wag`, `Jtt`, `JttDcmut`,
   `Dayhoff`, `DayhoffDcmut`** (CLI `lg`, `wag`, `jtt`, `jtt-dcmut`, `dayhoff`, `dayhoff-dcmut`).
