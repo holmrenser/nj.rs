@@ -1,57 +1,84 @@
 //! Core Neighbor-Joining algorithm implementation.
 //!
 //! The algorithm runs in three phases:
-//! 1. **Initialisation** ([`NJState::new`]) — build leaf nodes, precompute
-//!    row sums of the distance matrix, and mark all nodes active.
-//! 2. **Iteration** ([`NJState::run`]) — repeat `n-2` times: select the pair
-//!    `(i, j)` minimising the Q-criterion, join them into a new internal node,
-//!    update the distance matrix, and deactivate `j`.
-//! 3. **Final join** ([`NJState::final_join`]) — connect the two remaining
-//!    active nodes to form the root, splitting the remaining distance equally.
+//! 1. **Initialisation** ([`NJState::new`]) — build leaf nodes and precompute the row
+//!    sums of the distance matrix.
+//! 2. **Iteration** ([`NJState::run`]) — repeat `n-2` times: select the pair `(i, j)`
+//!    minimising the Q-criterion, join them into a new internal node, update the
+//!    distance matrix, and retire one slot.
+//! 3. **Final join** ([`NJState::final_join`]) — connect the two remaining nodes to
+//!    form the root, splitting the remaining distance equally.
 //!
-//! The distance matrix is mutated in-place during iteration, so [`NJState`]
-//! holds a mutable reference. All active node tracking is done via a
-//! [`bitvec::prelude::BitVec`] for compact storage.
+//! # Layout
+//!
+//! The matrix is updated in place and kept **compact**: active nodes occupy slots
+//! `0..m` of the packed lower triangle, so row `r` is one contiguous slice
+//! `data[r(r-1)/2 .. r(r-1)/2 + r]` and the Q search is a plain reduction over slices
+//! with no per-element active-set test or index arithmetic. When two nodes join, the
+//! retired slot is refilled by moving the last slot into it (swap-remove, O(m)).
+//!
+//! Slot order therefore differs from the original taxon order, so every place where
+//! the order of operations can change a result is pinned to *original* indices:
+//!
+//! * `Q_ij = (m−2)·d_ij − (S_i + S_j)` is symmetric in `i` and `j`, so its value does
+//!   not depend on which slot holds which node;
+//! * ties are resolved by the smallest original `(i, j)` pair (`i > j`), as in a scan
+//!   over original indices;
+//! * the incremental row-sum updates visit nodes in ascending original index, so the
+//!   floating-point rounding is the same as for a scan over original indices.
+//!
+//! The straightforward implementation is kept under `cfg(test)` in
+//! `nj_reference.rs`; the tests require bit-identical trees.
 
-use bitvec::prelude::{BitVec, Lsb0};
+use crate::{distance_matrix::DistMat, kernels, tree::TreeNode};
 
-use crate::{distance_matrix::DistMat, tree::TreeNode};
+/// Index of the pair `(a, b)`, `a != b`, in the packed lower triangle.
+#[inline(always)]
+fn tri(a: usize, b: usize) -> usize {
+    let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+    hi * (hi - 1) / 2 + lo
+}
 
 /// Computes the branch lengths from the new internal node to taxa `i` and `j`.
 ///
 /// Uses the standard NJ formula:
 /// ```text
-/// l_i = 0.5 * d(i,j) + (S_i - S_j) / (2 * (n - 2))
+/// l_i = 0.5 * d(i,j) + (S_i - S_j) / (2 * (m - 2))
 /// l_j = d(i,j) - l_i
 /// ```
-/// where `S_i` and `S_j` are the row sums of the Q-reduced distance matrix
-/// and `n` is the number of currently active taxa. Both lengths are clamped
-/// to `0.0` to prevent negative branch lengths from rounding or
-/// non-ultrametric inputs.
-fn compute_branch_lengths(
-    d_ij: f64,
-    row_sums: &[f64],
-    i: usize,
-    j: usize,
-    active_count: usize,
-) -> (f64, f64) {
+/// where `S_i` and `S_j` are the row sums and `m` is the number of currently
+/// active taxa. Both lengths are clamped to `0.0` to prevent negative branch
+/// lengths from rounding or non-ultrametric inputs.
+fn compute_branch_lengths(d_ij: f64, s_i: f64, s_j: f64, active_count: usize) -> (f64, f64) {
     let n = active_count as f64;
 
-    let li = (0.5 * d_ij + (row_sums[i] - row_sums[j]) / (2.0 * (n - 2.0))).max(0.0);
+    let li = (0.5 * d_ij + (s_i - s_j) / (2.0 * (n - 2.0))).max(0.0);
     let lj = (d_ij - li).max(0.0);
 
     (li, lj)
 }
+
 /// Mutable state for a single NJ run.
 ///
-/// Owns the partial tree nodes, tracks which taxa are still active, and
-/// maintains incremental row sums so the Q-criterion can be evaluated in
-/// O(n²) per iteration rather than recomputing from scratch.
+/// Owns the partial tree nodes and works on the distance matrix in place. Slots
+/// `0..m` hold the active nodes; `orig` maps a slot to the index its node would have
+/// in a scan over original indices (the larger index of a joined pair survives).
 pub struct NJState<'a> {
     dist: &'a mut DistMat,
-    active: BitVec<u8, Lsb0>,
+    /// Number of active nodes (slots `0..m`).
+    m: usize,
+    /// Slot → original index.
+    orig: Vec<usize>,
+    /// Original index → slot (valid for active nodes).
+    slot_of: Vec<usize>,
+    /// Active original indices in ascending order.
+    active_sorted: Vec<usize>,
+    /// Row sums, by slot.
     row_sums: Vec<f64>,
+    /// Partial trees, by slot.
     nodes: Vec<Option<TreeNode>>,
+    /// Scratch: the Q minimum of every row, reused across iterations.
+    row_min: Vec<f64>,
     next_internal: usize,
 }
 
@@ -59,7 +86,7 @@ impl<'a> NJState<'a> {
     /// Initialises the NJ state from a distance matrix.
     ///
     /// Creates one leaf [`TreeNode`] per taxon, precomputes the full row sums
-    /// `S_i = Σ_j d(i,j)`, and marks all `n` taxa as active.
+    /// `S_i = Σ_j d(i,j)`, and places taxon `i` in slot `i`.
     pub fn new(dist: &'a mut DistMat) -> Self {
         let n = dist.dim();
 
@@ -74,13 +101,15 @@ impl<'a> NJState<'a> {
             .map(|i| (0..n).map(|j| dist.get(i, j)).sum())
             .collect();
 
-        let active = BitVec::repeat(true, n);
-
         NJState {
             dist,
-            active,
+            m: n,
+            orig: (0..n).collect(),
+            slot_of: (0..n).collect(),
+            active_sorted: (0..n).collect(),
             row_sums,
             nodes,
+            row_min: vec![f64::INFINITY; n],
             next_internal: n, // internal nodes get identifiers starting after the leaves
         }
     }
@@ -100,61 +129,79 @@ impl<'a> NJState<'a> {
         }
 
         for _ in 0..(n - 2) {
-            let (i, j, d_ij) = self.select_min_q_pair().ok_or("No pair found")?;
-            let (li, lj) =
-                compute_branch_lengths(d_ij, &self.row_sums, i, j, self.active.count_ones());
-            self.join_nodes(i, j, li, lj);
-            // Must precede marking j inactive: update_distances iterates active nodes.
-            self.update_distances(i, j);
-            self.active.set(j, false);
+            let (si, sj) = self.select_min_q_pair().ok_or("No pair found")?;
+            let d_ij = self.dist.data[tri(si, sj)];
+            let (li, lj) = compute_branch_lengths(
+                d_ij,
+                self.row_sums[si],
+                self.row_sums[sj],
+                self.m,
+            );
+            self.join_nodes(si, sj, li, lj);
+            self.update_distances(si, sj, d_ij);
+            self.retire(sj);
         }
 
-        if self.active.count_ones() != 2 {
-            return Err(format!(
-                "Expected 2 active nodes but found {}",
-                self.active.count_ones()
-            ));
+        if self.m != 2 {
+            return Err(format!("Expected 2 active nodes but found {}", self.m));
         }
 
         self.final_join()
     }
 
-    /// Selects the active pair `(i, j)` with the smallest Q value.
+    /// Selects the active pair with the smallest Q value and returns its slots
+    /// `(si, sj)`, where `si` holds the node with the larger original index.
     ///
-    /// Q(i,j) = (n-2)·d(i,j) - S_i - S_j, where `n` is the current number
-    /// of active taxa and `S_i` is the precomputed row sum. Returns the pair
-    /// indices and the raw distance `d(i,j)` (not the Q value). Distances are
-    /// finite here ([`DistMat::neighbor_joining`] rejects anything else), so Q is
-    /// never `NaN`; `unwrap_or(Ordering::Greater)` is only a defensive fallback.
-    fn select_min_q_pair(&self) -> Option<(usize, usize, f64)> {
-        let n_active = self.active.count_ones() as f64;
+    /// `Q(i,j) = (m-2)·d(i,j) - (S_i + S_j)`. Each row's minimum is found with one
+    /// pass over its slice; only rows whose minimum equals the global one are
+    /// rescanned, and among equal Q values the smallest original `(i, j)` wins.
+    fn select_min_q_pair(&mut self) -> Option<(usize, usize)> {
+        if self.m < 2 {
+            return None;
+        }
+        let m = self.m;
+        let scale = (m - 2) as f64;
+        let best = kernels::row_minima(
+            &self.dist.data,
+            &self.row_sums,
+            m,
+            scale,
+            &mut self.row_min[..m],
+        );
 
-        (0..self.dist.dim())
-            .filter(|&i| self.active[i])
-            .flat_map(|i| {
-                (0..i).filter(move |&j| self.active[j]).map(move |j| {
-                    let d_ij = self.dist.get(i, j);
-                    let q = (n_active - 2.0) * d_ij - self.row_sums[i] - self.row_sums[j];
-                    (i, j, q, d_ij)
-                })
-            })
-            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Greater))
-            .map(|(i, j, _, d)| (i, j, d))
+        let (data, s) = (&self.dist.data, &self.row_sums);
+        let mut pick: Option<(usize, usize, usize, usize)> = None; // (hi_orig, lo_orig, slot_hi, slot_lo)
+        for r in 1..m {
+            if self.row_min[r] != best {
+                continue;
+            }
+            let start = r * (r - 1) / 2;
+            for t in 0..r {
+                if scale * data[start + t] - (s[r] + s[t]) == best {
+                    let (a, b) = (self.orig[r], self.orig[t]);
+                    let cand = if a > b { (a, b, r, t) } else { (b, a, t, r) };
+                    if pick.is_none_or(|p| (cand.0, cand.1) < (p.0, p.1)) {
+                        pick = Some(cand);
+                    }
+                }
+            }
+        }
+        pick.map(|(_, _, hi_slot, lo_slot)| (hi_slot, lo_slot))
     }
 
-    /// Merges nodes `i` and `j` into a new internal node stored at index `i`.
+    /// Merges the nodes in slots `si` (larger original index) and `sj` into a new
+    /// internal node stored in slot `si`.
     ///
-    /// Assigns branch lengths `li` and `lj` to the child nodes, then replaces
-    /// `nodes[i]` with a new internal [`TreeNode`]. Node `j` is consumed here
-    /// and its slot is left empty; it will be marked inactive by the caller.
-    fn join_nodes(&mut self, i: usize, j: usize, li: f64, lj: f64) {
-        let mut left = self.nodes[i].take().expect("node i exists");
+    /// Assigns branch lengths `li` and `lj` to the child nodes. The node in slot
+    /// `sj` is consumed here; the caller retires the slot.
+    fn join_nodes(&mut self, si: usize, sj: usize, li: f64, lj: f64) {
+        let mut left = self.nodes[si].take().expect("node i exists");
         left.len = Some(li);
 
-        let mut right = self.nodes[j].take().expect("node j exists");
+        let mut right = self.nodes[sj].take().expect("node j exists");
         right.len = Some(lj);
 
-        self.nodes[i] = Some(TreeNode::internal(
+        self.nodes[si] = Some(TreeNode::internal(
             self.next_internal,
             Some([Box::new(left), Box::new(right)]),
             Some(0.0),
@@ -163,47 +210,67 @@ impl<'a> NJState<'a> {
         self.next_internal += 1;
     }
 
-    /// Updates the distance matrix and row sums after joining `i` and `j`.
+    /// Updates the distance matrix and row sums after joining the nodes in slots
+    /// `si` and `sj`.
     ///
-    /// For every remaining active taxon `k` (excluding `i` and `j`), applies
-    /// the classic NJ distance update formula:
-    /// ```text
-    /// d(new, k) = 0.5 * (d(i,k) + d(j,k) - d(i,j))
-    /// ```
-    /// Row sums are maintained incrementally so they need not be recomputed
-    /// from scratch each iteration. Must be called **before** marking `j`
-    /// inactive, since the loop iterates over currently active nodes.
-    fn update_distances(&mut self, i: usize, j: usize) {
-        let d_ij = self.dist.get(i, j);
-        self.row_sums[i] -= d_ij;
+    /// For every remaining node `k` (excluding the joined pair), applies the classic
+    /// NJ distance update `d(new, k) = 0.5 * (d(i,k) + d(j,k) - d(i,j))`. Row sums are
+    /// maintained incrementally, visiting nodes in ascending **original** index so the
+    /// floating-point rounding matches a scan over original indices.
+    fn update_distances(&mut self, si: usize, sj: usize, d_ij: f64) {
+        let (oi, oj) = (self.orig[si], self.orig[sj]);
+        self.row_sums[si] -= d_ij;
 
-        for k in self.active.iter_ones() {
-            if k == i || k == j {
+        for &ok in &self.active_sorted {
+            if ok == oi || ok == oj {
                 continue;
             }
-            let d_ik = self.dist.get(i, k);
-            let d_jk = self.dist.get(j, k);
+            let sk = self.slot_of[ok];
+            let d_ik = self.dist.data[tri(si, sk)];
+            let d_jk = self.dist.data[tri(sj, sk)];
             let d_new = 0.5 * (d_ik + d_jk - d_ij);
-            self.row_sums[i] = self.row_sums[i] - d_ik + d_new;
-            self.row_sums[k] = self.row_sums[k] - d_ik - d_jk + d_new;
-            self.dist.set(i, k, d_new);
+            self.row_sums[si] = self.row_sums[si] - d_ik + d_new;
+            self.row_sums[sk] = self.row_sums[sk] - d_ik - d_jk + d_new;
+            self.dist.data[tri(si, sk)] = d_new;
         }
-        self.row_sums[j] = 0.0;
     }
 
-    /// Connects the two remaining active nodes to form the root.
+    /// Removes slot `sj` by moving the last active slot into it, keeping the active
+    /// rows contiguous.
+    fn retire(&mut self, sj: usize) {
+        let oj = self.orig[sj];
+        let pos = self
+            .active_sorted
+            .binary_search(&oj)
+            .expect("retired node is active");
+        self.active_sorted.remove(pos);
+
+        let last = self.m - 1;
+        if sj != last {
+            for t in 0..last {
+                if t != sj {
+                    self.dist.data[tri(sj, t)] = self.dist.data[tri(last, t)];
+                }
+            }
+            self.row_sums[sj] = self.row_sums[last];
+            self.orig[sj] = self.orig[last];
+            self.slot_of[self.orig[sj]] = sj;
+            self.nodes[sj] = self.nodes[last].take();
+        }
+        self.m -= 1;
+    }
+
+    /// Connects the two remaining nodes to form the root.
     ///
     /// The remaining distance `d(i,j)` is split equally between the two
-    /// branches (`d/2` each), producing an unrooted-style midpoint root.
+    /// branches (`d/2` each), producing an unrooted-style midpoint root. The node
+    /// with the smaller original index is the left child.
     fn final_join(mut self) -> Result<TreeNode, String> {
-        let mut it = self.active.iter_ones();
-        let i = it.next().expect("at least one active node");
-        let j = it.next().expect("exactly two active nodes");
+        let (first, second) = if self.orig[0] < self.orig[1] { (0, 1) } else { (1, 0) };
+        let d_ij = self.dist.data[tri(0, 1)];
 
-        let d_ij = self.dist.get(i, j);
-
-        let mut left = self.nodes[i].take().expect("node i exists");
-        let mut right = self.nodes[j].take().expect("node j exists");
+        let mut left = self.nodes[first].take().expect("node i exists");
+        let mut right = self.nodes[second].take().expect("node j exists");
 
         left.len = Some(d_ij / 2.0);
         right.len = Some(d_ij / 2.0);
@@ -258,5 +325,120 @@ mod tests {
         } else {
             panic!("Root should have two children");
         }
+    }
+
+    // --- the compacted implementation must reproduce the reference bit for bit ---
+
+    use crate::nj_reference;
+    use crate::tree::{NameOrSupport, TreeNode};
+
+    fn same_node(a: &TreeNode, b: &TreeNode) -> bool {
+        let same_label = match (&a.label, &b.label) {
+            (None, None) => true,
+            (Some(NameOrSupport::Name(x)), Some(NameOrSupport::Name(y))) => x == y,
+            (Some(NameOrSupport::Support(x)), Some(NameOrSupport::Support(y))) => x == y,
+            _ => false,
+        };
+        let same_len = match (a.len, b.len) {
+            (None, None) => true,
+            (Some(x), Some(y)) => x.to_bits() == y.to_bits(),
+            _ => false,
+        };
+        let same_children = match (&a.children, &b.children) {
+            (None, None) => true,
+            (Some([al, ar]), Some([bl, br])) => same_node(al, bl) && same_node(ar, br),
+            _ => false,
+        };
+        a.identifier == b.identifier && same_label && same_len && same_children
+    }
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn unit(&mut self) -> f64 {
+            (self.next() >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    fn matrix(n: usize, mut value: impl FnMut(usize, usize) -> f64) -> DistMat {
+        let names = (0..n).map(|i| format!("t{i}")).collect();
+        let mut d = DistMat::empty_with_names(names);
+        for i in 1..n {
+            for j in 0..i {
+                d.set(i, j, value(i, j));
+            }
+        }
+        d
+    }
+
+    fn assert_matches_reference(d: DistMat, what: &str) {
+        let expected = nj_reference::NJState::new(&mut d.clone()).run().unwrap();
+        let got = d.neighbor_joining().unwrap();
+        assert!(
+            same_node(&expected, &got),
+            "{what}: trees differ\n  reference {}\n  new       {}",
+            expected.to_newick(),
+            got.to_newick()
+        );
+    }
+
+    #[test]
+    fn test_matches_reference_on_random_matrices() {
+        let mut r = Rng(0xC0FF_EE11);
+        for n in 1..=45 {
+            for rep in 0..6 {
+                assert_matches_reference(
+                    matrix(n, |_, _| 0.05 + r.unit()),
+                    &format!("random n={n} rep={rep}"),
+                );
+            }
+        }
+        assert_matches_reference(matrix(150, |_, _| 0.05 + r.unit()), "random n=150");
+    }
+
+    #[test]
+    fn test_matches_reference_with_many_ties() {
+        // Distances drawn from a handful of integers: most Q values tie exactly.
+        let mut r = Rng(0xBEEF_0001);
+        for n in 3..=40 {
+            for rep in 0..6 {
+                assert_matches_reference(
+                    matrix(n, |_, _| (1 + r.next() % 3) as f64),
+                    &format!("integer ties n={n} rep={rep}"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_matches_reference_with_duplicate_taxa() {
+        // Taxa that are copies of each other (zero distance, identical rows).
+        let mut r = Rng(0xD0D0_0002);
+        for n in 4..=40 {
+            let base: Vec<usize> = (0..n).map(|i| if r.next() % 3 == 0 && i > 0 { i - 1 } else { i }).collect();
+            let pos: Vec<f64> = (0..n).map(|_| r.unit() * 4.0).collect();
+            assert_matches_reference(
+                matrix(n, |i, j| {
+                    let (a, b) = (base[i], base[j]);
+                    if a == b { 0.0 } else { (pos[a] - pos[b]).abs() + 0.25 }
+                }),
+                &format!("duplicates n={n}"),
+            );
+        }
+    }
+
+    #[test]
+    fn test_matches_reference_on_degenerate_matrices() {
+        assert_matches_reference(matrix(2, |_, _| 0.7), "two taxa");
+        assert_matches_reference(matrix(3, |_, _| 1.0), "three equal");
+        assert_matches_reference(matrix(12, |_, _| 1.0), "all equal");
+        assert_matches_reference(matrix(12, |_, _| 0.0), "all zero");
     }
 }

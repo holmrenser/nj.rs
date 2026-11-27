@@ -3,6 +3,7 @@ name = "nj"
 description = "Neighbor-Joining phylogenetic tree inference. Auto-detects DNA/protein, supports multiple substitution models and bootstrap."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -26,9 +27,13 @@ harness = false
 [dev-dependencies]
 criterion = "0.5"
 proptest = "1"
+# Lets the kernel tests force the scalar fallback level next to the native one.
+fearless_simd = { version = "1.3", features = ["force_support_fallback"] }
 
 [dependencies]
 bitvec = "1.0.1"
+fearless_simd = "1.3"
+fearless_simd_macros = "0.1"
 getrandom = "0.2"
 nanorand = "0.8.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -66,7 +71,6 @@ cli = ["clap", "indicatif", "serde_json", "parallel"]
 # feature to enable parallel bootstrap and distance matrix computation via Rayon
 parallel = ["rayon"]
 
-# feature to enable the explicit core::simd distance kernel. Requires a nightly
-# toolchain (uses the unstable `portable_simd` feature). Without it, the kernel
-# uses the branchless scalar path, which the compiler still autovectorizes.
+# Deprecated no-op, kept so `--features simd` still builds. The SIMD kernels are always compiled
+# (fearless_simd, stable Rust) and pick the widest instruction set at run time.
 simd = []

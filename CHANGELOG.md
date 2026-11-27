@@ -32,6 +32,28 @@ single version, bumped together via `make bump-{patch,minor,major}`.
 - `DistMat::neighbor_joining` returns an error for a matrix containing a non-finite
   distance instead of silently producing a `NaN` tree; use the new
   `DistMat::cap_non_finite` first.
+- **Unknown characters are missing data.** `N` (DNA) and `X` (protein) are now
+  excluded per pair, exactly like gaps, in every model. Before, they counted as a
+  distinct state: one `N` against a base was a mismatch and `N` against `N` a match,
+  so a pair differing only by an `N` had a non-zero distance. Alignments containing
+  `N` or `X` now give smaller distances. Ambiguity codes were already read as `N`.
+- The SIMD kernels no longer need a nightly compiler. They are written against
+  `fearless_simd` (stable Rust, safe API) and pick the widest instruction set at run
+  time (NEON, SSE2/SSE4.2/AVX2/AVX-512, WebAssembly SIMD, or a scalar fallback), so
+  source installs and `cargo install` get them too, and the PyPI wheels build on
+  stable. The `simd` Cargo feature is now a no-op. The minimum supported Rust version
+  is 1.89. Protein distances are about 6× faster.
+- DNA distances are computed from bit-planes (four bitmasks per sequence, A/C/G/T) and a
+  pair-count table: `Kimura2P`, `TajimaNei` and `Tamura` are about 40× faster, `PDiff`
+  and `JukesCantor` about 10×, with identical results. The parallel pair loop writes rows
+  in blocks straight into the matrix instead of materialising every `(i, j)` pair and result.
+- Neighbor-joining is about 60× faster: the active rows of the matrix are kept
+  contiguous instead of testing an active-set bit and rebuilding the triangular
+  index for every element, and the row minimum is a SIMD kernel (n=1000: 1.3 s to
+  20 ms; n=2000: 10.3 s to 0.16 s). The
+  Q criterion is now computed as `(m−2)·d − (S_i + S_j)`, which is symmetric in the
+  two nodes; the value can differ from `(m−2)·d − S_i − S_j` in the last bit, so
+  which of two pairs that tie to within rounding is joined first may change.
 
 ## [0.0.26] - 2026-11-20
 

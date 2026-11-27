@@ -1,7 +1,3 @@
-// The explicit `core::simd` distance kernel needs the nightly `portable_simd`
-// feature. Gated on the `simd` Cargo feature so default (stable) builds are
-// unaffected — the kernel falls back to the autovectorizable scalar path.
-#![cfg_attr(feature = "simd", feature(portable_simd))]
 //! Neighbor-Joining phylogenetic tree inference library.
 //!
 //! # Data flow
@@ -56,13 +52,18 @@
 //! Providing an incompatible model returns an `Err` from [`nj`].
 pub mod alphabet;
 pub mod config;
+pub mod counts;
 pub mod distance_matrix;
 pub mod error;
 pub mod event;
 pub mod fasta;
+mod kernels;
 pub mod models;
 pub mod msa;
 pub mod nj;
+pub mod prepared;
+#[cfg(test)]
+mod nj_reference;
 pub mod tree;
 
 mod bootstrap;

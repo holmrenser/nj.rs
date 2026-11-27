@@ -65,15 +65,10 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           command: build
-          # Nightly toolchain: the published wheels enable `nj/simd`, which uses
-          # the unstable `portable_simd` feature for the explicit core::simd
-          # distance kernel (~5-7x faster distance computation than scalar).
-          # End users install the prebuilt wheel and never need nightly themselves.
-          # Pinned for reproducible releases — keep in sync with the `simd-nightly`
-          # job in test.yml; bump both together. The sdist (built on stable) keeps
-          # the autovectorized scalar kernel, so source installs need no nightly.
-          rust-toolchain: nightly-2026-06-02
-          # `--features` is listed in full (not just the simd delta) so the build is
+          # The SIMD kernels use `fearless_simd`, which works on stable Rust and picks the
+          # widest instruction set at run time, so wheels need no nightly toolchain.
+          rust-toolchain: stable
+          # `--features` is listed in full so the build is
           # correct whether maturin merges with or replaces `[tool.maturin] features`.
           # The crate is built with pyo3's `abi3-py310` feature, so a single
           # stable-ABI wheel per platform covers CPython 3.10+ — no per-minor
@@ -81,7 +76,7 @@ jobs:
           args: >
             --release
             --out dist
-            --features pyo3/extension-module,nj/parallel,nj/simd
+            --features pyo3/extension-module,nj/parallel
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           working-directory: python

@@ -9,10 +9,14 @@
 
 use crate::MSA;
 use crate::alphabet::AlphabetEncoding;
-use crate::models::{ModelCalculation, RateHet, pairwise_distance_with};
+use crate::models::{ModelCalculation, RateHet};
+use crate::prepared::Prepared;
 use crate::nj::NJState;
 use crate::tree::TreeNode;
 use serde::{Deserialize, Serialize};
+
+/// Rows per block in [`DistMat::from_prepared`].
+const ROW_BLOCK: usize = 16;
 
 /// Lower-triangular pairwise distance matrix.
 ///
@@ -113,41 +117,57 @@ impl DistMat {
         A: AlphabetEncoding + Sync,
         A::Symbol: Send + Sync,
     {
-        let n = msa.n_sequences;
-        let mut dist = DistMat::empty_with_names(msa.identifiers.clone());
+        let prepared = Prepared::new(msa);
+        Self::from_prepared::<M, A>(&prepared, msa.identifiers.clone(), rates)
+    }
+
+    /// Computes the matrix from a [`Prepared`] alignment.
+    ///
+    /// Rows are processed in blocks of [`ROW_BLOCK`]; each block owns a contiguous slice of
+    /// the packed triangle and is filled column by column, so one sequence `j` is reused
+    /// by every row of the block and the results are written in place (no per-pair
+    /// intermediate vectors). With the `parallel` feature the blocks run on the Rayon
+    /// thread pool.
+    pub fn from_prepared<M, A>(data: &Prepared<'_, A>, names: Vec<String>, rates: RateHet) -> DistMat
+    where
+        M: ModelCalculation<A> + Send + Sync,
+        A: AlphabetEncoding + Sync,
+        A::Symbol: Send + Sync,
+    {
+        let mut dist = DistMat::empty_with_names(names);
+        let n = dist.dim();
+        debug_assert_eq!(n, data.len());
+
+        // Entries stored before row `r` (row `r` has `r` entries).
+        let before = |r: usize| if r == 0 { 0 } else { r * (r - 1) / 2 };
+
+        let mut blocks: Vec<(usize, usize, &mut [f64])> = Vec::with_capacity(n / ROW_BLOCK + 1);
+        let mut rest: &mut [f64] = &mut dist.data;
+        let mut r0 = 0;
+        while r0 < n {
+            let r1 = (r0 + ROW_BLOCK).min(n);
+            let (head, tail) = rest.split_at_mut(before(r1) - before(r0));
+            blocks.push((r0, r1, head));
+            rest = tail;
+            r0 = r1;
+        }
+
+        let fill = |(r0, r1, out): (usize, usize, &mut [f64])| {
+            let base = before(r0);
+            for j in 0..r1 {
+                for i in r0.max(j + 1)..r1 {
+                    out[before(i) - base + j] = M::distance_prepared(data, i, j, rates);
+                }
+            }
+        };
 
         #[cfg(feature = "parallel")]
         {
             use rayon::iter::{IntoParallelIterator, ParallelIterator};
-
-            let pairs: Vec<(usize, usize, f64)> = (0..n)
-                .flat_map(|i| (0..i).map(move |j| (i, j)))
-                .collect::<Vec<_>>()
-                .into_par_iter()
-                .map(|(i, j)| {
-                    let d =
-                        pairwise_distance_with::<M, A>(&msa.sequences[i], &msa.sequences[j], rates);
-                    (i, j, d)
-                })
-                .collect();
-
-            for (i, j, d) in pairs {
-                dist.set(i, j, d);
-            }
+            blocks.into_par_iter().for_each(fill);
         }
-
         #[cfg(not(feature = "parallel"))]
-        {
-            for i in 0..n {
-                for j in 0..i {
-                    dist.set(
-                        i,
-                        j,
-                        pairwise_distance_with::<M, A>(&msa.sequences[i], &msa.sequences[j], rates),
-                    );
-                }
-            }
-        }
+        blocks.into_iter().for_each(fill);
 
         dist
     }
@@ -457,5 +477,80 @@ mod tests {
         let tree = m.neighbor_joining().unwrap();
         let children = tree.children.unwrap();
         assert!((children[0].len.unwrap() + children[1].len.unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    // --- the prepared, tiled path must reproduce a plain per-pair loop bit for bit ---
+
+    use crate::alphabet::{DNA as DnaAlphabet, Protein as ProteinAlphabet};
+    use crate::models::{
+        JukesCantor, Kimura2P, KimuraProtein, Poisson, TajimaNei, Tamura, pairwise_distance_with,
+    };
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+    }
+
+    fn random_msa<A: AlphabetEncoding>(rng: &mut Rng, alphabet: &[u8], n: usize, len: usize) -> MSA<A> {
+        let pairs = (0..n).map(|i| {
+            let seq: String = (0..len).map(|_| alphabet[(rng.next() % alphabet.len() as u64) as usize] as char).collect();
+            (format!("s{i}"), seq)
+        });
+        MSA::<A>::try_from_pairs(pairs).unwrap()
+    }
+
+    fn assert_matches_reference<M, A>(msa: &MSA<A>, rates: RateHet, what: &str)
+    where
+        M: ModelCalculation<A> + Send + Sync,
+        A: AlphabetEncoding + Sync,
+        A::Symbol: Send + Sync,
+    {
+        let got = msa.into_dist::<M>(rates);
+        for i in 0..msa.n_sequences {
+            for j in 0..i {
+                let want = pairwise_distance_with::<M, A>(&msa.sequences[i], &msa.sequences[j], rates);
+                assert_eq!(got.get(i, j).to_bits(), want.to_bits(), "{what}: pair ({i},{j})");
+            }
+        }
+    }
+
+    #[test]
+    fn test_prepared_matrix_matches_reference_dna() {
+        let mut rng = Rng(0xABCD_EF01_2345_6789);
+        // Sizes around the row-block boundary; lengths around the 64-column word boundary.
+        for n in [1usize, 2, 3, 15, 16, 17, 31, 33, 50] {
+            for len in [1usize, 63, 64, 65, 200] {
+                let msa = random_msa::<DnaAlphabet>(&mut rng, b"ACGTACGTACGTACGTNR-", n, len);
+                let what = format!("n={n} len={len}");
+                for rates in [RateHet::NONE, RateHet { gamma_shape: Some(0.5), p_invar: 0.2 }] {
+                    assert_matches_reference::<PDiff, _>(&msa, rates, &what);
+                    assert_matches_reference::<JukesCantor, _>(&msa, rates, &what);
+                    assert_matches_reference::<Kimura2P, _>(&msa, rates, &what);
+                    assert_matches_reference::<TajimaNei, _>(&msa, rates, &what);
+                    assert_matches_reference::<Tamura, _>(&msa, rates, &what);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_prepared_matrix_matches_reference_protein() {
+        let mut rng = Rng(0x0F0F_1234_5678_9ABC);
+        for n in [1usize, 2, 16, 17, 40] {
+            for len in [1usize, 65, 150] {
+                let msa = random_msa::<ProteinAlphabet>(&mut rng, b"ARNDCQEGHILKMFPSTWYVXX-", n, len);
+                let what = format!("n={n} len={len}");
+                assert_matches_reference::<PDiff, _>(&msa, RateHet::NONE, &what);
+                assert_matches_reference::<Poisson, _>(&msa, RateHet::NONE, &what);
+                assert_matches_reference::<KimuraProtein, _>(&msa, RateHet::NONE, &what);
+            }
+        }
     }
 }
