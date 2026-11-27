@@ -192,11 +192,23 @@ real x86 and WASM timings.
   and bisected back for about 30 evaluations, ending with an error of up to 10⁻⁸. A Newton step of a few ulps now
   counts as converged, and the new rule rarely gets there.
 
-  Not done: a vector tail for the per-entry divisions and a model-aware start for HKY/F84 (they take more evaluations
-  than `Gtr` on the benchmark data, 110 against 96 ms, because the start ignores the transition bias). Empirical GTR
-  (0.55 µs per pair) is the slowest DNA model: its 4×4 Jacobi eigenproblem dominates, and a tridiagonal QL
-  solver or fewer sweeps would help. A 4-lane type is one 256-bit register on AVX2 and two 128-bit ones on NEON, so
-  the vector kernel's gain may differ on x86; only correctness was checked there (emulated).
+  Not done for ML: a vector tail for the per-entry divisions and a model-aware start for HKY/F84 (they take more
+  evaluations than `Gtr` on the benchmark data, 110 against 96 ms, because the start ignores the transition bias).
+  A 4-lane type is one 256-bit register on AVX2 and two 128-bit ones on NEON, so the vector kernel's gain may
+  differ on x86; only correctness was checked there (emulated).
+
+- **Empirical GTR** went from 271 ms to 159 ms (n=1000, L=1000; 0.55 → 0.32 µs per pair, counting included). A
+  doubling experiment showed the 4×4 Jacobi call alone cost 237 ms, 88% of the run. `S = Π^-½ J Π^-½` always has the
+  exact eigenvector `√π` with eigenvalue 1 (`S√π = Π^-½ J·1 = √π`), so a Householder reflector `H` with `H√π = −e₀`
+  gives `HSH = diag(1, B)`: only the 3×3 matrix `B` is diagonalised (3 rotations per sweep instead of 6), the unit
+  eigenvalue's logarithm (0) is never taken, and the weights come from the reflected eigenvectors. Results agree with
+  the full-Jacobi version to 3·10⁻¹⁵ relative on the benchmark matrices, to 10⁻¹⁰ on 3,000 random exact and noisy
+  tables (with missing bases, saturated pairs and all rate-variation settings; test), with identical saturation
+  decisions and the failure-rate table unchanged. What is left is the 3×3 Jacobi itself, about 200 ns per pair: ~10
+  rotations, each a dependent chain of about five square-root and division operations. A compile-time-sized Jacobi
+  routine (loops unrolled, bit-identical to the general one) gained only 4% and was not kept. The remaining ideas are
+  structural: solving several pairs' eigenproblems in the lanes of a vector, or a closed-form 3×3 solver, which
+  loses accuracy for the near-degenerate eigenvalues that are common (JC-like pairs have three equal ones).
 - ML solver SIMD (step 4): the `X_ab[m]` precompute already exists; padding `K` to the vector width and two accumulators remain (`performance.md` §2.4). The scalar solver costs 3.6–6.1 µs per protein pair, so n = 1000 takes about 2–3 s.
 - A SIMD `pack` kernel for bit-plane construction (matters for bootstrap on long, narrow alignments).
 - Harley–Seal accumulation on AVX2 (needs x86 hardware to evaluate); AVX-512 correctness.

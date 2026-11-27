@@ -186,7 +186,8 @@ pub fn pooled_base_frequencies(msa: &MSA<DNA>) -> Result<[f64; 4], String> {
 /// d = −tr(Π ln(Π⁻¹J)) = −Σ_k w_k ln M_k ,   S = Π^-½ J Π^-½ = V M Vᵀ ,   w_k = Σ_i π_i V_ik² .
 /// ```
 ///
-/// `S` is symmetric, so this is one 4×4 eigenproblem. It is the maximum-likelihood estimate for the
+/// `S` is symmetric, and one of its eigenvectors is known (`√π`, eigenvalue 1), so this is a 3×3 eigenproblem
+/// after deflation (see `empirical_gtr_distance`). It is the maximum-likelihood estimate for the
 /// model with a free symmetric `J` (invariance of ML estimates), so it needs no rates and no
 /// numerical search; the price is that all parameters are estimated from one pair, which is
 /// noisy for short sequences. If an eigenvalue of `S` is not positive, `ln` does not exist: the
@@ -213,7 +214,114 @@ impl ModelCalculation<DNA> for EmpiricalGtr {
 
 /// The empirical GTR distance of a table of aligned base pairs (`table[a][b]`: bases `a` and `b` in
 /// the two sequences; counts or frequencies, only the proportions matter). See [`EmpiricalGtr`].
+///
+/// `S = Π^-½ J Π^-½` always has the exact eigenvector `√π` with eigenvalue 1, since
+/// `S√π = Π^-½ J·1 = Π^-½ π = √π`. A Householder reflector `H` with `H√π = −e₀` therefore gives
+/// `H S H = diag(1, B)`: only the `(k−1)×(k−1)` matrix `B` (3×3 for four bases) needs an
+/// eigendecomposition, and the eigenvalue 1, whose logarithm is 0, never reaches the sum. The weight
+/// of an eigenvector `y` of `B` is `Σ_i π_i v_i²` with `v` its image under the reflector.
 pub(crate) fn empirical_gtr_distance(table: &[[f64; 4]; 4], het: RateHet) -> f64 {
+    let total: f64 = table.iter().flatten().sum();
+    let identical: f64 = (0..4).map(|a| table[a][a]).sum();
+    if total <= 0.0 || identical >= total {
+        return 0.0;
+    }
+
+    // Symmetrised joint frequencies and their marginal.
+    let mut joint = [[0.0; 4]; 4];
+    let mut pi = [0.0; 4];
+    for a in 0..4 {
+        for b in 0..4 {
+            joint[a][b] = (table[a][b] + table[b][a]) / (2.0 * total);
+            pi[a] += joint[a][b];
+        }
+    }
+    // The bases that occur in the pair, and the problem on them: all on the stack.
+    let mut kept = [0usize; 4];
+    let mut k = 0;
+    for a in 0..4 {
+        if pi[a] > 0.0 {
+            kept[k] = a;
+            k += 1;
+        }
+    }
+    let kept = &kept[..k];
+    let (mut root, mut inv_root, mut pk) = ([0.0; 4], [0.0; 4], [0.0; 4]);
+    for (x, &a) in kept.iter().enumerate() {
+        pk[x] = pi[a];
+        root[x] = pi[a].sqrt();
+        inv_root[x] = 1.0 / root[x];
+    }
+    let mut s = [0.0; 16];
+    for x in 0..k {
+        for y in x..k {
+            let v = joint[kept[x]][kept[y]] * inv_root[x] * inv_root[y];
+            s[x * k + y] = v;
+            s[y * k + x] = v;
+        }
+    }
+
+    // H = I − β u uᵀ with u = √π + e₀, so that H√π = −e₀ (no cancellation: √π₀ ≥ 0).
+    let mut u = [0.0; 4];
+    u[..k].copy_from_slice(&root[..k]);
+    u[0] += 1.0;
+    let beta = 2.0 / u[..k].iter().map(|x| x * x).sum::<f64>();
+    // HSH = SH − β u (uᵀ SH), SH = S − β (S u) uᵀ; only its trailing block B is needed.
+    let mut sh = [0.0; 16];
+    for i in 0..k {
+        let y: f64 = (0..k).map(|j| s[i * k + j] * u[j]).sum();
+        for j in 0..k {
+            sh[i * k + j] = s[i * k + j] - beta * y * u[j];
+        }
+    }
+    let mut z = [0.0; 4];
+    for j in 0..k {
+        z[j] = (0..k).map(|i| u[i] * sh[i * k + j]).sum();
+    }
+    let m = k - 1;
+    let mut b = [0.0; 9];
+    for r in 0..m {
+        for c in r..m {
+            let v = sh[(r + 1) * k + (c + 1)] - beta * u[r + 1] * z[c + 1];
+            b[r * m + c] = v;
+            b[c * m + r] = v;
+        }
+    }
+    let (mut eigenvalues, mut y) = ([0.0; 3], [0.0; 9]);
+    jacobi_eigen_into(&mut b[..m * m], m, &mut eigenvalues[..m], &mut y[..m * m]);
+
+    let p_inv = het.p_invar;
+    let mut d = 0.0;
+    for (e, &lambda) in eigenvalues[..m].iter().enumerate() {
+        let lambda = (lambda - p_inv) / (1.0 - p_inv);
+        if !(lambda > 1e-9) {
+            return f64::INFINITY;
+        }
+        // The eigenvector of S is H applied to (0, y_e); its columns 1.. are δ_{i,j+1} − β u_i u_{j+1}.
+        let mut weight = 0.0;
+        for i in 0..k {
+            let mut v = 0.0;
+            for j in 0..m {
+                let h = if i == j + 1 { 1.0 } else { 0.0 } - beta * u[i] * u[j + 1];
+                v += h * y[j * m + e];
+            }
+            weight += pk[i] * v * v;
+        }
+        d += match het.gamma_shape {
+            None => -weight * lambda.ln(),
+            Some(alpha) => weight * alpha * (lambda.powf(-1.0 / alpha) - 1.0),
+        };
+    }
+    if d > T_MAX {
+        return f64::INFINITY;
+    }
+    (1.0 - p_inv) * d.max(0.0)
+}
+
+#[cfg(test)]
+/// Reference for [`empirical_gtr_distance`]: the same formula with a full Jacobi eigendecomposition of the
+/// 4×4 matrix, no deflation.
+fn empirical_gtr_distance_full_jacobi(table: &[[f64; 4]; 4], het: RateHet) -> f64 {
     let total: f64 = table.iter().flatten().sum();
     let identical: f64 = (0..4).map(|a| table[a][a]).sum();
     if total <= 0.0 || identical >= total {
@@ -1067,5 +1175,76 @@ mod tests {
                 .model()
                 .transition_matrix(0.5, RateHet::NONE)
         );
+    }
+
+    #[test]
+    fn test_deflated_empirical_gtr_matches_the_full_jacobi_reference() {
+        // Exact expected tables of random GTR models, noisy simulated tables (asymmetric, with
+        // saturated pairs, and with bases missing from the pair), and all four rate-variation settings.
+        let mut rng = Rng(0x5EED_0090);
+        let hets = [
+            RateHet::NONE,
+            RateHet {
+                gamma_shape: Some(0.5),
+                p_invar: 0.1,
+            },
+            RateHet {
+                gamma_shape: Some(2.0),
+                p_invar: 0.0,
+            },
+            RateHet {
+                gamma_shape: None,
+                p_invar: 0.3,
+            },
+        ];
+        let (mut finite, mut infinite, mut missing) = (0, 0, 0);
+        let mut worst = 0.0f64;
+        for trial in 0..3000 {
+            let rates: Vec<f64> = (0..6).map(|_| 0.1 + 5.0 * rng.unit()).collect();
+            let pi_raw: Vec<f64> = (0..4).map(|_| 0.1 + rng.unit()).collect();
+            let gtr = Gtr::new(&rates, &pi_raw).unwrap();
+            let t = [0.05, 0.3, 0.8, 1.5, 2.5][trial % 5];
+            let sites = [100usize, 400, 3000][(trial / 5) % 3];
+            let p = gtr.model().transition_matrix(t, RateHet::NONE);
+            let mut table = [[0.0; 4]; 4];
+            for _ in 0..sites {
+                let a = pick(&mut rng, gtr.model().frequencies());
+                let b = pick(&mut rng, &p[a * 4..a * 4 + 4]);
+                table[a][b] += 1.0;
+            }
+            if trial % 7 == 0 {
+                // A base absent from the pair: zero its row and column.
+                let gone = trial % 4;
+                for x in 0..4 {
+                    table[gone][x] = 0.0;
+                    table[x][gone] = 0.0;
+                }
+                missing += 1;
+            }
+            let het = hets[(trial / 3) % 4];
+            let fast = empirical_gtr_distance(&table, het);
+            let reference = empirical_gtr_distance_full_jacobi(&table, het);
+            assert_eq!(
+                fast.is_infinite(),
+                reference.is_infinite(),
+                "trial {trial}: {fast} vs {reference}"
+            );
+            if fast.is_finite() {
+                finite += 1;
+                let rel = (fast - reference).abs() / reference.max(1e-12);
+                assert!(
+                    rel < 1e-10 || (fast - reference).abs() < 1e-13,
+                    "trial {trial}, {het:?}: {fast} vs {reference}"
+                );
+                worst = worst.max(rel.min((fast - reference).abs() / 1e-3));
+            } else {
+                infinite += 1;
+            }
+        }
+        assert!(
+            finite > 1000 && infinite > 100 && missing > 300,
+            "{finite} finite, {infinite} infinite, {missing} with a missing base"
+        );
+        assert!(worst < 1e-10, "worst {worst:e}");
     }
 }
