@@ -33,8 +33,10 @@
 //! maximum does not beat the limit `ℓ(∞)`: the data are then no better explained by any finite
 //! distance than by two independent sequences.
 
+use crate::kernels;
 use crate::models::RateHet;
 use crate::reversible::ReversibleModel;
+use fearless_simd::Level;
 
 /// Largest distance searched, in substitutions per variable site. Jukes–Cantor at
 /// `p = 0.7499` is already 6.7, so 10 is beyond anything an estimate can resolve.
@@ -53,12 +55,24 @@ struct Eval {
 /// One nonzero entry of the reduced pair table: `(a, b, F_ab)` (see the module docs).
 type Entry = (u8, u8, f64);
 
+/// The entries of one pair of a model with at most four states in structure-of-arrays form, for the
+/// vector kernel: `xt[m * ep + j]` is coefficient `m` of entry `j`, padded with zeros up to `ep`, a
+/// multiple of 4.
+struct Lanes<'a> {
+    level: Level,
+    xt: &'a [f64],
+    ep: usize,
+}
+
 /// Likelihood evaluation for one pair: the nonzero entries of `F` plus scratch space. Everything
 /// is borrowed from storage owned by [`ml_distance`], which keeps it on the stack.
 struct Pair<'a> {
     model: &'a ReversibleModel,
     het: RateHet,
     entries: &'a [Entry],
+    /// `Some` for models with at most four states (DNA): the three dot products of every entry,
+    /// `P`, `P′` and `P″`, are then computed four entries at a time. `g`, `g1` and `g2` have length 4.
+    lanes: Option<Lanes<'a>>,
     g: &'a mut [f64],
     g1: &'a mut [f64],
     g2: &'a mut [f64],
@@ -77,20 +91,34 @@ impl Pair<'_> {
             &mut self.g2,
         );
         let (w, p_inv) = (1.0 - self.het.p_invar, self.het.p_invar);
+
+        // Vector path: P, P' and P'' of every entry at once, then the per-entry tail below.
+        let mut dots = [0.0; 36];
+        if let Some(l) = &self.lanes {
+            let g = [&self.g[..4], &self.g1[..4], &self.g2[..4]];
+            kernels::combine4(l.level, l.xt, l.ep, g, &mut dots[..3 * l.ep]);
+        }
+
         let mut e = Eval {
             ll: 0.0,
             d1: 0.0,
             d2: 0.0,
         };
-        for &(a, b, n) in self.entries {
+        for (j, &(a, b, n)) in self.entries.iter().enumerate() {
             let (a, b) = (a as usize, b as usize);
-            let x = model.coefficients(a, b);
-            let (mut p, mut p1, mut p2) = (0.0, 0.0, 0.0);
-            for m in 0..x.len() {
-                p += x[m] * self.g[m];
-                p1 += x[m] * self.g1[m];
-                p2 += x[m] * self.g2[m];
-            }
+            let (p, p1, p2) = match &self.lanes {
+                Some(l) => (dots[j], dots[l.ep + j], dots[2 * l.ep + j]),
+                None => {
+                    let x = model.coefficients(a, b);
+                    let (mut p, mut p1, mut p2) = (0.0, 0.0, 0.0);
+                    for m in 0..x.len() {
+                        p += x[m] * self.g[m];
+                        p1 += x[m] * self.g1[m];
+                        p2 += x[m] * self.g2[m];
+                    }
+                    (p, p1, p2)
+                }
+            };
             let (mut p, p1, p2) = (w * p, w * p1, w * p2);
             if a == b {
                 p += p_inv;
@@ -127,6 +155,17 @@ impl Pair<'_> {
 /// `f64::INFINITY` when the pair is saturated. Under rate variation the result is
 /// `(1 − p_invar)·t̂`, where `t̂` is the fitted distance per variable site.
 pub fn ml_distance(model: &ReversibleModel, counts: &[f64], het: RateHet) -> f64 {
+    ml_distance_with(model, counts, het, Some(kernels::level()))
+}
+
+/// [`ml_distance`] with the vector kernel at an explicit level (`None`: scalar dot products). Only
+/// models with at most four states use the kernel; the result does not depend on the choice.
+pub(crate) fn ml_distance_with(
+    model: &ReversibleModel,
+    counts: &[f64],
+    het: RateHet,
+    level: Option<Level>,
+) -> f64 {
     let k = model.n_states();
     debug_assert_eq!(counts.len(), k * k);
     debug_assert!(k <= 255, "states are stored as u8");
@@ -139,7 +178,9 @@ pub fn ml_distance(model: &ReversibleModel, counts: &[f64], het: RateHet) -> f64
             model,
             counts,
             het,
+            level,
             &mut [(0, 0, 0.0); 10],
+            &mut [0.0; 48],
             &mut [0.0; 4],
             &mut [0.0; 4],
             &mut [0.0; 4],
@@ -149,7 +190,9 @@ pub fn ml_distance(model: &ReversibleModel, counts: &[f64], het: RateHet) -> f64
             model,
             counts,
             het,
+            None,
             &mut [(0, 0, 0.0); 210],
+            &mut [],
             &mut [0.0; 20],
             &mut [0.0; 20],
             &mut [0.0; 20],
@@ -159,7 +202,9 @@ pub fn ml_distance(model: &ReversibleModel, counts: &[f64], het: RateHet) -> f64
             model,
             counts,
             het,
+            None,
             &mut vec![(0, 0, 0.0); k * (k + 1) / 2],
+            &mut [],
             &mut vec![0.0; k],
             &mut vec![0.0; k],
             &mut vec![0.0; k],
@@ -167,13 +212,16 @@ pub fn ml_distance(model: &ReversibleModel, counts: &[f64], het: RateHet) -> f64
     }
 }
 
-/// [`ml_distance`] on caller-provided storage: `entries` holds up to `K(K+1)/2` pairs and `g`, `g1`
-/// and `g2` at least `K` values each.
+/// [`ml_distance`] on caller-provided storage: `entries` holds up to `K(K+1)/2` pairs, `g`, `g1`
+/// and `g2` at least `K` values each (4 when `level` is given), and `xt` 48 values when `level` is
+/// given (the vector layout of up to 12 entries) and nothing otherwise.
 fn fit(
     model: &ReversibleModel,
     counts: &[f64],
     het: RateHet,
+    level: Option<Level>,
     entries: &mut [Entry],
+    xt: &mut [f64],
     g: &mut [f64],
     g1: &mut [f64],
     g2: &mut [f64],
@@ -204,13 +252,37 @@ fn fit(
         return 0.0;
     }
 
+    // The vector layout: coefficient m of entry j at xt[m * ep + j], zero-padded (the storage starts
+    // zeroed, and a model with fewer than four states leaves its missing rows zero).
+    let lanes = match level {
+        Some(level) if k <= 4 => {
+            let ep = n_entries.div_ceil(4) * 4;
+            for (j, &(a, b, _)) in entries[..n_entries].iter().enumerate() {
+                for (m, &x) in model
+                    .coefficients(a as usize, b as usize)
+                    .iter()
+                    .enumerate()
+                {
+                    xt[m * ep + j] = x;
+                }
+            }
+            Some(Lanes {
+                level,
+                xt: &xt[..4 * ep],
+                ep,
+            })
+        }
+        _ => None,
+    };
+
     let mut pair = Pair {
         model,
         het,
         entries: &entries[..n_entries],
-        g: &mut g[..k],
-        g1: &mut g1[..k],
-        g2: &mut g2[..k],
+        lanes,
+        g,
+        g1,
+        g2,
     };
     let Some(t) = solve(&mut pair, total, differing) else {
         return f64::INFINITY;
@@ -628,6 +700,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_vector_evaluation_is_bit_identical_to_the_scalar_one_at_every_level() {
+        // Up to four states the dot products of every entry are evaluated four entries at a time. The
+        // products and sums are the same IEEE operations in the same order, so every distance must
+        // be the same bits as with the scalar loop, at every level, with and without rate variation.
+        let mut rng = Rng(0x5EED_0060);
+        let hets = [
+            RateHet::NONE,
+            RateHet {
+                gamma_shape: Some(0.6),
+                p_invar: 0.0,
+            },
+            RateHet {
+                gamma_shape: None,
+                p_invar: 0.2,
+            },
+            RateHet {
+                gamma_shape: Some(1.4),
+                p_invar: 0.3,
+            },
+        ];
+        let mut compared = 0;
+        for k in [2usize, 3, 4] {
+            for _ in 0..40 {
+                let model = random_model(&mut rng, k);
+                let t = [0.05, 0.4, 1.0, 2.5][rng.next() as usize % 4];
+                let het = hets[rng.next() as usize % 4];
+                let sites = 60 + rng.next() as usize % 400;
+                let f = simulate_counts(&mut rng, &model, t, sites);
+                let want = ml_distance_with(&model, &f, het, None);
+                for (name, level) in crate::kernels::testing::levels() {
+                    let got = ml_distance_with(&model, &f, het, Some(level));
+                    assert_eq!(
+                        got.to_bits(),
+                        want.to_bits(),
+                        "k {k}, level {name}, {het:?}: {got} vs {want}"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared >= 240);
     }
 
     #[test]

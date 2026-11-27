@@ -76,7 +76,7 @@ the model gives 1.7× at W=2, 2.8× at W=4, 3.3× at W=8.
 - Precompute `X_ab[k] = U_ak·W_kb` once per model (64 KB for `K=20`): removes a quarter of the operations at any W.
 - Pad `K` to a multiple of W; use at least two independent accumulators per entry.
 - Start Newton from the closed-form distance: saves about one of four iterations.
-- The DNA solver (16 entries) is already small next to counting; do not vectorise it.
+- The DNA solver (at most 10 entries) is small next to the closed-form models but not next to counting: it was vectorised four entries at a time and gained 9% (`performance-log.md`); the transcendental functions, not the dot products, set its cost.
 
 ## 3. Not doing
 
